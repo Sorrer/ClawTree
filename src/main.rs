@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, MouseEventKind};
+
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -18,14 +19,24 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tracing_subscriber::EnvFilter;
 
-use crate::app::App;
+use crate::app::{App, PendingAction, CommitPhase, Dialog};
 use crate::event::AppEvent;
 
 /// Global flag set by the signal handler, read by the watchdog thread.
 static SIGNAL_RECEIVED: AtomicBool = AtomicBool::new(false);
 
+/// Set the outer terminal's window/tab title via OSC escape sequence.
+fn set_terminal_title(title: &str) {
+    let _ = crossterm::execute!(
+        io::stdout(),
+        crossterm::terminal::SetTitle(title)
+    );
+}
+
 /// Restore the terminal to a usable state. Safe to call multiple times.
 fn restore_terminal() {
+    // Clear the title we set
+    set_terminal_title("");
     let _ = disable_raw_mode();
     let _ = crossterm::execute!(
         io::stdout(),
@@ -111,11 +122,17 @@ fn main() -> Result<()> {
     };
 
     // Detect bare repo starting from target directory
-    let bare_repo_path = worktree::git::detect_bare_repo(&target_dir).unwrap_or_else(|| {
-        tracing::warn!("No bare repo detected at {:?}, using it as-is", target_dir);
-        target_dir.clone()
-    });
-    tracing::info!("Bare repo path: {:?}", bare_repo_path);
+    let (bare_repo_path, repo_detected) = match worktree::git::detect_bare_repo(&target_dir) {
+        Some(path) => {
+            tracing::info!("Bare repo detected at {:?}", path);
+            (path, true)
+        }
+        None => {
+            tracing::warn!("No bare repo detected at {:?}", target_dir);
+            (target_dir.clone(), false)
+        }
+    };
+    tracing::info!("Bare repo path: {:?}, detected: {}", bare_repo_path, repo_detected);
 
     // Build tokio runtime manually so we control shutdown
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -123,7 +140,11 @@ fn main() -> Result<()> {
         .build()
         .context("Failed to create tokio runtime")?;
 
-    let result = rt.block_on(async_main(bare_repo_path));
+    // Check tmux availability
+    let tmux_available = session::pty::tmux_available();
+    tracing::info!("tmux available: {}", tmux_available);
+
+    let result = rt.block_on(async_main(bare_repo_path, repo_detected, tmux_available));
 
     // Clean exit — tell watchdog to stop, restore terminal
     alive.store(false, Ordering::Relaxed);
@@ -132,7 +153,7 @@ fn main() -> Result<()> {
     result
 }
 
-async fn async_main(bare_repo_path: std::path::PathBuf) -> Result<()> {
+async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, tmux_available: bool) -> Result<()> {
     // Initialize terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
@@ -143,7 +164,15 @@ async fn async_main(bare_repo_path: std::path::PathBuf) -> Result<()> {
 
     // Create event channel and app
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
-    let mut app = App::new(bare_repo_path, event_tx.clone());
+    let mut app = App::new(bare_repo_path.clone(), event_tx.clone(), repo_detected, tmux_available);
+
+    // Set the outer terminal title to the repo name
+    let repo_name = bare_repo_path
+        .file_name()
+        .or_else(|| bare_repo_path.parent().and_then(|p| p.file_name()))
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "worktree-tui".to_string());
+    set_terminal_title(&format!("wctui — {}", repo_name));
 
     // ── Input reader — plain OS thread ─────────────────────────────
     let input_tx = event_tx.clone();
@@ -180,10 +209,29 @@ async fn async_main(bare_repo_path: std::path::PathBuf) -> Result<()> {
         })
         .context("Failed to spawn tick timer thread")?;
 
-    // Load initial worktree data
-    if let Err(e) = worktree::refresh_worktrees(&mut app) {
-        tracing::error!("Failed to load worktrees: {}", e);
-        app.set_status(format!("Failed to load worktrees: {}", e));
+    // Load initial worktree data (only if repo exists)
+    if repo_detected {
+        if let Err(e) = worktree::refresh_worktrees(&mut app) {
+            tracing::error!("Failed to load worktrees: {}", e);
+            app.set_status(format!("Failed to load worktrees: {}", e));
+        }
+
+        // Reconnect existing tmux sessions from a previous TUI run
+        let size = terminal.size()?;
+        let reconnected = session::reconnect_tmux_sessions(&mut app, (size.width, size.height));
+        if reconnected > 0 {
+            app.set_status(format!("Reconnected {} tmux session(s)", reconnected));
+        }
+    }
+
+    // ── Tmux title poller — background thread ──────────────────────
+    let tmux_session_info = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    if tmux_available {
+        // Seed initial info
+        if let Ok(mut info) = tmux_session_info.lock() {
+            *info = session::collect_tmux_session_info(&app);
+        }
+        session::spawn_tmux_title_poller(event_tx.clone(), std::sync::Arc::clone(&tmux_session_info));
     }
 
     // ── Main event loop ────────────────────────────────────────────
@@ -199,6 +247,14 @@ async fn async_main(bare_repo_path: std::path::PathBuf) -> Result<()> {
             needs_redraw = false;
         }
 
+        // Execute pending actions after drawing the loading overlay
+        if let Some(action) = app.pending_action.take() {
+            execute_pending_action(&mut app, action);
+            app.loading_message = None;
+            needs_redraw = true;
+            continue; // redraw immediately
+        }
+
         // Timeout ensures we never block forever — always loop back to check should_quit
         match tokio::time::timeout(
             std::time::Duration::from_millis(100),
@@ -209,9 +265,29 @@ async fn async_main(bare_repo_path: std::path::PathBuf) -> Result<()> {
             Ok(Some(event)) => {
                 match event {
                     AppEvent::Input(CrosstermEvent::Key(key)) => {
+                        let session_count_before = app.sessions.len();
                         let size = terminal.size()?;
                         keys::handle_key(&mut app, key, (size.width, size.height));
+                        // If sessions changed, update the poller's snapshot
+                        if tmux_available && app.sessions.len() != session_count_before {
+                            if let Ok(mut info) = tmux_session_info.lock() {
+                                *info = session::collect_tmux_session_info(&app);
+                            }
+                        }
                         needs_redraw = true;
+                    }
+                    AppEvent::Input(CrosstermEvent::Mouse(mouse)) => {
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => {
+                                keys::handle_scroll(&mut app, true);
+                                needs_redraw = true;
+                            }
+                            MouseEventKind::ScrollDown => {
+                                keys::handle_scroll(&mut app, false);
+                                needs_redraw = true;
+                            }
+                            _ => {}
+                        }
                     }
                     AppEvent::Input(CrosstermEvent::Resize(w, h)) => {
                         session::resize_all(&app, h, w);
@@ -223,6 +299,49 @@ async fn async_main(bare_repo_path: std::path::PathBuf) -> Result<()> {
                     }
                     AppEvent::PtyExited { session_id } => {
                         session::mark_exited(&mut app, session_id);
+                        if tmux_available {
+                            if let Ok(mut info) = tmux_session_info.lock() {
+                                *info = session::collect_tmux_session_info(&app);
+                            }
+                        }
+                        needs_redraw = true;
+                    }
+                    AppEvent::WorktreeCreated { branch, error } => {
+                        match error {
+                            Some(e) => app.set_status(format!("Error creating '{}': {}", branch, e)),
+                            None => {
+                                app.set_status(format!("Created worktree '{}'", branch));
+                                let _ = worktree::refresh_worktrees(&mut app);
+                            }
+                        }
+                        needs_redraw = true;
+                    }
+                    AppEvent::PushComplete { branch, error } => {
+                        match error {
+                            Some(e) => app.set_status(format!("Push '{}' failed: {}", branch, e)),
+                            None => {
+                                app.set_status(format!("Pushed '{}'", branch));
+                            }
+                        }
+                        needs_redraw = true;
+                    }
+                    AppEvent::InitRepoComplete { error, .. } => {
+                        match error {
+                            Some(e) => app.set_status(format!("Init error: {}", e)),
+                            None => {
+                                app.repo_detected = true;
+                                app.set_status("Repository initialized!");
+                                let _ = worktree::refresh_worktrees(&mut app);
+                            }
+                        }
+                        needs_redraw = true;
+                    }
+                    AppEvent::TmuxTitlesChanged { updates } => {
+                        session::apply_tmux_title_updates(&app, updates);
+                        // Update the poller's snapshot so it knows the current titles
+                        if let Ok(mut info) = tmux_session_info.lock() {
+                            *info = session::collect_tmux_session_info(&app);
+                        }
                         needs_redraw = true;
                     }
                     AppEvent::Tick => {
@@ -236,4 +355,273 @@ async fn async_main(bare_repo_path: std::path::PathBuf) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Execute a queued blocking action. Called after the loading overlay is drawn.
+fn execute_pending_action(app: &mut App, action: PendingAction) {
+    match action {
+        PendingAction::StageFile { worktree_idx, file } => {
+            if let Err(e) = worktree::stage_file(app, worktree_idx, &file) {
+                app.set_status(format!("Failed to stage: {}", e));
+            }
+            if matches!(app.dialog, Some(Dialog::GitCommit { .. })) {
+                refresh_git_commit_dialog(app);
+            } else {
+                app.refresh_worktree_status();
+            }
+        }
+        PendingAction::UnstageFile { worktree_idx, file } => {
+            if let Err(e) = worktree::unstage_file(app, worktree_idx, &file) {
+                app.set_status(format!("Failed to unstage: {}", e));
+            }
+            if matches!(app.dialog, Some(Dialog::GitCommit { .. })) {
+                refresh_git_commit_dialog(app);
+            } else {
+                app.refresh_worktree_status();
+            }
+        }
+        PendingAction::StageAll { worktree_idx } => {
+            if let Err(e) = worktree::stage_all(app, worktree_idx) {
+                app.set_status(format!("Failed to stage all: {}", e));
+            }
+            if matches!(app.dialog, Some(Dialog::GitCommit { .. })) {
+                refresh_git_commit_dialog(app);
+            } else {
+                app.refresh_worktree_status();
+            }
+        }
+        PendingAction::Commit { worktree_idx, message } => {
+            match worktree::commit(app, worktree_idx, &message) {
+                Ok(()) => {
+                    let _ = worktree::refresh_worktrees(app);
+                    app.refresh_worktree_status();
+                    // If a merge was waiting on this commit, re-queue it
+                    if let Some(merge_action) = app.pending_merge.take() {
+                        app.set_status("Committed — retrying merge...");
+                        app.queue_action("Merging...", merge_action);
+                    } else {
+                        app.set_status("Changes committed successfully");
+                    }
+                }
+                Err(e) => {
+                    app.set_status(format!("Commit failed: {}", e));
+                }
+            }
+        }
+        PendingAction::RefreshWorktreeStatus => {
+            app.refresh_worktree_status();
+        }
+        PendingAction::FetchWorktreeStatus { worktree_idx } => {
+            app.worktree_status = worktree::fetch_worktree_status(app, worktree_idx).ok();
+            app.clamp_info_panel_cursor();
+        }
+        PendingAction::OpenStageCommit { worktree_idx } => {
+            match worktree::status_porcelain(app, worktree_idx) {
+                Ok(changes) => {
+                    if changes.is_empty() {
+                        app.set_status("Working tree clean — nothing to commit");
+                        return;
+                    }
+                    let mut unstaged = Vec::new();
+                    let mut staged = Vec::new();
+                    for c in &changes {
+                        if c.index_status != ' ' && c.index_status != '?' {
+                            staged.push((c.index_status, c.path.clone()));
+                        }
+                        if c.work_status != ' ' || c.index_status == '?' {
+                            let status = if c.index_status == '?' { '?' } else { c.work_status };
+                            unstaged.push((status, c.path.clone()));
+                        }
+                    }
+                    app.open_dialog(Dialog::GitCommit {
+                        worktree_idx,
+                        unstaged,
+                        staged,
+                        section: 0,
+                        selected: 0,
+                        phase: CommitPhase::Staging,
+                        commit_message: String::new(),
+                    });
+                }
+                Err(e) => {
+                    app.set_status(format!("Failed to get status: {}", e));
+                }
+            }
+        }
+        PendingAction::MergeExecute { source_worktree_idx, target_branch } => {
+            let source_name = app
+                .worktrees
+                .get(source_worktree_idx)
+                .map(|w| w.branch.clone())
+                .unwrap_or_default();
+
+            // Find or create worktree for target branch
+            let target_wt_idx = match worktree::find_worktree_for_branch(app, &target_branch) {
+                Some(idx) => idx,
+                None => {
+                    if let Err(e) = worktree::git::create_worktree(
+                        &app.bare_repo_path,
+                        &target_branch,
+                        &target_branch,
+                        "",
+                    ) {
+                        app.set_status(format!("Failed to create worktree for '{}': {}", target_branch, e));
+                        return;
+                    }
+                    if let Err(e) = worktree::refresh_worktrees(app) {
+                        app.set_status(format!("Failed to refresh: {}", e));
+                        return;
+                    }
+                    match worktree::find_worktree_for_branch(app, &target_branch) {
+                        Some(idx) => idx,
+                        None => {
+                            app.set_status(format!("Could not find worktree for '{}'", target_branch));
+                            return;
+                        }
+                    }
+                }
+            };
+
+            // Check target worktree is clean before merging
+            match worktree::is_worktree_clean(app, target_wt_idx) {
+                Ok(false) => {
+                    // Remember the merge so we can retry after commit
+                    app.pending_merge = Some(PendingAction::MergeExecute {
+                        source_worktree_idx,
+                        target_branch: target_branch.clone(),
+                    });
+                    // Open the commit UI for the dirty target worktree
+                    match worktree::status_porcelain(app, target_wt_idx) {
+                        Ok(changes) => {
+                            let mut unstaged = Vec::new();
+                            let mut staged = Vec::new();
+                            for c in &changes {
+                                if c.index_status != ' ' && c.index_status != '?' {
+                                    staged.push((c.index_status, c.path.clone()));
+                                }
+                                if c.work_status != ' ' || c.index_status == '?' {
+                                    let status = if c.index_status == '?' { '?' } else { c.work_status };
+                                    unstaged.push((status, c.path.clone()));
+                                }
+                            }
+                            app.set_status(format!(
+                                "'{}' has uncommitted changes — commit before merging",
+                                target_branch
+                            ));
+                            app.open_dialog(Dialog::GitCommit {
+                                worktree_idx: target_wt_idx,
+                                unstaged,
+                                staged,
+                                section: 0,
+                                selected: 0,
+                                phase: CommitPhase::Staging,
+                                commit_message: String::new(),
+                            });
+                        }
+                        Err(e) => {
+                            app.pending_merge = None;
+                            app.set_status(format!("Failed to get status of '{}': {}", target_branch, e));
+                        }
+                    }
+                    return;
+                }
+                Err(e) => {
+                    app.set_status(format!("Failed to check status of '{}': {}", target_branch, e));
+                    return;
+                }
+                Ok(true) => {}
+            }
+
+            match worktree::merge_into_worktree(app, target_wt_idx, &source_name) {
+                Ok(worktree::git::MergeResult::Success(output)) => {
+                    app.set_status(format!(
+                        "Merged '{}' into '{}': {}",
+                        source_name,
+                        target_branch,
+                        output.lines().next().unwrap_or("ok").trim()
+                    ));
+                    let _ = worktree::refresh_worktrees(app);
+                    app.refresh_worktree_status();
+                }
+                Ok(worktree::git::MergeResult::Conflict(_)) => {
+                    app.set_status(format!(
+                        "Merge conflict: '{}' into '{}'",
+                        source_name, target_branch
+                    ));
+                    app.open_dialog(Dialog::MergeConflict {
+                        worktree_idx: target_wt_idx,
+                        source_branch: source_name.clone(),
+                        selected: 0,
+                    });
+                }
+                Err(e) => {
+                    app.set_status(format!("Merge error: {}", e));
+                }
+            }
+        }
+    }
+}
+
+/// Re-fetch file status and rebuild the GitCommit dialog lists.
+fn refresh_git_commit_dialog(app: &mut App) {
+    let (worktree_idx, old_section, old_selected, phase, commit_message) = match &app.dialog {
+        Some(Dialog::GitCommit {
+            worktree_idx,
+            section,
+            selected,
+            phase,
+            commit_message,
+            ..
+        }) => (*worktree_idx, *section, *selected, *phase, commit_message.clone()),
+        _ => return,
+    };
+
+    let changes = match worktree::status_porcelain(app, worktree_idx) {
+        Ok(c) => c,
+        Err(e) => {
+            app.set_status(format!("Failed to refresh status: {}", e));
+            return;
+        }
+    };
+
+    let mut unstaged = Vec::new();
+    let mut staged = Vec::new();
+    for c in &changes {
+        if c.index_status != ' ' && c.index_status != '?' {
+            staged.push((c.index_status, c.path.clone()));
+        }
+        if c.work_status != ' ' || c.index_status == '?' {
+            let status = if c.index_status == '?' { '?' } else { c.work_status };
+            unstaged.push((status, c.path.clone()));
+        }
+    }
+
+    // If both lists are empty, the worktree is now clean — close dialog
+    if unstaged.is_empty() && staged.is_empty() {
+        app.set_status("All changes committed — worktree is clean");
+        app.close_dialog();
+        return;
+    }
+
+    // Clamp selection
+    let section = if old_section == 0 && unstaged.is_empty() {
+        1
+    } else if old_section == 1 && staged.is_empty() {
+        0
+    } else {
+        old_section
+    };
+
+    let len = if section == 0 { unstaged.len() } else { staged.len() };
+    let selected = if len == 0 { 0 } else { old_selected.min(len - 1) };
+
+    app.dialog = Some(Dialog::GitCommit {
+        worktree_idx,
+        unstaged,
+        staged,
+        section,
+        selected,
+        phase,
+        commit_message,
+    });
 }

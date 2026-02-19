@@ -27,10 +27,26 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         None => "no session".to_string(),
     };
 
-    let help_text = match app.input_mode {
-        InputMode::Normal => "Tab:focus j/k:nav Enter:select c:claude C:claude-yolo n:new-wt d:del ^b:sidebar ^q:quit",
-        InputMode::Terminal => "Esc/Tab:sidebar ^b:sidebar ^q:quit",
-        InputMode::Dialog => "Enter:confirm Esc:cancel Tab:next-field",
+    let help_text = if !app.repo_detected && app.input_mode != InputMode::Dialog {
+        "i:init-repo ^q:quit"
+    } else {
+        match app.input_mode {
+            InputMode::Normal => {
+                match app.selected_sidebar_item() {
+                    Some(crate::app::SidebarItem::Session(_, _)) => {
+                        "Enter:switch c:claude d:del w:term W:ext-claude j/k:nav ^q:quit"
+                    }
+                    Some(crate::app::SidebarItem::Worktree(_)) => {
+                        "c:claude C:yolo n:new-wt d:del m:merge w:term W:ext-claude ^q:quit"
+                    }
+                    None => {
+                        "n:new-wt ^b:sidebar ^q:quit"
+                    }
+                }
+            }
+            InputMode::Terminal => "Esc/Tab:sidebar ^b:sidebar ^q:quit",
+            InputMode::Dialog => "Enter:confirm Esc:cancel Tab:next-field",
+        }
     };
 
     let status = if let Some(ref msg) = app.status_message {

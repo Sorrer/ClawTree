@@ -1,19 +1,16 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, ConfirmAction, Dialog, FocusTarget, InputMode, SidebarItem};
+use crate::app::{App, CommitPhase, ConfirmAction, Dialog, FocusTarget, InputMode, PendingAction, SidebarItem};
 use crate::session;
 use crate::worktree;
 
 /// Handle a key event based on current input mode.
 pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     // ── Global keybindings (work in ALL modes) ─────────────────────
-    // Ctrl+q — quit
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q') {
         app.should_quit = true;
         return;
     }
-
-    // Ctrl+b — toggle sidebar visibility (works from any mode)
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('b') {
         app.sidebar_visible = !app.sidebar_visible;
         return;
@@ -22,11 +19,32 @@ pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     match app.input_mode {
         InputMode::Normal => handle_normal_key(app, key, terminal_size),
         InputMode::Terminal => handle_terminal_key(app, key),
-        InputMode::Dialog => handle_dialog_key(app, key),
+        InputMode::Dialog => handle_dialog_key(app, key, terminal_size),
     }
 }
 
 fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
+    // Info panel focused — handle file navigation/staging keys
+    if app.info_panel_focused() {
+        handle_info_panel_key(app, key, terminal_size);
+        return;
+    }
+
+    // If no repo detected, only allow init
+    if !app.repo_detected {
+        match key.code {
+            KeyCode::Char('i') => {
+                app.open_dialog(Dialog::InitRepo {
+                    url_input: String::new(),
+                    branch_input: "main".to_string(),
+                    focused_field: 0,
+                });
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match (key.modifiers, key.code) {
         (_, KeyCode::Tab) => {
             app.toggle_focus();
@@ -35,74 +53,296 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             if let Err(e) = worktree::refresh_worktrees(app) {
                 app.set_status(format!("Error refreshing: {}", e));
             }
+            app.queue_action("Refreshing...", PendingAction::RefreshWorktreeStatus);
+        }
+
+        // Terminal scrollback (works from sidebar too)
+        (_, KeyCode::PageUp) => {
+            app.terminal_scroll = app.terminal_scroll.saturating_add(SCROLL_PAGE);
+        }
+        (_, KeyCode::PageDown) => {
+            app.terminal_scroll = app.terminal_scroll.saturating_sub(SCROLL_PAGE);
         }
 
         // Sidebar navigation
-        (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
-            app.sidebar_down();
-        }
-        (_, KeyCode::Char('k')) | (_, KeyCode::Up) => {
-            app.sidebar_up();
-        }
-        (_, KeyCode::Enter) => {
-            app.activate_selected();
-        }
-        (_, KeyCode::Char(' ')) => {
-            app.toggle_expand();
-        }
+        (_, KeyCode::Char('j')) | (_, KeyCode::Down) => app.sidebar_down(),
+        (_, KeyCode::Char('k')) | (_, KeyCode::Up) => app.sidebar_up(),
+        (_, KeyCode::Enter) => app.activate_selected(),
+        (_, KeyCode::Char(' ')) => app.toggle_expand(),
 
-        // c — new Claude session (normal mode)
+        // c — new Claude session
         (_, KeyCode::Char('c')) => {
             spawn_claude_for_selected(app, terminal_size, false);
         }
-        // C (shift+c) — new Claude session with --dangerously-skip-permissions
+        // C — new Claude session with --dangerously-skip-permissions
         (KeyModifiers::SHIFT, KeyCode::Char('C')) => {
             spawn_claude_for_selected(app, terminal_size, true);
         }
 
+        // n — new worktree
         (_, KeyCode::Char('n')) => {
+            let base = selected_worktree_branch(app);
             app.open_dialog(Dialog::CreateWorktree {
                 branch_input: String::new(),
-                path_input: String::new(),
+                base_branch: base,
                 focused_field: 0,
             });
         }
+
+        // d — delete selected (session or worktree)
         (_, KeyCode::Char('d')) => {
-            match app.selected_sidebar_item() {
-                Some(SidebarItem::Session(wi, si)) => {
-                    if let Some(wt) = app.worktrees.get(wi) {
-                        if let Some(&sid) = wt.session_ids.get(si) {
-                            app.open_dialog(Dialog::Confirm {
-                                message: format!("Kill session {}?", session::session_label(app, sid)),
-                                on_confirm: ConfirmAction::DeleteSession(sid),
-                            });
-                        }
-                    }
-                }
-                Some(SidebarItem::Worktree(wi)) => {
-                    if let Some(wt) = app.worktrees.get(wi) {
-                        let path = wt.path.clone();
-                        let has_sessions = !wt.session_ids.is_empty();
-                        let msg = if has_sessions {
-                            format!(
-                                "Delete worktree '{}' and kill {} running session(s)?",
-                                wt.branch,
-                                wt.session_ids.len()
-                            )
-                        } else {
-                            format!("Delete worktree '{}'?", wt.branch)
-                        };
-                        app.open_dialog(Dialog::Confirm {
-                            message: msg,
-                            on_confirm: ConfirmAction::DeleteWorktree(path),
+            handle_delete(app);
+        }
+        // D — force-delete worktree
+        (KeyModifiers::SHIFT, KeyCode::Char('D')) => {
+            handle_force_delete(app);
+        }
+
+        // m — merge branch into selected worktree
+        (_, KeyCode::Char('m')) => {
+            handle_merge(app);
+        }
+
+        // s — stage/commit (open GitCommit dialog for selected worktree)
+        (_, KeyCode::Char('s')) => {
+            handle_stage_commit(app);
+        }
+
+        // p — push branch to remote
+        (_, KeyCode::Char('p')) => {
+            handle_push(app);
+        }
+
+        // r — rename/nickname a session
+        (_, KeyCode::Char('r')) => {
+            if let Some(SidebarItem::Session(wi, si)) = app.selected_sidebar_item() {
+                if let Some(wt) = app.worktrees.get(wi) {
+                    if let Some(&sid) = wt.session_ids.get(si) {
+                        let current = app.sessions.get(&sid)
+                            .and_then(|s| s.nickname.clone())
+                            .unwrap_or_default();
+                        app.open_dialog(Dialog::RenameSession {
+                            session_id: sid,
+                            input: current,
                         });
                     }
                 }
-                None => {}
             }
         }
 
+        // w — open new Windows Terminal tab in worktree directory
+        (_, KeyCode::Char('w')) => {
+            open_wsl_window(app, false);
+        }
+        // W — open new Windows Terminal tab with claude in worktree directory
+        (KeyModifiers::SHIFT, KeyCode::Char('W')) => {
+            open_wsl_window(app, true);
+        }
+
         _ => {}
+    }
+}
+
+fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
+    // If typing a commit message, handle text input
+    if app.info_panel_commit_msg.is_some() {
+        match key.code {
+            KeyCode::Esc => {
+                app.info_panel_commit_msg = None;
+            }
+            KeyCode::Enter => {
+                let msg = app.info_panel_commit_msg.take().unwrap_or_default();
+                if msg.is_empty() {
+                    app.set_status("Commit message cannot be empty");
+                    app.info_panel_commit_msg = Some(msg);
+                    return;
+                }
+                if let Some(wi) = app.active_worktree_idx {
+                    app.queue_action("Committing...", PendingAction::Commit {
+                        worktree_idx: wi,
+                        message: msg,
+                    });
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(ref mut msg) = app.info_panel_commit_msg {
+                    msg.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(ref mut msg) = app.info_panel_commit_msg {
+                    msg.pop();
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    let (unstaged, staged) = app.info_panel_file_lists();
+
+    match key.code {
+        // Navigation
+        KeyCode::Char('j') | KeyCode::Down => {
+            let len = if app.info_panel_section == 0 { unstaged.len() } else { staged.len() };
+            if len > 0 && app.info_panel_cursor + 1 < len {
+                app.info_panel_cursor += 1;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if app.info_panel_cursor > 0 {
+                app.info_panel_cursor -= 1;
+            }
+        }
+        // Switch between unstaged/staged sections
+        KeyCode::Tab => {
+            if app.info_panel_section == 0 && !staged.is_empty() {
+                app.info_panel_section = 1;
+                app.info_panel_cursor = app.info_panel_cursor.min(staged.len().saturating_sub(1));
+            } else if app.info_panel_section == 1 && !unstaged.is_empty() {
+                app.info_panel_section = 0;
+                app.info_panel_cursor = app.info_panel_cursor.min(unstaged.len().saturating_sub(1));
+            } else {
+                // No other section to switch to — go back to sidebar
+                app.escape_to_sidebar();
+            }
+        }
+        KeyCode::Esc => {
+            app.escape_to_sidebar();
+        }
+        // Space — stage/unstage selected file
+        KeyCode::Char(' ') => {
+            if let Some(wi) = app.active_worktree_idx {
+                if app.info_panel_section == 0 {
+                    if let Some((_, path)) = unstaged.get(app.info_panel_cursor) {
+                        app.queue_action("Staging...", PendingAction::StageFile {
+                            worktree_idx: wi,
+                            file: path.clone(),
+                        });
+                    }
+                } else {
+                    if let Some((_, path)) = staged.get(app.info_panel_cursor) {
+                        app.queue_action("Unstaging...", PendingAction::UnstageFile {
+                            worktree_idx: wi,
+                            file: path.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        // a — stage all
+        KeyCode::Char('a') => {
+            if let Some(wi) = app.active_worktree_idx {
+                app.queue_action("Staging all...", PendingAction::StageAll { worktree_idx: wi });
+            }
+        }
+        // Enter — commit staged files (enter commit message mode)
+        KeyCode::Enter => {
+            if staged.is_empty() {
+                app.set_status("No staged files to commit");
+            } else {
+                app.info_panel_commit_msg = Some(String::new());
+            }
+        }
+        // Pass through keys that should still work from the info panel
+        KeyCode::Char('c') => {
+            spawn_claude_for_selected(app, terminal_size, false);
+        }
+        KeyCode::Char('C') if key.modifiers == KeyModifiers::SHIFT => {
+            spawn_claude_for_selected(app, terminal_size, true);
+        }
+        KeyCode::Char('n') => {
+            let base = selected_worktree_branch(app);
+            app.open_dialog(Dialog::CreateWorktree {
+                branch_input: String::new(),
+                base_branch: base,
+                focused_field: 0,
+            });
+        }
+        KeyCode::Char('d') => {
+            handle_delete(app);
+        }
+        KeyCode::Char('m') => {
+            handle_merge(app);
+        }
+        KeyCode::Char('p') => {
+            handle_push(app);
+        }
+        KeyCode::F(5) => {
+            if let Err(e) = worktree::refresh_worktrees(app) {
+                app.set_status(format!("Error refreshing: {}", e));
+            }
+            app.queue_action("Refreshing...", PendingAction::RefreshWorktreeStatus);
+        }
+        _ => {}
+    }
+}
+
+/// Get the branch name of the currently selected worktree (or "main" as default).
+fn selected_worktree_branch(app: &App) -> String {
+    let wi = match app.selected_sidebar_item() {
+        Some(SidebarItem::Worktree(wi)) => Some(wi),
+        Some(SidebarItem::Session(wi, _)) => Some(wi),
+        None => None,
+    };
+    wi.and_then(|i| app.worktrees.get(i))
+        .map(|wt| wt.branch.clone())
+        .unwrap_or_else(|| "main".to_string())
+}
+
+fn open_wsl_window(app: &mut App, with_claude: bool) {
+    let wt_idx = match app.selected_sidebar_item() {
+        Some(SidebarItem::Worktree(wi)) => Some(wi),
+        Some(SidebarItem::Session(wi, _)) => Some(wi),
+        None => None,
+    };
+    if let Some(wi) = wt_idx {
+        if let Some(wt) = app.worktrees.get(wi) {
+            let path = wt.path.clone();
+            let branch = wt.branch.clone();
+            std::thread::Builder::new()
+                .name("wsl-window".into())
+                .spawn(move || {
+                    // Convert Linux path to Windows path
+                    let win_path = match std::process::Command::new("wslpath")
+                        .args(["-w", &path.to_string_lossy()])
+                        .output()
+                    {
+                        Ok(o) if o.status.success() => {
+                            String::from_utf8_lossy(&o.stdout).trim().to_string()
+                        }
+                        _ => return,
+                    };
+
+                    if with_claude {
+                        // Write a temp rcfile that sources bashrc then runs clauded
+                        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                        let init_file = std::path::PathBuf::from(home).join(".clauded_init");
+                        let _ = std::fs::write(
+                            &init_file,
+                            "source ~/.bashrc\nclauded\n",
+                        );
+                        let _ = std::process::Command::new("wt.exe")
+                            .args([
+                                "-w", "0", "nt", "--title", &branch,
+                                "--", "wsl.exe", "--cd", &win_path,
+                                "bash", "--rcfile", &init_file.to_string_lossy(),
+                            ])
+                            .spawn();
+                    } else {
+                        let _ = std::process::Command::new("wt.exe")
+                            .args([
+                                "-w", "0", "nt", "--title", &branch,
+                                "--", "wsl.exe", "--cd", &win_path,
+                            ])
+                            .spawn();
+                    }
+                })
+                .ok();
+
+            let action = if with_claude { "claude tab" } else { "terminal tab" };
+            app.set_status(format!("Opening {} for '{}'", action, app.worktrees[wi].branch));
+        }
     }
 }
 
@@ -113,7 +353,7 @@ fn spawn_claude_for_selected(app: &mut App, terminal_size: (u16, u16), skip_perm
         None => None,
     };
     if let Some(wi) = wt_idx {
-        match session::spawn_session(app, wi, terminal_size, skip_permissions) {
+        match session::spawn_session(app, wi, terminal_size, skip_permissions, None) {
             Ok(sid) => {
                 app.active_session_id = Some(sid);
                 app.focus = FocusTarget::TerminalPane;
@@ -127,20 +367,157 @@ fn spawn_claude_for_selected(app: &mut App, terminal_size: (u16, u16), skip_perm
     }
 }
 
+fn handle_delete(app: &mut App) {
+    match app.selected_sidebar_item() {
+        Some(SidebarItem::Session(wi, si)) => {
+            if let Some(wt) = app.worktrees.get(wi) {
+                if let Some(&sid) = wt.session_ids.get(si) {
+                    app.open_dialog(Dialog::Confirm {
+                        message: format!("Kill session {}?", session::session_label(app, sid)),
+                        on_confirm: ConfirmAction::DeleteSession(sid),
+                    });
+                }
+            }
+        }
+        Some(SidebarItem::Worktree(wi)) => {
+            if let Some(wt) = app.worktrees.get(wi) {
+                let path = wt.path.clone();
+                let has_sessions = !wt.session_ids.is_empty();
+                let msg = if has_sessions {
+                    format!(
+                        "Remove worktree '{}' and kill {} session(s)?",
+                        wt.branch,
+                        wt.session_ids.len()
+                    )
+                } else {
+                    format!("Remove worktree '{}'?", wt.branch)
+                };
+                app.open_dialog(Dialog::Confirm {
+                    message: msg,
+                    on_confirm: ConfirmAction::DeleteWorktree(path),
+                });
+            }
+        }
+        None => {}
+    }
+}
+
+fn handle_force_delete(app: &mut App) {
+    if let Some(SidebarItem::Worktree(wi)) | Some(SidebarItem::Session(wi, _)) =
+        app.selected_sidebar_item()
+    {
+        if let Some(wt) = app.worktrees.get(wi) {
+            let path = wt.path.clone();
+            app.open_dialog(Dialog::Confirm {
+                message: format!(
+                    "FORCE remove worktree '{}' (even if dirty)?",
+                    wt.branch
+                ),
+                on_confirm: ConfirmAction::ForceDeleteWorktree(path),
+            });
+        }
+    }
+}
+
+fn handle_stage_commit(app: &mut App) {
+    let wt_idx = match app.selected_sidebar_item() {
+        Some(SidebarItem::Worktree(wi)) => Some(wi),
+        Some(SidebarItem::Session(wi, _)) => Some(wi),
+        None => None,
+    };
+    if let Some(wi) = wt_idx {
+        app.queue_action("Loading status...", PendingAction::OpenStageCommit { worktree_idx: wi });
+    }
+}
+
+fn handle_push(app: &mut App) {
+    let wt_idx = match app.selected_sidebar_item() {
+        Some(SidebarItem::Worktree(wi)) => Some(wi),
+        Some(SidebarItem::Session(wi, _)) => Some(wi),
+        None => None,
+    };
+    if let Some(wi) = wt_idx {
+        if let Some(wt) = app.worktrees.get(wi) {
+            let path = wt.path.clone();
+            let branch = wt.branch.clone();
+            let tx = app.event_tx.clone();
+            app.set_status(format!("Pushing '{}'...", branch));
+
+            std::thread::Builder::new()
+                .name("git-push".into())
+                .spawn(move || {
+                    let result = worktree::git::push_branch(&path, &branch);
+                    let error = result.err().map(|e| format!("{}", e));
+                    let _ = tx.send(crate::event::AppEvent::PushComplete { branch, error });
+                })
+                .ok();
+        }
+    }
+}
+
+fn handle_merge(app: &mut App) {
+    let wt_idx = match app.selected_sidebar_item() {
+        Some(SidebarItem::Worktree(wi)) => Some(wi),
+        Some(SidebarItem::Session(wi, _)) => Some(wi),
+        None => None,
+    };
+    if let Some(wi) = wt_idx {
+        match worktree::available_branches(app) {
+            Ok(branches) => {
+                if branches.is_empty() {
+                    app.set_status("No branches found");
+                    return;
+                }
+                // Filter out the source worktree's own branch
+                let source_branch = app.worktrees.get(wi).map(|w| w.branch.as_str());
+                let filtered: Vec<String> = branches
+                    .into_iter()
+                    .filter(|b| source_branch.map_or(true, |sb| b != sb))
+                    .collect();
+                if filtered.is_empty() {
+                    app.set_status("No other branches to merge into");
+                    return;
+                }
+                // Default selection to "main" if available
+                let default_idx = filtered.iter().position(|b| b == "main").unwrap_or(0);
+                app.open_dialog(Dialog::MergeBranch {
+                    source_worktree_idx: wi,
+                    branches: filtered,
+                    selected: default_idx,
+                });
+            }
+            Err(e) => {
+                app.set_status(format!("Failed to list branches: {}", e));
+            }
+        }
+    }
+}
+
 fn handle_terminal_key(app: &mut App, key: KeyEvent) {
-    // Escape — return to sidebar
-    if key.code == KeyCode::Esc && key.modifiers.is_empty() {
-        app.escape_to_sidebar();
-        return;
-    }
-
-    // Tab — toggle focus back to sidebar
+    // Tab escapes back to the sidebar; Escape passes through to the PTY
+    // so Claude Code can use it (e.g. cancel operations).
     if key.code == KeyCode::Tab && key.modifiers.is_empty() {
+        app.terminal_scroll = 0;
         app.escape_to_sidebar();
         return;
     }
 
-    // Pass key to active session's PTY
+    // PgUp / PgDown scroll through history
+    match key.code {
+        KeyCode::PageUp => {
+            app.terminal_scroll = app.terminal_scroll.saturating_add(SCROLL_PAGE);
+            return;
+        }
+        KeyCode::PageDown => {
+            app.terminal_scroll = app.terminal_scroll.saturating_sub(SCROLL_PAGE);
+            return;
+        }
+        _ => {}
+    }
+
+    // Any other key snaps back to live view and sends to PTY
+    app.terminal_scroll = 0;
+
     if let Some(sid) = app.active_session_id {
         if let Some(session) = app.sessions.get(&sid) {
             let bytes = key_to_bytes(key, session.application_cursor_mode());
@@ -151,36 +528,375 @@ fn handle_terminal_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-fn handle_dialog_key(app: &mut App, key: KeyEvent) {
+const SCROLL_LINES: usize = 3;
+const SCROLL_PAGE: usize = 20;
+
+/// Handle mouse wheel scroll events. Works regardless of focus.
+pub fn handle_scroll(app: &mut App, up: bool) {
+    if app.active_session_id.is_none() {
+        return;
+    }
+    if up {
+        app.terminal_scroll = app.terminal_scroll.saturating_add(SCROLL_LINES);
+    } else {
+        app.terminal_scroll = app.terminal_scroll.saturating_sub(SCROLL_LINES);
+    }
+}
+
+fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
+    // GitCommit-specific keys need to be handled before the general match
+    // because Space, 'a', 'c' have special meaning in staging phase
+    if let Some(Dialog::GitCommit { ref phase, .. }) = app.dialog {
+        if *phase == CommitPhase::Staging {
+            match key.code {
+                KeyCode::Char(' ') => {
+                    handle_git_commit_space(app);
+                    return;
+                }
+                KeyCode::Char('a') => {
+                    handle_git_commit_stage_all(app);
+                    return;
+                }
+                KeyCode::Char('c') => {
+                    handle_git_commit_enter_message(app);
+                    return;
+                }
+                _ => {} // fall through to general handler
+            }
+        }
+    }
+
     match key.code {
         KeyCode::Esc => {
+            // GitCommit message phase: go back to staging
+            if let Some(Dialog::GitCommit { ref mut phase, .. }) = app.dialog {
+                if *phase == CommitPhase::Message {
+                    *phase = CommitPhase::Staging;
+                    return;
+                }
+            }
+            // Clear any pending merge if cancelling a commit dialog
+            if matches!(app.dialog, Some(Dialog::GitCommit { .. })) {
+                app.pending_merge = None;
+            }
             app.close_dialog();
         }
         KeyCode::Enter => {
             let dialog = app.dialog.take();
             match dialog {
-                Some(Dialog::CreateWorktree {
-                    branch_input,
-                    path_input,
-                    ..
-                }) => {
+                Some(Dialog::InitRepo { url_input, branch_input, .. }) => {
+                    let branch = if branch_input.is_empty() { "main".to_string() } else { branch_input };
+                    let bare_path = app.bare_repo_path.clone();
+                    let tx = app.event_tx.clone();
+                    app.set_status(if url_input.is_empty() {
+                        format!("Initializing bare repo (branch '{}')...", branch)
+                    } else {
+                        format!("Cloning into bare repo...")
+                    });
+                    app.close_dialog();
+
+                    // Run in background thread so UI stays responsive
+                    std::thread::Builder::new()
+                        .name("init-repo".into())
+                        .spawn(move || {
+                            let result = if url_input.is_empty() {
+                                worktree::git::init_bare_repo(&bare_path, &branch)
+                            } else {
+                                worktree::git::clone_bare_repo(&bare_path, &url_input, &branch)
+                            };
+                            let error = result.err().map(|e| format!("{}", e));
+                            let _ = tx.send(crate::event::AppEvent::InitRepoComplete {
+                                error,
+                            });
+                        })
+                        .ok();
+                }
+                Some(Dialog::CreateWorktree { branch_input, base_branch, .. }) => {
                     if !branch_input.is_empty() {
-                        let path = if path_input.is_empty() {
-                            branch_input.clone()
-                        } else {
-                            path_input
-                        };
-                        match worktree::create_worktree(app, &branch_input, &path) {
-                            Ok(_) => {
-                                app.set_status(format!("Created worktree '{}'", branch_input));
-                                let _ = worktree::refresh_worktrees(app);
+                        let bare_path = app.bare_repo_path.clone();
+                        let branch = branch_input.clone();
+                        let base = base_branch.clone();
+                        let tx = app.event_tx.clone();
+                        app.set_status(format!("Creating worktree '{}'...", branch));
+                        app.close_dialog();
+
+                        // Run in background thread so UI stays responsive
+                        std::thread::Builder::new()
+                            .name("create-worktree".into())
+                            .spawn(move || {
+                                let path = branch.clone();
+                                let result = worktree::git::create_worktree(&bare_path, &branch, &path, &base);
+                                let error = result.err().map(|e| format!("{}", e));
+                                let _ = tx.send(crate::event::AppEvent::WorktreeCreated {
+                                    branch,
+                                    error,
+                                });
+                            })
+                            .ok();
+                    } else {
+                        app.close_dialog();
+                    }
+                }
+                Some(Dialog::MergeBranch {
+                    source_worktree_idx,
+                    branches,
+                    selected,
+                }) => {
+                    if let Some(target_branch) = branches.get(selected) {
+                        let target_branch = target_branch.clone();
+                        let source_name = app
+                            .worktrees
+                            .get(source_worktree_idx)
+                            .map(|w| w.branch.clone())
+                            .unwrap_or_default();
+
+                        // Quick check: source worktree clean?
+                        match worktree::is_worktree_clean(app, source_worktree_idx) {
+                            Ok(false) => {
+                                match worktree::status_porcelain(app, source_worktree_idx) {
+                                    Ok(changes) => {
+                                        let files: Vec<(String, String)> = changes
+                                            .iter()
+                                            .map(|c| {
+                                                (
+                                                    format!("{}{}", c.index_status, c.work_status),
+                                                    c.path.clone(),
+                                                )
+                                            })
+                                            .collect();
+                                        app.dialog = Some(Dialog::DirtyWorktree {
+                                            worktree_idx: source_worktree_idx,
+                                            files,
+                                            selected: 0,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        app.set_status(format!("Failed to get status: {}", e));
+                                        app.close_dialog();
+                                    }
+                                }
+                                return;
                             }
                             Err(e) => {
-                                app.set_status(format!("Error: {}", e));
+                                app.set_status(format!("Failed to check status of '{}': {}", source_name, e));
+                                app.close_dialog();
+                                return;
                             }
+                            Ok(true) => {}
+                        }
+
+                        // Queue the heavy merge operation (worktree creation, merge, etc.)
+                        app.close_dialog();
+                        app.queue_action(
+                            format!("Merging '{}' into '{}'...", source_name, target_branch),
+                            PendingAction::MergeExecute {
+                                source_worktree_idx,
+                                target_branch,
+                            },
+                        );
+                    } else {
+                        app.close_dialog();
+                    }
+                }
+                Some(Dialog::RenameSession { session_id, input }) => {
+                    if let Some(session) = app.sessions.get_mut(&session_id) {
+                        if input.is_empty() {
+                            session.nickname = None;
+                        } else {
+                            session.nickname = Some(input);
                         }
                     }
                     app.close_dialog();
+                }
+                Some(Dialog::MergeConflict {
+                    worktree_idx,
+                    source_branch,
+                    selected,
+                }) => {
+                    match selected {
+                        0 => {
+                            // VS Code
+                            if let Some(wt) = app.worktrees.get(worktree_idx) {
+                                let path = wt.path.clone();
+                                std::thread::spawn(move || {
+                                    let _ = std::process::Command::new("code")
+                                        .arg(&path)
+                                        .spawn();
+                                });
+                                app.set_status("Opening VS Code to resolve conflicts...");
+                            }
+                            app.close_dialog();
+                        }
+                        1 => {
+                            // JetBrains
+                            if let Some(wt) = app.worktrees.get(worktree_idx) {
+                                let path = wt.path.clone();
+                                std::thread::spawn(move || {
+                                    // Try common JetBrains IDEs in order
+                                    for cmd in ["idea", "webstorm", "goland", "pycharm", "clion", "rider"] {
+                                        if std::process::Command::new(cmd)
+                                            .arg(&path)
+                                            .spawn()
+                                            .is_ok()
+                                        {
+                                            return;
+                                        }
+                                    }
+                                });
+                                app.set_status("Opening JetBrains IDE to resolve conflicts...");
+                            }
+                            app.close_dialog();
+                        }
+                        2 | 3 => {
+                            // Claude — spawn a session with merge prompt
+                            let skip_perms = selected == 3;
+                            let target_branch = app.worktrees.get(worktree_idx)
+                                .map(|w| w.branch.clone())
+                                .unwrap_or_default();
+                            let prompt = format!(
+                                "Resolve the merge conflicts in this repository. Branch '{}' was being merged into '{}'.",
+                                source_branch, target_branch
+                            );
+                            app.close_dialog();
+                            if app.worktrees.get(worktree_idx).is_some() {
+                                match session::spawn_session(app, worktree_idx, terminal_size, skip_perms, Some(&prompt)) {
+                                    Ok(sid) => {
+                                        app.active_session_id = Some(sid);
+                                        app.focus = FocusTarget::TerminalPane;
+                                        app.input_mode = InputMode::Terminal;
+                                        app.rebuild_sidebar_items();
+                                        app.set_status("Claude session opened — resolve merge conflicts");
+                                    }
+                                    Err(e) => {
+                                        app.set_status(format!("Failed to spawn Claude: {}", e));
+                                    }
+                                }
+                            }
+                        }
+                        4 => {
+                            // Abort merge
+                            match worktree::merge_abort(app, worktree_idx) {
+                                Ok(()) => {
+                                    app.set_status("Merge aborted");
+                                    let _ = worktree::refresh_worktrees(app);
+                                    app.refresh_worktree_status();
+                                }
+                                Err(e) => {
+                                    app.set_status(format!("Failed to abort merge: {}", e));
+                                }
+                            }
+                            app.close_dialog();
+                        }
+                        _ => {
+                            app.close_dialog();
+                        }
+                    }
+                }
+                Some(Dialog::DirtyWorktree {
+                    worktree_idx,
+                    selected,
+                    ..
+                }) => {
+                    match selected {
+                        0 => {
+                            // Commit changes — open GitCommit dialog
+                            match worktree::status_porcelain(app, worktree_idx) {
+                                Ok(changes) => {
+                                    let mut unstaged = Vec::new();
+                                    let mut staged = Vec::new();
+                                    for c in &changes {
+                                        if c.index_status != ' ' && c.index_status != '?' {
+                                            staged.push((c.index_status, c.path.clone()));
+                                        }
+                                        if c.work_status != ' ' || c.index_status == '?' {
+                                            let status = if c.index_status == '?' { '?' } else { c.work_status };
+                                            unstaged.push((status, c.path.clone()));
+                                        }
+                                    }
+                                    app.dialog = Some(Dialog::GitCommit {
+                                        worktree_idx,
+                                        unstaged,
+                                        staged,
+                                        section: 0,
+                                        selected: 0,
+                                        phase: CommitPhase::Staging,
+                                        commit_message: String::new(),
+                                    });
+                                }
+                                Err(e) => {
+                                    app.set_status(format!("Failed to get status: {}", e));
+                                    app.close_dialog();
+                                }
+                            }
+                        }
+                        1 => {
+                            // Open with Claude
+                            let wi = worktree_idx;
+                            app.close_dialog();
+                            if app.worktrees.get(wi).is_some() {
+                                match session::spawn_session(app, wi, terminal_size, false, Some("Commit the uncommitted changes in this repository.")) {
+                                    Ok(sid) => {
+                                        app.active_session_id = Some(sid);
+                                        app.focus = FocusTarget::TerminalPane;
+                                        app.input_mode = InputMode::Terminal;
+                                        app.rebuild_sidebar_items();
+                                        app.set_status("Claude session opened — commit changes");
+                                    }
+                                    Err(e) => {
+                                        app.set_status(format!("Failed to spawn Claude: {}", e));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            // Cancel
+                            app.close_dialog();
+                        }
+                    }
+                }
+                Some(Dialog::GitCommit {
+                    worktree_idx,
+                    unstaged,
+                    staged,
+                    section,
+                    selected,
+                    phase,
+                    commit_message,
+                }) => {
+                    match phase {
+                        CommitPhase::Staging => {
+                            // Enter does nothing in staging phase — put dialog back
+                            app.dialog = Some(Dialog::GitCommit {
+                                worktree_idx,
+                                unstaged,
+                                staged,
+                                section,
+                                selected,
+                                phase,
+                                commit_message,
+                            });
+                        }
+                        CommitPhase::Message => {
+                            if commit_message.is_empty() {
+                                app.set_status("Commit message cannot be empty");
+                                app.dialog = Some(Dialog::GitCommit {
+                                    worktree_idx,
+                                    unstaged,
+                                    staged,
+                                    section,
+                                    selected,
+                                    phase,
+                                    commit_message,
+                                });
+                                return;
+                            }
+                            app.close_dialog();
+                            app.queue_action("Committing...", PendingAction::Commit {
+                                worktree_idx,
+                                message: commit_message,
+                            });
+                        }
+                    }
                 }
                 Some(Dialog::Confirm { on_confirm, .. }) => {
                     match on_confirm {
@@ -190,7 +906,27 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent) {
                         ConfirmAction::DeleteWorktree(path) => {
                             match worktree::remove_worktree(app, &path) {
                                 Ok(_) => {
-                                    app.set_status("Worktree removed".to_string());
+                                    app.set_status("Worktree removed");
+                                    let _ = worktree::refresh_worktrees(app);
+                                }
+                                Err(e) => {
+                                    let msg = format!("{}", e);
+                                    if msg.contains("dirty") || msg.contains("untracked") || msg.contains("changes") {
+                                        // Offer force-delete
+                                        app.open_dialog(Dialog::Confirm {
+                                            message: format!("Worktree is dirty. Force remove?"),
+                                            on_confirm: ConfirmAction::ForceDeleteWorktree(path),
+                                        });
+                                        return;
+                                    }
+                                    app.set_status(format!("Error: {}", e));
+                                }
+                            }
+                        }
+                        ConfirmAction::ForceDeleteWorktree(path) => {
+                            match worktree::force_remove_worktree(app, &path) {
+                                Ok(_) => {
+                                    app.set_status("Worktree force-removed");
                                     let _ = worktree::refresh_worktrees(app);
                                 }
                                 Err(e) => {
@@ -206,59 +942,202 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent) {
                 }
             }
         }
-        KeyCode::Tab => {
-            if let Some(Dialog::CreateWorktree {
-                ref mut focused_field,
-                ..
-            }) = app.dialog
-            {
-                *focused_field = (*focused_field + 1) % 2;
+
+        // Navigation within dialogs
+        KeyCode::Up | KeyCode::Char('k') => {
+            match app.dialog {
+                Some(Dialog::MergeBranch { ref mut selected, .. }) => {
+                    if *selected > 0 {
+                        *selected -= 1;
+                    }
+                }
+                Some(Dialog::MergeConflict { ref mut selected, .. }) => {
+                    if *selected > 0 {
+                        *selected -= 1;
+                    }
+                }
+                Some(Dialog::DirtyWorktree { ref mut selected, .. }) => {
+                    if *selected > 0 {
+                        *selected -= 1;
+                    }
+                }
+                Some(Dialog::GitCommit { ref phase, ref mut selected, ref unstaged, ref staged, ref section, .. }) => {
+                    if *phase == CommitPhase::Staging {
+                        if *selected > 0 {
+                            *selected -= 1;
+                        } else if *section == 0 && !unstaged.is_empty() {
+                            // already at top of unstaged
+                        } else if *section == 1 && !staged.is_empty() {
+                            // already at top of staged
+                        }
+                    }
+                }
+                _ => {}
             }
         }
-        KeyCode::BackTab => {
-            if let Some(Dialog::CreateWorktree {
-                ref mut focused_field,
-                ..
-            }) = app.dialog
-            {
-                *focused_field = if *focused_field == 0 { 1 } else { 0 };
+        KeyCode::Down | KeyCode::Char('j') => {
+            match app.dialog {
+                Some(Dialog::MergeBranch { ref mut selected, ref branches, .. }) => {
+                    if *selected + 1 < branches.len() {
+                        *selected += 1;
+                    }
+                }
+                Some(Dialog::MergeConflict { ref mut selected, .. }) => {
+                    if *selected + 1 < crate::app::CONFLICT_RESOLVER_COUNT {
+                        *selected += 1;
+                    }
+                }
+                Some(Dialog::DirtyWorktree { ref mut selected, .. }) => {
+                    if *selected + 1 < crate::app::DIRTY_WORKTREE_OPTION_COUNT {
+                        *selected += 1;
+                    }
+                }
+                Some(Dialog::GitCommit { ref phase, ref mut selected, ref unstaged, ref staged, ref section, .. }) => {
+                    if *phase == CommitPhase::Staging {
+                        let len = if *section == 0 { unstaged.len() } else { staged.len() };
+                        if len > 0 && *selected + 1 < len {
+                            *selected += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        KeyCode::Tab => {
+            match app.dialog {
+                Some(Dialog::CreateWorktree { ref mut focused_field, .. }) => {
+                    *focused_field = (*focused_field + 1) % 2;
+                }
+                Some(Dialog::InitRepo { ref mut focused_field, .. }) => {
+                    *focused_field = (*focused_field + 1) % 2;
+                }
+                Some(Dialog::GitCommit { ref phase, ref mut section, ref mut selected, ref unstaged, ref staged, .. }) => {
+                    if *phase == CommitPhase::Staging {
+                        *section = 1 - *section;
+                        let len = if *section == 0 { unstaged.len() } else { staged.len() };
+                        if len == 0 {
+                            *selected = 0;
+                        } else if *selected >= len {
+                            *selected = len - 1;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         KeyCode::Char(c) => {
-            if let Some(Dialog::CreateWorktree {
-                ref mut branch_input,
-                ref mut path_input,
-                focused_field,
-                ..
-            }) = app.dialog
-            {
-                match focused_field {
-                    0 => branch_input.push(c),
-                    1 => path_input.push(c),
-                    _ => {}
+            match &mut app.dialog {
+                Some(Dialog::CreateWorktree { ref mut branch_input, ref mut base_branch, focused_field, .. }) => {
+                    match *focused_field {
+                        0 => branch_input.push(c),
+                        _ => base_branch.push(c),
+                    }
                 }
+                Some(Dialog::InitRepo { ref mut url_input, ref mut branch_input, focused_field, .. }) => {
+                    match *focused_field {
+                        0 => url_input.push(c),
+                        _ => branch_input.push(c),
+                    }
+                }
+                Some(Dialog::RenameSession { ref mut input, .. }) => {
+                    input.push(c);
+                }
+                Some(Dialog::GitCommit { ref phase, ref mut commit_message, .. }) => {
+                    if *phase == CommitPhase::Message {
+                        commit_message.push(c);
+                    }
+                }
+                _ => {}
             }
         }
         KeyCode::Backspace => {
-            if let Some(Dialog::CreateWorktree {
-                ref mut branch_input,
-                ref mut path_input,
-                focused_field,
-                ..
-            }) = app.dialog
-            {
-                match focused_field {
-                    0 => {
-                        branch_input.pop();
+            match &mut app.dialog {
+                Some(Dialog::CreateWorktree { ref mut branch_input, ref mut base_branch, focused_field, .. }) => {
+                    match *focused_field {
+                        0 => { branch_input.pop(); }
+                        _ => { base_branch.pop(); }
                     }
-                    1 => {
-                        path_input.pop();
-                    }
-                    _ => {}
                 }
+                Some(Dialog::InitRepo { ref mut url_input, ref mut branch_input, focused_field, .. }) => {
+                    match *focused_field {
+                        0 => { url_input.pop(); }
+                        _ => { branch_input.pop(); }
+                    }
+                }
+                Some(Dialog::RenameSession { ref mut input, .. }) => {
+                    input.pop();
+                }
+                Some(Dialog::GitCommit { ref phase, ref mut commit_message, .. }) => {
+                    if *phase == CommitPhase::Message {
+                        commit_message.pop();
+                    }
+                }
+                _ => {}
             }
         }
         _ => {}
+    }
+}
+
+/// Stage or unstage the selected file in GitCommit dialog.
+fn handle_git_commit_space(app: &mut App) {
+    let (worktree_idx, section, selected) = match &app.dialog {
+        Some(Dialog::GitCommit { worktree_idx, section, selected, .. }) => {
+            (*worktree_idx, *section, *selected)
+        }
+        _ => return,
+    };
+
+    if section == 0 {
+        // Unstaged → stage
+        let file = match &app.dialog {
+            Some(Dialog::GitCommit { unstaged, .. }) => {
+                unstaged.get(selected).map(|(_, p)| p.clone())
+            }
+            _ => None,
+        };
+        if let Some(file) = file {
+            app.queue_action("Staging...", PendingAction::StageFile {
+                worktree_idx,
+                file,
+            });
+        }
+    } else {
+        // Staged → unstage
+        let file = match &app.dialog {
+            Some(Dialog::GitCommit { staged, .. }) => {
+                staged.get(selected).map(|(_, p)| p.clone())
+            }
+            _ => None,
+        };
+        if let Some(file) = file {
+            app.queue_action("Unstaging...", PendingAction::UnstageFile {
+                worktree_idx,
+                file,
+            });
+        }
+    }
+}
+
+/// Stage all files in GitCommit dialog.
+fn handle_git_commit_stage_all(app: &mut App) {
+    let worktree_idx = match &app.dialog {
+        Some(Dialog::GitCommit { worktree_idx, .. }) => *worktree_idx,
+        _ => return,
+    };
+
+    app.queue_action("Staging all...", PendingAction::StageAll { worktree_idx });
+}
+
+/// Switch to commit message phase if staged files exist.
+fn handle_git_commit_enter_message(app: &mut App) {
+    if let Some(Dialog::GitCommit { ref staged, ref mut phase, .. }) = app.dialog {
+        if staged.is_empty() {
+            app.set_status("No staged files to commit");
+        } else {
+            *phase = CommitPhase::Message;
+        }
     }
 }
 
@@ -292,32 +1171,16 @@ fn key_to_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
         KeyCode::BackTab => vec![0x1b, b'[', b'Z'],
         KeyCode::Esc => vec![0x1b],
         KeyCode::Up => {
-            if app_cursor {
-                vec![0x1b, b'O', b'A']
-            } else {
-                vec![0x1b, b'[', b'A']
-            }
+            if app_cursor { vec![0x1b, b'O', b'A'] } else { vec![0x1b, b'[', b'A'] }
         }
         KeyCode::Down => {
-            if app_cursor {
-                vec![0x1b, b'O', b'B']
-            } else {
-                vec![0x1b, b'[', b'B']
-            }
+            if app_cursor { vec![0x1b, b'O', b'B'] } else { vec![0x1b, b'[', b'B'] }
         }
         KeyCode::Right => {
-            if app_cursor {
-                vec![0x1b, b'O', b'C']
-            } else {
-                vec![0x1b, b'[', b'C']
-            }
+            if app_cursor { vec![0x1b, b'O', b'C'] } else { vec![0x1b, b'[', b'C'] }
         }
         KeyCode::Left => {
-            if app_cursor {
-                vec![0x1b, b'O', b'D']
-            } else {
-                vec![0x1b, b'[', b'D']
-            }
+            if app_cursor { vec![0x1b, b'O', b'D'] } else { vec![0x1b, b'[', b'D'] }
         }
         KeyCode::Home => vec![0x1b, b'[', b'H'],
         KeyCode::End => vec![0x1b, b'[', b'F'],

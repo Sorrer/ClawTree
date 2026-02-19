@@ -2,9 +2,9 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
-use crate::app::{App, Dialog};
+use crate::app::{App, CommitPhase, Dialog};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let dialog = match &app.dialog {
@@ -15,10 +15,63 @@ pub fn draw(f: &mut Frame, app: &App) {
     match dialog {
         Dialog::CreateWorktree {
             branch_input,
-            path_input,
+            base_branch,
             focused_field,
-        } => draw_create_worktree(f, branch_input, path_input, *focused_field),
+        } => draw_create_worktree(f, branch_input, base_branch, *focused_field),
+        Dialog::MergeBranch {
+            source_worktree_idx,
+            branches,
+            selected,
+        } => {
+            let source_name = app
+                .worktrees
+                .get(*source_worktree_idx)
+                .map(|w| w.branch.as_str())
+                .unwrap_or("???");
+            draw_merge(f, source_name, branches, *selected);
+        }
         Dialog::Confirm { message, .. } => draw_confirm(f, message),
+        Dialog::InitRepo {
+            url_input,
+            branch_input,
+            focused_field,
+        } => draw_init_repo(f, url_input, branch_input, *focused_field),
+        Dialog::RenameSession { input, .. } => draw_rename_session(f, input),
+        Dialog::MergeConflict {
+            worktree_idx,
+            selected,
+            ..
+        } => {
+            let branch_name = app
+                .worktrees
+                .get(*worktree_idx)
+                .map(|w| w.branch.as_str())
+                .unwrap_or("???");
+            draw_merge_conflict(f, branch_name, *selected);
+        }
+        Dialog::DirtyWorktree {
+            worktree_idx,
+            files,
+            selected,
+        } => {
+            let branch_name = app
+                .worktrees
+                .get(*worktree_idx)
+                .map(|w| w.branch.as_str())
+                .unwrap_or("???");
+            draw_dirty_worktree(f, branch_name, files, *selected);
+        }
+        Dialog::GitCommit {
+            unstaged,
+            staged,
+            section,
+            selected,
+            phase,
+            commit_message,
+            ..
+        } => {
+            draw_git_commit(f, unstaged, staged, *section, *selected, *phase, commit_message);
+        }
     }
 }
 
@@ -42,8 +95,8 @@ fn centered_rect(percent_x: u16, height: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn draw_create_worktree(f: &mut Frame, branch: &str, path: &str, focused: usize) {
-    let area = centered_rect(50, 8, f.area());
+fn draw_create_worktree(f: &mut Frame, branch: &str, base: &str, focused: usize) {
+    let area = centered_rect(50, 9, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -57,54 +110,152 @@ fn draw_create_worktree(f: &mut Frame, branch: &str, path: &str, focused: usize)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(1), // branch label
+            Constraint::Length(1), // branch input
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // base label
+            Constraint::Length(1), // base input
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // help
         ])
         .split(inner);
+
+    let branch_label_style = if focused == 0 {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    f.render_widget(
+        Paragraph::new("Branch name (also used as directory name):")
+            .style(branch_label_style),
+        chunks[0],
+    );
 
     let branch_style = if focused == 0 {
         Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(Color::Cyan)
     };
-    let path_style = if focused == 1 {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    let branch_display = if focused == 0 {
+        format!("{}_", branch)
     } else {
-        Style::default().fg(Color::White)
+        branch.to_string()
     };
-
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Branch: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{}_", branch),
-                branch_style,
-            ),
-        ])),
+        Paragraph::new(Line::from(Span::styled(branch_display, branch_style))),
         chunks[1],
     );
 
+    let base_label_style = if focused == 1 {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Path:   ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{}{}",
-                    path,
-                    if focused == 1 { "_" } else { "" }
-                ),
-                path_style,
-            ),
-        ])),
-        chunks[2],
+        Paragraph::new("Base branch:")
+            .style(base_label_style),
+        chunks[3],
+    );
+
+    let base_style = if focused == 1 {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
+    let base_display = if focused == 1 {
+        format!("{}_", base)
+    } else {
+        base.to_string()
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(base_display, base_style))),
+        chunks[4],
     );
 
     f.render_widget(
-        Paragraph::new("Enter: create  Esc: cancel  Tab: next field")
+        Paragraph::new("Enter: create  Tab: switch field  Esc: cancel")
             .style(Style::default().fg(Color::DarkGray)),
-        chunks[4],
+        chunks[6],
+    );
+}
+
+fn draw_merge(f: &mut Frame, source: &str, branches: &[String], selected: usize) {
+    // Height: title + target info + separator + branches (max 10) + separator + help
+    let visible_count = branches.len().min(10);
+    let height = (visible_count as u16) + 5;
+    let area = centered_rect(50, height, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Merge Branch ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // target info
+            Constraint::Length(1), // separator
+            Constraint::Min(1),   // branch list
+            Constraint::Length(1), // help
+        ])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Merge ", Style::default().fg(Color::Gray)),
+            Span::styled(source, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(" into:", Style::default().fg(Color::Gray)),
+        ])),
+        chunks[0],
+    );
+
+    f.render_widget(
+        Paragraph::new("Select target branch:")
+            .style(Style::default().fg(Color::Gray)),
+        chunks[1],
+    );
+
+    // Scrolling: keep selected in view
+    let list_height = chunks[2].height as usize;
+    let scroll_offset = if selected >= list_height {
+        selected - list_height + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = branches
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(list_height)
+        .map(|(idx, branch)| {
+            let is_sel = idx == selected;
+            let marker = if is_sel { ">" } else { " " };
+            let style = if is_sel {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(
+                format!(" {} {}", marker, branch),
+                style,
+            )))
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, chunks[2]);
+
+    f.render_widget(
+        Paragraph::new("j/k: select  Enter: merge  Esc: cancel")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[3],
     );
 }
 
@@ -138,5 +289,515 @@ fn draw_confirm(f: &mut Frame, message: &str) {
         Paragraph::new("Enter: yes  Esc: no")
             .style(Style::default().fg(Color::DarkGray)),
         chunks[2],
+    );
+}
+
+fn draw_init_repo(f: &mut Frame, url: &str, branch: &str, focused: usize) {
+    let area = centered_rect(60, 10, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Initialize Bare Repo ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // URL label
+            Constraint::Length(1), // URL input
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // branch label
+            Constraint::Length(1), // branch input
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // help
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+    let url_style = if focused == 0 {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let branch_style = if focused == 1 {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let url_label_style = if focused == 0 {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let branch_label_style = if focused == 1 {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    f.render_widget(
+        Paragraph::new("Remote URL (leave empty for local init):").style(url_label_style),
+        chunks[0],
+    );
+
+    let url_display = if url.is_empty() && focused == 0 {
+        "_".to_string()
+    } else if focused == 0 {
+        format!("{}_", url)
+    } else {
+        url.to_string()
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(url_display, url_style))),
+        chunks[1],
+    );
+
+    f.render_widget(
+        Paragraph::new("Initial branch name:").style(branch_label_style),
+        chunks[3],
+    );
+
+    let branch_display = if focused == 1 {
+        format!("{}_", branch)
+    } else {
+        branch.to_string()
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(branch_display, branch_style))),
+        chunks[4],
+    );
+
+    f.render_widget(
+        Paragraph::new("Tab: switch field  Enter: create  Esc: cancel")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[6],
+    );
+}
+
+fn draw_merge_conflict(f: &mut Frame, branch: &str, selected: usize) {
+    let options = ["VS Code", "JetBrains", "Claude", "Claude (skip perms)", "Abort merge"];
+    let height = (options.len() as u16) + 6;
+    let area = centered_rect(50, height, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Merge Conflict ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // conflict message
+            Constraint::Length(1), // separator
+            Constraint::Min(1),   // option list
+            Constraint::Length(1), // help
+        ])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Conflicts in ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                branch,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" — resolve with:", Style::default().fg(Color::Yellow)),
+        ])),
+        chunks[0],
+    );
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(idx, label)| {
+            let is_sel = idx == selected;
+            let marker = if is_sel { ">" } else { " " };
+            let style = if idx == options.len() - 1 {
+                // Abort option in red
+                if is_sel {
+                    Style::default()
+                        .fg(Color::Red)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Red)
+                }
+            } else if is_sel {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(
+                format!(" {} {}", marker, label),
+                style,
+            )))
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, chunks[2]);
+
+    f.render_widget(
+        Paragraph::new("j/k: select  Enter: open  Esc: close")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[3],
+    );
+}
+
+fn draw_rename_session(f: &mut Frame, name: &str) {
+    let area = centered_rect(50, 6, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Rename Session ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new("Nickname (empty to clear):")
+            .style(Style::default().fg(Color::Gray)),
+        chunks[0],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{}_", name),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        chunks[1],
+    );
+
+    f.render_widget(
+        Paragraph::new("Enter: save  Esc: cancel")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[3],
+    );
+}
+
+fn draw_dirty_worktree(
+    f: &mut Frame,
+    branch: &str,
+    files: &[(String, String)],
+    selected: usize,
+) {
+    let options = ["Commit changes", "Open with Claude", "Cancel"];
+    let visible_files = files.len().min(8);
+    // title(1) + info(1) + blank(1) + files + blank(1) + options(3) + blank(1) + help(1)
+    let height = (visible_files as u16) + (options.len() as u16) + 6;
+    let area = centered_rect(55, height, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Uncommitted Changes ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),                     // info line
+            Constraint::Length(1),                     // blank
+            Constraint::Length(visible_files as u16),  // file list
+            Constraint::Length(1),                     // blank
+            Constraint::Length(options.len() as u16),  // options
+            Constraint::Length(1),                     // help
+        ])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("'", Style::default().fg(Color::Gray)),
+            Span::styled(
+                branch,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("' has uncommitted changes:", Style::default().fg(Color::Gray)),
+        ])),
+        chunks[0],
+    );
+
+    // File list (read-only)
+    let file_items: Vec<ListItem> = files
+        .iter()
+        .take(visible_files)
+        .map(|(status, path)| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!(" {}  ", status),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(path.as_str(), Style::default().fg(Color::White)),
+            ]))
+        })
+        .collect();
+    f.render_widget(List::new(file_items), chunks[2]);
+
+    // Options
+    let option_items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(idx, label)| {
+            let is_sel = idx == selected;
+            let marker = if is_sel { ">" } else { " " };
+            let style = if idx == options.len() - 1 {
+                if is_sel {
+                    Style::default()
+                        .fg(Color::Red)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Red)
+                }
+            } else if is_sel {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(
+                format!(" {} {}", marker, label),
+                style,
+            )))
+        })
+        .collect();
+    f.render_widget(List::new(option_items), chunks[4]);
+
+    f.render_widget(
+        Paragraph::new("j/k: select  Enter: confirm  Esc: cancel")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[5],
+    );
+}
+
+fn draw_git_commit(
+    f: &mut Frame,
+    unstaged: &[(char, String)],
+    staged: &[(char, String)],
+    section: usize,
+    selected: usize,
+    phase: CommitPhase,
+    commit_message: &str,
+) {
+    match phase {
+        CommitPhase::Staging => {
+            draw_git_commit_staging(f, unstaged, staged, section, selected);
+        }
+        CommitPhase::Message => {
+            draw_git_commit_message(f, staged, commit_message);
+        }
+    }
+}
+
+fn draw_git_commit_staging(
+    f: &mut Frame,
+    unstaged: &[(char, String)],
+    staged: &[(char, String)],
+    section: usize,
+    selected: usize,
+) {
+    let unstaged_visible = unstaged.len().min(10);
+    let staged_visible = staged.len().min(10);
+    // unstaged header(1) + unstaged files + staged header(1) + staged files + blank(1) + help(1)
+    let height = (unstaged_visible as u16) + (staged_visible as u16) + 5;
+    let area = centered_rect(55, height, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Commit Changes ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),                       // unstaged header
+            Constraint::Length(unstaged_visible as u16), // unstaged files
+            Constraint::Length(1),                       // staged header
+            Constraint::Length(staged_visible as u16),   // staged files
+            Constraint::Length(1),                       // help
+        ])
+        .split(inner);
+
+    // Unstaged header
+    let unstaged_hdr_style = if section == 0 {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    f.render_widget(
+        Paragraph::new(format!("── Unstaged ({}) ──", unstaged.len()))
+            .style(unstaged_hdr_style),
+        chunks[0],
+    );
+
+    // Unstaged files
+    let unstaged_items: Vec<ListItem> = unstaged
+        .iter()
+        .enumerate()
+        .take(unstaged_visible)
+        .map(|(idx, (status, path))| {
+            let is_sel = section == 0 && idx == selected;
+            let marker = if is_sel { ">" } else { " " };
+            let style = if is_sel {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(
+                format!(" {} {} {}", marker, status, path),
+                style,
+            )))
+        })
+        .collect();
+    f.render_widget(List::new(unstaged_items), chunks[1]);
+
+    // Staged header
+    let staged_hdr_style = if section == 1 {
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    f.render_widget(
+        Paragraph::new(format!("── Staged ({}) ──", staged.len()))
+            .style(staged_hdr_style),
+        chunks[2],
+    );
+
+    // Staged files
+    let staged_items: Vec<ListItem> = staged
+        .iter()
+        .enumerate()
+        .take(staged_visible)
+        .map(|(idx, (status, path))| {
+            let is_sel = section == 1 && idx == selected;
+            let marker = if is_sel { ">" } else { " " };
+            let style = if is_sel {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(
+                format!(" {} {} {}", marker, status, path),
+                style,
+            )))
+        })
+        .collect();
+    f.render_widget(List::new(staged_items), chunks[3]);
+
+    f.render_widget(
+        Paragraph::new("Space: stage/unstage  a: all  Tab: section  c: commit  Esc: cancel")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[4],
+    );
+}
+
+fn draw_git_commit_message(
+    f: &mut Frame,
+    staged: &[(char, String)],
+    commit_message: &str,
+) {
+    let staged_visible = staged.len().min(8);
+    // staged header(1) + staged files + blank(1) + label(1) + input(1) + blank(1) + help(1)
+    let height = (staged_visible as u16) + 7;
+    let area = centered_rect(55, height, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Commit Changes ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),                     // staged header
+            Constraint::Length(staged_visible as u16), // staged files
+            Constraint::Length(1),                     // blank
+            Constraint::Length(1),                     // label
+            Constraint::Length(1),                     // input
+            Constraint::Length(1),                     // help
+        ])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(format!("── Staged ({}) ──", staged.len()))
+            .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        chunks[0],
+    );
+
+    let staged_items: Vec<ListItem> = staged
+        .iter()
+        .take(staged_visible)
+        .map(|(status, path)| {
+            ListItem::new(Line::from(Span::styled(
+                format!("  {} {}", status, path),
+                Style::default().fg(Color::White),
+            )))
+        })
+        .collect();
+    f.render_widget(List::new(staged_items), chunks[1]);
+
+    f.render_widget(
+        Paragraph::new("Commit message:")
+            .style(Style::default().fg(Color::Gray)),
+        chunks[3],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{}_", commit_message),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        chunks[4],
+    );
+
+    f.render_widget(
+        Paragraph::new("Enter: commit  Esc: back")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[5],
     );
 }

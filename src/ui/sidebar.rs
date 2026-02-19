@@ -7,6 +7,13 @@ use std::sync::atomic::Ordering;
 
 use crate::app::{App, FocusTarget, SidebarItem};
 
+/// Cursor/selection highlight (blue-tint).
+const SEL_BG: Color = Color::Rgb(50, 50, 60);
+/// Active session highlight (green-tint) — shows which session is in the terminal pane.
+const ACTIVE_BG: Color = Color::Rgb(30, 50, 35);
+/// Both selected and active.
+const SEL_ACTIVE_BG: Color = Color::Rgb(40, 55, 50);
+
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == FocusTarget::Sidebar;
 
@@ -21,7 +28,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(border_style);
 
-    // Available width inside the block (minus borders)
     let inner_width = area.width.saturating_sub(2) as usize;
 
     let items: Vec<ListItem> = app
@@ -32,103 +38,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             let is_selected = idx == app.sidebar_selected;
             match item {
                 SidebarItem::Worktree(wi) => {
-                    let wt = &app.worktrees[*wi];
-                    let icon = if wt.expanded { "▼" } else { "▶" };
-                    let session_count = if wt.session_ids.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" ({})", wt.session_ids.len())
-                    };
-                    let text = format!("{} {}{}", icon, wt.branch, session_count);
-                    let style = if is_selected {
-                        Style::default()
-                            .fg(Color::White)
-                            .bg(Color::DarkGray)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::White)
-                    };
-                    ListItem::new(Line::from(Span::styled(text, style)))
+                    render_worktree(app, *wi, is_selected, inner_width)
                 }
                 SidebarItem::Session(wi, si) => {
-                    let wt = &app.worktrees[*wi];
-                    let sid = wt.session_ids[*si];
-                    let session = app.sessions.get(&sid);
-                    let label = session
-                        .map(|s| s.label.as_str())
-                        .unwrap_or("???");
-                    let is_active_session = app.active_session_id == Some(sid);
-                    let is_exited = session
-                        .map(|s| s.exited.load(Ordering::Relaxed))
-                        .unwrap_or(true);
-                    let is_working = session
-                        .map(|s| s.is_active())
-                        .unwrap_or(false);
-                    let title = session.and_then(|s| s.terminal_title());
-
-                    // Status indicator
-                    let status_icon = if is_exited {
-                        "✗"
-                    } else if is_working {
-                        "⟳"
-                    } else if is_active_session {
-                        "●"
-                    } else {
-                        "○"
-                    };
-
-                    // Color
-                    let color = if is_exited {
-                        Color::DarkGray
-                    } else if is_working {
-                        Color::Yellow
-                    } else if is_active_session {
-                        Color::Green
-                    } else {
-                        Color::Gray
-                    };
-
-                    let bg = if is_selected {
-                        Color::DarkGray
-                    } else {
-                        Color::Reset
-                    };
-
-                    let bold = if is_selected {
-                        Modifier::BOLD
-                    } else {
-                        Modifier::empty()
-                    };
-
-                    // Build the line: "  ● label"  then title underneath if present
-                    let header = format!("  {} {}", status_icon, label);
-
-                    if let Some(ref title_str) = title {
-                        // Truncate title to fit
-                        let max_title = inner_width.saturating_sub(4);
-                        let truncated = if title_str.len() > max_title {
-                            format!("{}…", &title_str[..max_title.saturating_sub(1)])
-                        } else {
-                            title_str.clone()
-                        };
-
-                        let lines = vec![
-                            Line::from(Span::styled(
-                                header,
-                                Style::default().fg(color).bg(bg).add_modifier(bold),
-                            )),
-                            Line::from(Span::styled(
-                                format!("    {}", truncated),
-                                Style::default().fg(Color::Rgb(120, 120, 120)).bg(bg),
-                            )),
-                        ];
-                        ListItem::new(lines)
-                    } else {
-                        ListItem::new(Line::from(Span::styled(
-                            header,
-                            Style::default().fg(color).bg(bg).add_modifier(bold),
-                        )))
-                    }
+                    render_session(app, *wi, *si, is_selected, inner_width)
                 }
             }
         })
@@ -136,4 +49,155 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     let list = List::new(items).block(block);
     f.render_widget(list, area);
+}
+
+fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) -> ListItem<'static> {
+    let wt = &app.worktrees[wi];
+    let icon = if wt.expanded { "▼" } else { "▶" };
+
+    let total = wt.session_ids.len();
+    let alive = wt.session_ids.iter().filter(|sid| {
+        app.sessions.get(sid)
+            .map(|s| !s.exited.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    }).count();
+    let working = wt.session_ids.iter().filter(|sid| {
+        app.sessions.get(sid)
+            .map(|s| s.is_active())
+            .unwrap_or(false)
+    }).count();
+
+    let bg = if is_selected { SEL_BG } else { Color::Reset };
+    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+
+    let branch_style = Style::default()
+        .fg(Color::White)
+        .bg(bg)
+        .add_modifier(bold);
+
+    let mut spans = vec![
+        Span::styled(format!("{} {}", icon, wt.branch), branch_style),
+    ];
+
+    if total > 0 {
+        // Alive (non-exited) count in gray — how many instances spawned
+        spans.push(Span::styled(
+            format!(" {}", alive),
+            Style::default().fg(Color::DarkGray).bg(bg),
+        ));
+
+        if working > 0 {
+            // Actively processing count in yellow
+            spans.push(Span::styled(
+                format!(" {}", working),
+                Style::default().fg(Color::Yellow).bg(bg),
+            ));
+        }
+    }
+
+    // Pad to full width so the highlight covers the whole row
+    let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
+    if is_selected && text_len < inner_width {
+        spans.push(Span::styled(
+            " ".repeat(inner_width - text_len),
+            Style::default().bg(bg),
+        ));
+    }
+
+    ListItem::new(Line::from(spans))
+}
+
+fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_width: usize) -> ListItem<'static> {
+    let wt = &app.worktrees[wi];
+    let sid = wt.session_ids[si];
+    let session = app.sessions.get(&sid);
+    let is_active_session = app.active_session_id == Some(sid);
+    let is_exited = session
+        .map(|s| s.exited.load(Ordering::SeqCst))
+        .unwrap_or(true);
+    let is_working = session
+        .map(|s| s.is_active())
+        .unwrap_or(false);
+    let nickname = session.and_then(|s| s.nickname.clone());
+    let title = session.and_then(|s| s.terminal_title());
+
+    // Prefer nickname, then terminal title (stripped of Claude status chars), then label.
+    let display_name = nickname.unwrap_or_else(|| {
+        title
+            .unwrap_or_else(|| {
+                session
+                    .map(|s| s.label.clone())
+                    .unwrap_or_else(|| "???".to_string())
+            })
+            .trim_start_matches('✳')
+            .trim_start_matches('⠂')
+            .trim_start_matches('⠐')
+            .trim_start()
+            .to_string()
+    });
+
+    // Status indicator — only reflects working state, not active selection
+    let status_icon = if is_exited {
+        "✗"
+    } else if is_working {
+        "⟳"
+    } else {
+        "○"
+    };
+
+    // Status color — only reflects working state
+    let fg = if is_exited {
+        Color::DarkGray
+    } else if is_working {
+        Color::Yellow
+    } else {
+        Color::Gray
+    };
+
+    // Background: selection highlight and active session highlight are independent
+    let has_bg = is_selected || is_active_session;
+    let bg = match (is_selected, is_active_session) {
+        (true, true) => SEL_ACTIVE_BG,
+        (true, false) => SEL_BG,
+        (false, true) => ACTIVE_BG,
+        (false, false) => Color::Reset,
+    };
+    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+
+    // When highlighted, bump dim text to lighter so it's readable
+    let sel_fg = if has_bg {
+        match fg {
+            Color::DarkGray => Color::Gray,
+            Color::Gray => Color::White,
+            other => other,
+        }
+    } else {
+        fg
+    };
+
+    // Truncate to fit sidebar width
+    let prefix = format!("  {} ", status_icon);
+    let max_name = inner_width.saturating_sub(prefix.len());
+    let truncated = if display_name.len() > max_name && max_name > 1 {
+        format!("{}…", &display_name[..max_name.saturating_sub(1)])
+    } else {
+        display_name
+    };
+
+    let text = format!("{}{}", prefix, truncated);
+
+    let mut spans = vec![
+        Span::styled(text, Style::default().fg(sel_fg).bg(bg).add_modifier(bold)),
+    ];
+
+    // Pad to full width so the highlight covers the whole row
+    let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
+    if has_bg && text_len < inner_width {
+        spans.push(Span::styled(
+            " ".repeat(inner_width - text_len),
+            Style::default().bg(bg),
+        ));
+    }
+
+    ListItem::new(Line::from(spans))
 }

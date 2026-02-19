@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, native_pty_system, PtySize};
 use std::io::{Read, Write};
 use std::path::Path;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
@@ -49,9 +50,243 @@ pub struct PtyHandle {
     pub master_pty: Box<dyn portable_pty::MasterPty + Send>,
     pub exited: Arc<AtomicBool>,
     pub last_output: Arc<RwLock<Instant>>,
+    /// If this session is backed by tmux, the tmux session name.
+    pub tmux_session_name: Option<String>,
 }
 
-/// Spawn a `claude` process in a PTY within the given working directory.
+/// Prefix for all tmux sessions we manage.
+const TMUX_PREFIX: &str = "wctui";
+
+/// Check if tmux is available on the system.
+pub fn tmux_available() -> bool {
+    Command::new("tmux")
+        .arg("-V")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Sanitize a string for use in a tmux session name.
+fn sanitize_tmux_name(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect()
+}
+
+/// Generate a unique tmux session name for a worktree branch + session id.
+pub fn tmux_session_name(branch: &str, session_id: u64) -> String {
+    let base = format!("{}-{}-{}", TMUX_PREFIX, sanitize_tmux_name(branch), session_id);
+    // If name already taken, append a suffix
+    if tmux_session_exists(&base) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        format!("{}-{}", base, ts % 10000)
+    } else {
+        base
+    }
+}
+
+/// Check if a tmux session with the given name exists.
+fn tmux_session_exists(name: &str) -> bool {
+    Command::new("tmux")
+        .args(["has-session", "-t", name])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Environment variable we set inside tmux to track the original worktree path.
+const TMUX_WORKTREE_ENV: &str = "WCTUI_WORKTREE";
+
+/// List all tmux sessions that belong to us (prefixed with TMUX_PREFIX).
+/// Returns (session_name, worktree_path) pairs.
+pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf)> {
+    let output = match Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let our_sessions: Vec<String> = stdout
+        .lines()
+        .filter(|name| name.starts_with(TMUX_PREFIX))
+        .map(|s| s.to_string())
+        .collect();
+
+    let mut results = Vec::new();
+    for name in our_sessions {
+        // First try our env var (reliable — set at creation time)
+        let env_output = Command::new("tmux")
+            .args(["show-environment", "-t", &name, TMUX_WORKTREE_ENV])
+            .output();
+
+        let path = if let Ok(o) = &env_output {
+            if o.status.success() {
+                // Output is "WCTUI_WORKTREE=/path/to/worktree\n"
+                let line = String::from_utf8_lossy(&o.stdout);
+                line.trim()
+                    .strip_prefix(&format!("{}=", TMUX_WORKTREE_ENV))
+                    .map(|p| p.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Fall back to pane_current_path if env var not set (old sessions)
+        let path = path.or_else(|| {
+            Command::new("tmux")
+                .args(["display-message", "-t", &name, "-p", "#{pane_current_path}"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        });
+
+        if let Some(p) = path {
+            if !p.is_empty() {
+                results.push((name, std::path::PathBuf::from(p)));
+            }
+        }
+    }
+
+    results
+}
+
+/// Spawn a `claude` process inside a tmux session, then attach to it via PTY.
+pub fn spawn_claude_pty_tmux(
+    working_dir: &Path,
+    session_id: u64,
+    event_tx: mpsc::UnboundedSender<AppEvent>,
+    rows: u16,
+    cols: u16,
+    skip_permissions: bool,
+    tmux_name: &str,
+    initial_prompt: Option<&str>,
+) -> Result<PtyHandle> {
+    // Create the tmux session running claude
+    let mut tmux_args = vec![
+        "new-session".to_string(),
+        "-d".to_string(),
+        "-s".to_string(),
+        tmux_name.to_string(),
+        "-x".to_string(),
+        cols.to_string(),
+        "-y".to_string(),
+        rows.to_string(),
+    ];
+    // Run claude with COLORTERM=truecolor so it emits 24-bit RGB colors
+    tmux_args.push("env".to_string());
+    tmux_args.push("COLORTERM=truecolor".to_string());
+    tmux_args.push("claude".to_string());
+    if skip_permissions {
+        tmux_args.push("--dangerously-skip-permissions".to_string());
+    }
+    if let Some(prompt) = initial_prompt {
+        tmux_args.push(prompt.to_string());
+    }
+
+    // Enable truecolor passthrough in tmux so it doesn't downgrade RGB to 256-color
+    let _ = Command::new("tmux")
+        .args(["set", "-as", "terminal-overrides", ",xterm-256color:Tc"])
+        .output();
+
+    let output = Command::new("tmux")
+        .args(&tmux_args)
+        .current_dir(working_dir)
+        .env("TERM", "xterm-256color")
+        .output()
+        .context("Failed to create tmux session")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "tmux new-session failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // Store the worktree path and COLORTERM in the tmux session environment
+    let _ = Command::new("tmux")
+        .args([
+            "set-environment",
+            "-t",
+            tmux_name,
+            TMUX_WORKTREE_ENV,
+            &working_dir.to_string_lossy(),
+        ])
+        .output();
+    let _ = Command::new("tmux")
+        .args(["set-environment", "-t", tmux_name, "COLORTERM", "truecolor"])
+        .output();
+
+    // Clear the default pane title (usually username@host) so it doesn't
+    // show up before Claude sets its own title
+    let _ = Command::new("tmux")
+        .args(["select-pane", "-t", tmux_name, "-T", ""])
+        .output();
+
+    // Now attach to that tmux session via a PTY
+    attach_tmux_session(tmux_name, session_id, event_tx, rows, cols)
+}
+
+/// Query the pane title from an existing tmux session.
+pub fn query_tmux_pane_title(tmux_name: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args(["display-message", "-t", tmux_name, "-p", "#{pane_title}"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !title.is_empty() {
+            return Some(title);
+        }
+    }
+    None
+}
+
+/// Attach to an existing tmux session via a PTY.
+pub fn attach_tmux_session(
+    tmux_name: &str,
+    session_id: u64,
+    event_tx: mpsc::UnboundedSender<AppEvent>,
+    rows: u16,
+    cols: u16,
+) -> Result<PtyHandle> {
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .context("Failed to open PTY")?;
+
+    let mut cmd = CommandBuilder::new("tmux");
+    cmd.args(["attach-session", "-t", tmux_name]);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+
+    // Query existing pane title before attaching (so it's preserved on reconnect)
+    let existing_title = query_tmux_pane_title(tmux_name);
+
+    let _child = pair
+        .slave
+        .spawn_command(cmd)
+        .context("Failed to attach to tmux session")?;
+
+    drop(pair.slave);
+
+    setup_pty_threads(pair.master, session_id, event_tx, rows, cols, Some(tmux_name.to_string()), existing_title)
+}
+
+/// Spawn a `claude` process directly in a PTY (no tmux).
 pub fn spawn_claude_pty(
     working_dir: &Path,
     session_id: u64,
@@ -59,6 +294,7 @@ pub fn spawn_claude_pty(
     rows: u16,
     cols: u16,
     skip_permissions: bool,
+    initial_prompt: Option<&str>,
 ) -> Result<PtyHandle> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -74,8 +310,12 @@ pub fn spawn_claude_pty(
     if skip_permissions {
         cmd.arg("--dangerously-skip-permissions");
     }
+    if let Some(prompt) = initial_prompt {
+        cmd.arg(prompt);
+    }
     cmd.cwd(working_dir);
     cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
 
     let _child = pair
         .slave
@@ -84,7 +324,23 @@ pub fn spawn_claude_pty(
 
     drop(pair.slave);
 
-    let callbacks = TitleCallbacks::new();
+    setup_pty_threads(pair.master, session_id, event_tx, rows, cols, None, None)
+}
+
+/// Common PTY reader/writer thread setup.
+fn setup_pty_threads(
+    master: Box<dyn portable_pty::MasterPty + Send>,
+    session_id: u64,
+    event_tx: mpsc::UnboundedSender<AppEvent>,
+    rows: u16,
+    cols: u16,
+    tmux_session_name: Option<String>,
+    initial_title: Option<String>,
+) -> Result<PtyHandle> {
+    let mut callbacks = TitleCallbacks::new();
+    if let Some(title) = initial_title {
+        callbacks.title = title;
+    }
     let parser = Arc::new(RwLock::new(
         vt100::Parser::new_with_callbacks(rows, cols, 1000, callbacks),
     ));
@@ -96,8 +352,7 @@ pub fn spawn_claude_pty(
     let reader_exited = Arc::clone(&exited);
     let reader_tx = event_tx.clone();
     let reader_last_output = Arc::clone(&last_output);
-    let mut reader = pair
-        .master
+    let mut reader = master
         .try_clone_reader()
         .context("Failed to clone PTY reader")?;
 
@@ -133,8 +388,7 @@ pub fn spawn_claude_pty(
 
     // ── Writer thread (plain OS thread) ────────────────────────────
     let (write_tx, mut write_rx) = mpsc::unbounded_channel::<bytes::Bytes>();
-    let mut writer = pair
-        .master
+    let mut writer = master
         .take_writer()
         .context("Failed to take PTY writer")?;
 
@@ -159,8 +413,9 @@ pub fn spawn_claude_pty(
     Ok(PtyHandle {
         parser,
         write_tx,
-        master_pty: pair.master,
+        master_pty: master,
         exited,
         last_output,
+        tmux_session_name,
     })
 }

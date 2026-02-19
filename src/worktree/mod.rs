@@ -5,6 +5,14 @@ use std::path::{Path, PathBuf};
 
 use crate::app::App;
 
+/// Cached git status info for display in the worktree info panel.
+#[derive(Debug, Clone)]
+pub struct WorktreeStatus {
+    pub files: Vec<git::FileChange>,
+    pub recent_commits: Vec<String>,
+    pub head_subject: String,
+}
+
 /// A worktree with its associated sessions.
 #[derive(Debug, Clone)]
 pub struct Worktree {
@@ -62,11 +70,6 @@ pub fn refresh_worktrees(app: &mut App) -> Result<()> {
     Ok(())
 }
 
-/// Create a new worktree.
-pub fn create_worktree(app: &App, branch: &str, rel_path: &str) -> Result<()> {
-    git::create_worktree(&app.bare_repo_path, branch, rel_path)
-}
-
 /// Remove a worktree. Kills any associated sessions first.
 pub fn remove_worktree(app: &mut App, worktree_path: &Path) -> Result<()> {
     // Kill sessions associated with this worktree
@@ -92,14 +95,78 @@ pub fn force_remove_worktree(app: &mut App, worktree_path: &Path) -> Result<()> 
     git::force_remove_worktree(&app.bare_repo_path, worktree_path)
 }
 
+/// Check if a worktree's working tree is clean (all changes committed).
+pub fn is_worktree_clean(app: &App, worktree_idx: usize) -> Result<bool> {
+    let wt = app.worktrees.get(worktree_idx)
+        .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
+    git::is_worktree_clean(&wt.path)
+}
+
+/// Find the worktree index for a given branch name, if one exists.
+pub fn find_worktree_for_branch(app: &App, branch: &str) -> Option<usize> {
+    app.worktrees.iter().position(|wt| wt.branch == branch)
+}
+
 /// Merge a source branch into a target worktree's branch.
-pub fn merge_into_worktree(app: &App, worktree_idx: usize, source_branch: &str) -> Result<String> {
+pub fn merge_into_worktree(app: &App, worktree_idx: usize, source_branch: &str) -> Result<git::MergeResult> {
     let wt = app.worktrees.get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
     git::merge_branch(&wt.path, source_branch)
 }
 
+/// Abort a merge in progress on the given worktree.
+pub fn merge_abort(app: &App, worktree_idx: usize) -> Result<()> {
+    let wt = app.worktrees.get(worktree_idx)
+        .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
+    git::merge_abort(&wt.path)
+}
+
+/// Fetch worktree status (file changes, recent commits, HEAD subject) for display.
+pub fn fetch_worktree_status(app: &App, worktree_idx: usize) -> Result<WorktreeStatus> {
+    let wt = app.worktrees.get(worktree_idx)
+        .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
+    let files = git::status_porcelain(&wt.path)?;
+    let recent_commits = git::log_oneline(&wt.path, 10).unwrap_or_default();
+    let head_subject = git::head_subject(&wt.path).unwrap_or_default();
+    Ok(WorktreeStatus { files, recent_commits, head_subject })
+}
+
 /// List branches available for merging.
 pub fn available_branches(app: &App) -> Result<Vec<String>> {
     git::list_branches(&app.bare_repo_path)
+}
+
+/// Get file status for a worktree (porcelain format).
+pub fn status_porcelain(app: &App, worktree_idx: usize) -> Result<Vec<git::FileChange>> {
+    let wt = app.worktrees.get(worktree_idx)
+        .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
+    git::status_porcelain(&wt.path)
+}
+
+/// Stage a single file in a worktree.
+pub fn stage_file(app: &App, worktree_idx: usize, file: &str) -> Result<()> {
+    let wt = app.worktrees.get(worktree_idx)
+        .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
+    git::stage_file(&wt.path, file)
+}
+
+/// Unstage a single file in a worktree.
+pub fn unstage_file(app: &App, worktree_idx: usize, file: &str) -> Result<()> {
+    let wt = app.worktrees.get(worktree_idx)
+        .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
+    git::unstage_file(&wt.path, file)
+}
+
+/// Stage all files in a worktree.
+pub fn stage_all(app: &App, worktree_idx: usize) -> Result<()> {
+    let wt = app.worktrees.get(worktree_idx)
+        .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
+    git::stage_all(&wt.path)
+}
+
+/// Commit staged changes in a worktree.
+pub fn commit(app: &App, worktree_idx: usize, message: &str) -> Result<()> {
+    let wt = app.worktrees.get(worktree_idx)
+        .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
+    git::commit(&wt.path, message)
 }

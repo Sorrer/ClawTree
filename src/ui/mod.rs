@@ -2,9 +2,13 @@ pub mod dialogs;
 pub mod sidebar;
 pub mod status_bar;
 pub mod terminal_pane;
+pub mod welcome;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::App;
 
@@ -18,7 +22,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
-    if app.sidebar_visible {
+    if !app.repo_detected {
+        welcome::draw(f, app, chunks[0]);
+    } else if app.sidebar_visible {
         let main_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -39,4 +45,34 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.dialog.is_some() {
         dialogs::draw(f, app);
     }
+
+    // Draw loading overlay on top of everything
+    if let Some(ref msg) = app.loading_message {
+        draw_loading_overlay(f, msg);
+    }
+}
+
+fn draw_loading_overlay(f: &mut Frame, message: &str) {
+    let width = (message.len() as u16 + 6).max(20).min(f.area().width);
+    let area = centered_rect(width, 3, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let line = Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(message, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+    ]);
+    f.render_widget(Paragraph::new(line), inner);
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    Rect::new(x, y, width.min(area.width), height.min(area.height))
 }
