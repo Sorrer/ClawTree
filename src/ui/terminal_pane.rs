@@ -15,7 +15,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == FocusTarget::TerminalPane;
 
     let border_style = if is_focused {
-        Style::default().fg(theme::BORDER_FOCUSED).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme::BORDER_FOCUSED_TERMINAL).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::BORDER_UNFOCUSED)
     };
@@ -95,9 +95,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             match session.parser.try_read() {
                 Ok(guard) => {
                     let screen = guard.screen();
-                    let pseudo_term = tui_term::widget::PseudoTerminal::new(screen)
-                        .block(block);
-                    f.render_widget(pseudo_term, area);
+                    render_vt100_screen(f, screen, block, area);
                     return;
                 }
                 Err(_) => {
@@ -366,7 +364,7 @@ fn capture_tmux_pane(tmux_name: &str, start: i64, end: i64) -> Option<String> {
 }
 
 /// Query the number of lines in the tmux pane's scrollback history.
-fn tmux_history_size(tmux_name: &str) -> usize {
+pub fn tmux_history_size(tmux_name: &str) -> usize {
     std::process::Command::new("tmux")
         .args(["display-message", "-t", tmux_name, "-p", "#{history_size}"])
         .output()
@@ -422,5 +420,75 @@ fn draw_scrollbar(f: &mut Frame, area: Rect, total_lines: usize, scroll_offset: 
                 cell.set_fg(theme::SCROLLBAR_TRACK);
             }
         }
+    }
+}
+
+/// Render a vt100 screen into a ratatui frame with full attribute support.
+///
+/// This replaces `tui_term::widget::PseudoTerminal` which drops the `dim`
+/// attribute (SGR 2).  Claude Code uses dim for placeholder/hint text, so
+/// without this the placeholders render at full intensity — the same color
+/// as regular typed text.
+fn render_vt100_screen(f: &mut Frame, screen: &vt100::Screen, block: Block, area: Rect) {
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let (screen_rows, screen_cols) = screen.size();
+    let buf = f.buffer_mut();
+
+    for row in 0..inner.height.min(screen_rows) {
+        for col in 0..inner.width.min(screen_cols) {
+            if let Some(cell) = screen.cell(row, col) {
+                // Skip the trailing half of wide (CJK) characters
+                if cell.is_wide_continuation() {
+                    continue;
+                }
+
+                let buf_x = inner.x + col;
+                let buf_y = inner.y + row;
+                if buf_x >= buf.area().right() || buf_y >= buf.area().bottom() {
+                    continue;
+                }
+
+                let buf_cell = &mut buf[(buf_x, buf_y)];
+
+                if cell.has_contents() {
+                    buf_cell.set_symbol(cell.contents());
+                }
+
+                let fg = convert_vt100_color(cell.fgcolor());
+                let bg = convert_vt100_color(cell.bgcolor());
+
+                let mut style = Style::reset();
+                if cell.bold() {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                if cell.dim() {
+                    style = style.add_modifier(Modifier::DIM);
+                }
+                if cell.italic() {
+                    style = style.add_modifier(Modifier::ITALIC);
+                }
+                if cell.underline() {
+                    style = style.add_modifier(Modifier::UNDERLINED);
+                }
+                if cell.inverse() {
+                    style = style.add_modifier(Modifier::REVERSED);
+                }
+
+                buf_cell.set_style(style);
+                buf_cell.set_fg(fg);
+                buf_cell.set_bg(bg);
+            }
+        }
+    }
+}
+
+/// Convert a vt100 color to a ratatui color.
+fn convert_vt100_color(color: vt100::Color) -> Color {
+    match color {
+        vt100::Color::Default => Color::Reset,
+        vt100::Color::Idx(i) => Color::Indexed(i),
+        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
     }
 }

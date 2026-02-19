@@ -5,20 +5,21 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
+use super::theme;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let has_regular_repo = app.regular_repo_path.is_some();
 
     let block = Block::default()
-        .title(" Worktree Claude TUI ")
+        .title(" clawtree ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::BRAND_CLAW));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Center the content vertically
-    let content_height = if has_regular_repo { 14u16 } else { 12u16 };
+    // Logo (3 lines) + blank + content
+    let content_height = if has_regular_repo { 20u16 } else { 18u16 };
     let v_pad = inner.height.saturating_sub(content_height) / 2;
 
     let chunks = Layout::default()
@@ -40,45 +41,77 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         "No git bare repo detected"
     };
 
-    let mut lines = vec![
-        Line::from(Span::styled(
-            header,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Directory: ", Style::default().fg(Color::Gray)),
-            Span::styled(&dir_display, Style::default().fg(Color::White)),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "This tool manages git worktrees with a .bare repo layout:",
-            Style::default().fg(Color::Gray),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  project/",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(Span::styled(
-            "  +-- .bare/          (bare git repository)",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(Span::styled(
-            "  +-- .git            (gitdir pointer to .bare)",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(Span::styled(
-            "  +-- main/           (worktree for main branch)",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Press ", Style::default().fg(Color::Gray)),
-            Span::styled("i", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled(" to initialize a new bare repo workflow", Style::default().fg(Color::Gray)),
-        ]),
-    ];
+    let claw_style = Style::default()
+        .fg(theme::BRAND_CLAW)
+        .add_modifier(Modifier::BOLD);
+    let text_style = Style::default().fg(theme::BRAND_NAME);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // ── Big ASCII logo ──────────────────────────────────────────
+    // Each line has claw marks (green bold) + letter forms (darker green)
+    for logo_line in theme::LOGO_BIG {
+        // Split at the boundary between claw marks and text.
+        // Claw marks are the leading `╱ ╱ ╱` portion (first 10 chars).
+        let (claw_part, text_part) = if logo_line.len() > 10 {
+            let boundary = logo_line
+                .char_indices()
+                .take_while(|(_, c)| *c == '╱' || *c == ' ')
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(0);
+            (&logo_line[..boundary], &logo_line[boundary..])
+        } else {
+            (*logo_line, "")
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(claw_part, claw_style),
+            Span::styled(text_part, text_style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(""));
+
+    // ── Info content ────────────────────────────────────────────
+    lines.push(Line::from(Span::styled(
+        header,
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Directory: ", Style::default().fg(Color::Gray)),
+        Span::styled(&dir_display, Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "This tool manages git worktrees with a .bare repo layout:",
+        Style::default().fg(Color::Gray),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  project/",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  +-- .bare/          (bare git repository)",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  +-- .git            (gitdir pointer to .bare)",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  +-- main/           (worktree for main branch)",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Press ", Style::default().fg(Color::Gray)),
+        Span::styled("i", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" to initialize a new bare repo workflow", Style::default().fg(Color::Gray)),
+    ]));
 
     if has_regular_repo {
         lines.push(Line::from(""));

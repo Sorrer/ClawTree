@@ -1,4 +1,8 @@
-# Clawtree (Worktree Claude TUI)
+```
+  ╱ ╱ ╱   ╔═╗ ╦   ╔═╗ ╦ ╦ ╔╦╗ ╦═╗ ╔═╗ ╔═╗
+ ╱ ╱ ╱    ║   ║   ╠═╣ ║║║  ║  ╠╦╝ ║╣  ║╣
+╱ ╱ ╱     ╚═╝ ╩═╝ ╩ ╩ ╚╩╝  ╩  ╩╚═ ╚═╝ ╚═╝
+```
 
 A terminal-based UI for managing git worktrees with integrated Claude Code sessions. Built for the "bare repository" workflow where a project uses a `.bare/` directory with multiple worktree directories for different branches.
 

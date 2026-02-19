@@ -92,38 +92,96 @@ impl Session {
         }
     }
 
-    /// Check if terminal content contains Claude Code's input prompt.
+    /// Check if terminal content contains Claude Code's idle input prompt.
     /// Claude Code uses `❯` (U+276F) as the prompt character, rendered inside
     /// box-drawing borders: `│ ❯ │` or `│ ❯ placeholder text │`.
     ///
-    /// The key signal is `❯` (or `>` / `›`) appearing as the first non-whitespace
-    /// character between box-drawing borders. Placeholder text after the arrow
-    /// is ignored — it's just a hint shown when the input field is empty.
-    /// When Claude is processing, the area between borders shows different content
-    /// (spinner, status), so the presence of the arrow means "idle, ready for input".
+    /// The input prompt area is separated from the output by a horizontal
+    /// separator (`├───┤`). Selection/choice menus (e.g. "Yes/No" for clearing
+    /// context) also use `❯` as the cursor but appear inline in the content
+    /// area without a separator above them.
+    ///
+    /// Detection logic:
+    /// - `❯` with no text after it → idle input prompt (always true)
+    /// - `❯` with text after it → only idle if a `├───┤` separator is directly
+    ///   above (meaning we're in the input area, not a selection menu)
     fn content_has_input_prompt(content: &str) -> bool {
-        for line in content.lines() {
+        let bottom_lines: Vec<&str> = content
+            .lines()
+            .rev()
+            .filter(|l| !l.trim().is_empty())
+            .take(8)
+            .collect();
+
+        // Find the first ❯ line from the bottom
+        let mut prompt_idx: Option<usize> = None;
+        let mut prompt_has_text = false;
+
+        for (i, line) in bottom_lines.iter().enumerate() {
             let trimmed = line.trim().trim_matches('\u{a0}').trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            // Strip box-drawing borders from both sides
+            if trimmed.is_empty() { continue; }
+
             let stripped = trimmed
                 .trim_start_matches(|c: char| c == '│' || c == '┃' || c == '|')
                 .trim_end_matches(|c: char| c == '│' || c == '┃' || c == '|')
                 .trim()
                 .trim_matches('\u{a0}')
                 .trim();
-            if !stripped.is_empty() && Self::starts_with_prompt(stripped) {
-                return true;
+            if stripped.is_empty() { continue; }
+
+            if Self::starts_with_prompt(stripped) {
+                prompt_idx = Some(i);
+                let after = stripped
+                    .trim_start_matches(|c: char| c == '❯' || c == '›')
+                    .trim();
+                prompt_has_text = !after.is_empty();
+                break;
             }
         }
+
+        let idx = match prompt_idx {
+            Some(i) => i,
+            None => return false,
+        };
+
+        // ❯ with no text after it → definitely the idle input prompt
+        if !prompt_has_text {
+            return true;
+        }
+
+        // ❯ followed by text → could be user input in the prompt area, or a
+        // selection menu option. Check for a horizontal separator (├───┤) above
+        // it which marks the boundary between output and input areas.
+        for j in (idx + 1)..bottom_lines.len() {
+            let above = bottom_lines[j].trim();
+            if above.is_empty() { continue; }
+
+            // Skip lines that are empty inside their borders
+            let inner = above
+                .trim_start_matches(|c: char| c == '│' || c == '┃' || c == '|')
+                .trim_end_matches(|c: char| c == '│' || c == '┃' || c == '|')
+                .trim()
+                .trim_matches('\u{a0}')
+                .trim();
+            if inner.is_empty() { continue; }
+
+            // Horizontal separator: line containing ├ or ┣
+            if above.contains('├') || above.contains('┣') {
+                return true;
+            }
+
+            // Hit non-separator content → not in the input area
+            break;
+        }
+
         false
     }
 
-    /// Returns true if the string starts with a prompt character (❯, >, ›).
+    /// Returns true if the string starts with Claude Code's prompt character.
+    /// Only matches `❯` (U+276F) and `›` (U+203A) — NOT plain `>` which appears
+    /// too frequently in build output, error messages, and shell commands.
     fn starts_with_prompt(s: &str) -> bool {
-        matches!(s.chars().next(), Some('❯') | Some('>') | Some('›'))
+        matches!(s.chars().next(), Some('❯') | Some('›'))
     }
 
     /// Compute the agent status for mini mode display.
@@ -181,12 +239,21 @@ impl Session {
 }
 
 /// Extract a summary from the session's visible terminal output.
-/// Captures the last non-empty output block above the prompt (up to 5 lines),
-/// stripping box-drawing characters.
+///
+/// First tries to find content wrapped in `<IMPORTANT_CLAWTREE_OUTPUT>` XML tags
+/// (which Claude produces when instructed by the mini mode pre-input instruction).
+/// Falls back to capturing the last non-empty output block above the prompt
+/// (up to 5 lines), stripping box-drawing characters.
 pub fn extract_summary(session: &Session) -> Option<String> {
     let content = session.get_visible_content();
     if content.is_empty() {
         return None;
+    }
+
+    // Try to extract from <IMPORTANT_CLAWTREE_OUTPUT> tags first.
+    // Look for the *last* occurrence in case there are multiple.
+    if let Some(tagged) = extract_clawtree_tagged_output(&content) {
+        return Some(tagged);
     }
 
     let lines: Vec<&str> = content.lines()
@@ -235,6 +302,40 @@ pub fn extract_summary(session: &Session) -> Option<String> {
         None
     } else {
         Some(summary_lines.join("\n"))
+    }
+}
+
+/// Extract content from the last `<IMPORTANT_CLAWTREE_OUTPUT>...</IMPORTANT_CLAWTREE_OUTPUT>`
+/// block in the terminal output. The tags may be split across lines and may have
+/// box-drawing characters around them (since they're rendered inside Claude's TUI).
+fn extract_clawtree_tagged_output(content: &str) -> Option<String> {
+    const OPEN_TAG: &str = "<IMPORTANT_CLAWTREE_OUTPUT>";
+    const CLOSE_TAG: &str = "</IMPORTANT_CLAWTREE_OUTPUT>";
+
+    // Strip box-drawing chars from each line before searching for tags,
+    // since the terminal wraps everything in │ ... │ borders.
+    let cleaned: String = content
+        .lines()
+        .map(|l| {
+            l.trim()
+                .trim_start_matches(|c: char| c == '│' || c == '┃' || c == '|')
+                .trim_end_matches(|c: char| c == '│' || c == '┃' || c == '|')
+                .trim()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Find the last occurrence of the tags
+    let open_pos = cleaned.rfind(OPEN_TAG)?;
+    let after_open = open_pos + OPEN_TAG.len();
+    let close_pos = cleaned[after_open..].rfind(CLOSE_TAG)?;
+    let inner = &cleaned[after_open..after_open + close_pos];
+
+    let trimmed = inner.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -365,6 +466,7 @@ pub struct TmuxSessionInfo {
     pub tmux_name: String,
     pub current_title: String,
     pub exited: bool,
+    pub worktree_path: String,
 }
 
 /// Collect tmux session info from the app for the background poller.
@@ -381,6 +483,7 @@ pub fn collect_tmux_session_info(app: &App) -> Vec<TmuxSessionInfo> {
                     .map(|p| p.callbacks().title.clone())
                     .unwrap_or_default(),
                 exited: s.exited.load(Ordering::SeqCst),
+                worktree_path: s.worktree_path.to_string_lossy().to_string(),
             })
         })
         .collect()
@@ -501,6 +604,22 @@ pub fn resize_all(app: &App, rows: u16, cols: u16) {
                 pixel_width: 0,
                 pixel_height: 0,
             });
+
+            // Explicitly resize the tmux window so the inner pane matches.
+            // Relying solely on the PTY resize propagating through the
+            // `tmux attach` client is unreliable — tmux may ignore the
+            // client size change depending on window-size policy or when
+            // multiple clients are attached.
+            if let Some(ref tmux_name) = session.tmux_session_name {
+                let _ = std::process::Command::new("tmux")
+                    .args([
+                        "resize-window",
+                        "-t", tmux_name,
+                        "-x", &pane_cols.to_string(),
+                        "-y", &pane_rows.to_string(),
+                    ])
+                    .output();
+            }
         }
     }
 }
@@ -588,7 +707,15 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
 }
 
 /// Spawn a background thread that polls Claude Code debug logs for context
-/// window usage and sends events when usage data is found.
+/// window usage using pure file I/O (no subprocess calls).
+///
+/// Discovery strategy (for unclaimed sessions only):
+/// 1. Scan /proc for processes with .claude/tasks/<uuid> fds (pure file I/O).
+/// 2. Match the process CWD to the session's worktree path.
+/// 3. Use the UUID to find the corresponding debug log file.
+///
+/// Once discovered, debug file paths are cached and subsequent polls just
+/// read the last 8KB of the cached file (microseconds per session).
 pub fn spawn_claude_usage_poller(
     event_tx: tokio::sync::mpsc::UnboundedSender<crate::event::AppEvent>,
     session_info: std::sync::Arc<std::sync::Mutex<Vec<TmuxSessionInfo>>>,
@@ -596,27 +723,118 @@ pub fn spawn_claude_usage_poller(
     std::thread::Builder::new()
         .name("claude-usage-poller".into())
         .spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_secs(5));
+            let mut path_cache: std::collections::HashMap<u64, String> =
+                std::collections::HashMap::new();
 
-                let sessions = {
-                    match session_info.lock() {
-                        Ok(guard) => guard.clone(),
-                        Err(_) => continue,
-                    }
+            // Brief startup delay so the TUI renders immediately
+            std::thread::sleep(Duration::from_secs(2));
+
+            loop {
+                std::thread::sleep(Duration::from_secs(2));
+
+                let sessions = match session_info.lock() {
+                    Ok(guard) => guard.clone(),
+                    Err(_) => continue,
                 };
 
                 if sessions.is_empty() {
                     continue;
                 }
 
-                let mut updates = Vec::new();
-                for info in &sessions {
-                    if info.exited {
-                        continue;
+                // Prune cache: remove sessions that no longer exist
+                let active_ids: std::collections::HashSet<u64> =
+                    sessions.iter().map(|s| s.session_id).collect();
+                path_cache.retain(|id, _| active_ids.contains(id));
+
+                // Find sessions that don't have a cached debug file yet
+                let unclaimed: Vec<&TmuxSessionInfo> = sessions
+                    .iter()
+                    .filter(|s| !s.exited && !path_cache.contains_key(&s.session_id))
+                    .collect();
+
+                // Discovery: scan /proc for Claude task UUIDs, match by worktree path
+                if !unclaimed.is_empty() {
+                    let task_map = discover_claude_tasks();
+                    for info in &unclaimed {
+                        for (cwd, debug_path) in &task_map {
+                            if cwd == &info.worktree_path
+                                || cwd.starts_with(&format!("{}/", info.worktree_path))
+                            {
+                                if parse_last_autocompact(debug_path).is_some() {
+                                    path_cache.insert(info.session_id, debug_path.clone());
+                                    break;
+                                }
+                            }
+                        }
                     }
-                    if let Some(usage) = poll_claude_usage(&info.tmux_name) {
-                        updates.push((info.session_id, usage));
+
+                    // Fallback for any still-unclaimed: mtime-based scan of ~/.claude/debug/
+                    let still_unclaimed: Vec<u64> = unclaimed
+                        .iter()
+                        .filter(|s| !path_cache.contains_key(&s.session_id))
+                        .map(|s| s.session_id)
+                        .collect();
+
+                    if !still_unclaimed.is_empty() {
+                        let claimed_paths: std::collections::HashSet<String> =
+                            path_cache.values().cloned().collect();
+                        if let Ok(home) = std::env::var("HOME") {
+                            let debug_dir = format!("{}/.claude/debug", home);
+                            if let Ok(entries) = std::fs::read_dir(&debug_dir) {
+                                let now = std::time::SystemTime::now();
+                                let max_age = Duration::from_secs(600);
+
+                                let mut candidates: Vec<(std::time::SystemTime, String)> = entries
+                                    .filter_map(|e| e.ok())
+                                    .filter(|e| {
+                                        e.path()
+                                            .extension()
+                                            .map(|ext| ext == "txt")
+                                            .unwrap_or(false)
+                                    })
+                                    .filter_map(|e| {
+                                        let path = e.path().to_string_lossy().to_string();
+                                        if claimed_paths.contains(&path) {
+                                            return None;
+                                        }
+                                        let modified = e.metadata().ok()?.modified().ok()?;
+                                        if now.duration_since(modified).unwrap_or(max_age) < max_age
+                                        {
+                                            Some((modified, path))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect();
+
+                                candidates.sort_by(|a, b| b.0.cmp(&a.0));
+
+                                let mut candidate_iter = candidates.into_iter();
+                                for sid in &still_unclaimed {
+                                    loop {
+                                        match candidate_iter.next() {
+                                            Some((_, path)) => {
+                                                if parse_last_autocompact(&path).is_some() {
+                                                    path_cache.insert(*sid, path);
+                                                    break;
+                                                }
+                                            }
+                                            None => break,
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Read all cached files (pure file I/O — microseconds each)
+                let mut updates = Vec::new();
+                for info in sessions.iter().filter(|s| !s.exited) {
+                    if let Some(path) = path_cache.get(&info.session_id) {
+                        if let Some(usage) = parse_last_autocompact(path) {
+                            updates.push((info.session_id, usage));
+                        }
                     }
                 }
 
@@ -633,103 +851,141 @@ pub fn spawn_claude_usage_poller(
         .ok();
 }
 
-/// Poll Claude Code context usage for a single tmux session.
-/// Chain: tmux pane PID -> /proc/<pid>/fd/ -> .claude/tasks/<uuid> -> debug log -> autocompact line
-fn poll_claude_usage(tmux_name: &str) -> Option<ClaudeUsage> {
-    // Step 1: Get the pane PID from tmux
-    let output = std::process::Command::new("tmux")
-        .args(["display-message", "-t", tmux_name, "-p", "#{pane_pid}"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let pid: u32 = pid_str.parse().ok()?;
+/// Discover active Claude task UUIDs by scanning /proc for processes with
+/// .claude/tasks/<uuid> file descriptors. Returns a map of CWD → debug_file_path.
+/// Pure file I/O — no subprocess calls. Typically completes in ~5-10ms.
+fn discover_claude_tasks() -> std::collections::HashMap<String, String> {
+    let mut results = std::collections::HashMap::new();
 
-    // Step 2: Find the claude task UUID by scanning /proc/<pid>/fd/ symlinks
-    // We need to find child processes since the tmux pane runs a shell that runs claude
-    let uuid = find_claude_task_uuid(pid)?;
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return results,
+    };
 
-    // Step 3: Read the debug log and find the last autocompact line
-    let home = std::env::var("HOME").ok()?;
-    let debug_path = format!("{}/.claude/debug/{}.txt", home, uuid);
-    parse_last_autocompact(&debug_path)
-}
-
-/// Search for a Claude task UUID by scanning process file descriptors.
-/// Looks at the given PID and its children for an fd pointing to .claude/tasks/<uuid>.
-fn find_claude_task_uuid(root_pid: u32) -> Option<String> {
-    // Try the root PID first, then scan children
-    if let Some(uuid) = scan_pid_fds(root_pid) {
-        return Some(uuid);
-    }
-
-    // Scan children of the root PID
     let proc_dir = match std::fs::read_dir("/proc") {
         Ok(d) => d,
-        Err(_) => return None,
+        Err(_) => return results,
     };
 
     for entry in proc_dir.flatten() {
         let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        let child_pid: u32 = match name_str.parse() {
-            Ok(p) => p,
+        let pid_str = name.to_string_lossy();
+        if !pid_str.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+
+        let fd_dir = format!("/proc/{}/fd", pid_str);
+        let fds = match std::fs::read_dir(&fd_dir) {
+            Ok(d) => d,
             Err(_) => continue,
         };
 
-        // Check if this process is a child of root_pid
-        let stat_path = format!("/proc/{}/stat", child_pid);
-        if let Ok(stat) = std::fs::read_to_string(&stat_path) {
-            // Format: pid (comm) state ppid ...
-            // Find ppid after the closing paren
-            if let Some(after_paren) = stat.rfind(')') {
-                let remainder = &stat[after_paren + 2..]; // skip ") "
-                let fields: Vec<&str> = remainder.split_whitespace().collect();
-                if let Some(ppid_str) = fields.get(1) {
-                    if let Ok(ppid) = ppid_str.parse::<u32>() {
-                        if ppid == root_pid {
-                            if let Some(uuid) = scan_pid_fds(child_pid) {
-                                return Some(uuid);
-                            }
-                            // Also check grandchildren (shell -> node -> claude)
-                            if let Some(uuid) = find_claude_task_uuid(child_pid) {
-                                return Some(uuid);
+        for fd_entry in fds.flatten() {
+            if let Ok(target) = std::fs::read_link(fd_entry.path()) {
+                let target_str = target.to_string_lossy();
+                if let Some(pos) = target_str.find(".claude/tasks/") {
+                    let after = &target_str[pos + ".claude/tasks/".len()..];
+                    let uuid = after.split('/').next().unwrap_or("");
+                    if !uuid.is_empty() && uuid.len() >= 32 {
+                        let cwd_path = format!("/proc/{}/cwd", pid_str);
+                        if let Ok(cwd) = std::fs::read_link(&cwd_path) {
+                            let debug_path =
+                                format!("{}/.claude/debug/{}.txt", home, uuid);
+                            if std::path::Path::new(&debug_path).exists() {
+                                results.insert(
+                                    cwd.to_string_lossy().to_string(),
+                                    debug_path,
+                                );
                             }
                         }
+                        break; // found UUID for this PID, move on
                     }
                 }
             }
         }
     }
 
-    None
+    results
 }
 
-/// Scan /proc/<pid>/fd/ for a symlink pointing to a .claude/tasks/<uuid> path.
-fn scan_pid_fds(pid: u32) -> Option<String> {
-    let fd_dir = format!("/proc/{}/fd", pid);
-    let entries = match std::fs::read_dir(&fd_dir) {
-        Ok(d) => d,
-        Err(_) => return None,
-    };
+/// Global account-level usage data from the Anthropic API.
+#[derive(Debug, Clone)]
+pub struct GlobalUsage {
+    pub five_hour_pct: f64,
+    pub five_hour_reset: String,
+    pub seven_day_pct: f64,
+    pub seven_day_reset: String,
+}
 
-    for entry in entries.flatten() {
-        if let Ok(target) = std::fs::read_link(entry.path()) {
-            let target_str = target.to_string_lossy();
-            // Look for .claude/tasks/<uuid> pattern
-            if let Some(pos) = target_str.find(".claude/tasks/") {
-                let after = &target_str[pos + ".claude/tasks/".len()..];
-                // UUID is the next path component (before any '/' or end of string)
-                let uuid = after.split('/').next().unwrap_or("");
-                if !uuid.is_empty() && uuid.len() >= 32 {
-                    return Some(uuid.to_string());
+/// Spawn a background thread that polls the Anthropic API for global usage data.
+/// Polls every 30 seconds. Reads OAuth token from ~/.claude/.credentials.json.
+/// Initial poll is deferred by 2 seconds so the TUI renders immediately without lag.
+pub fn spawn_global_usage_poller(
+    event_tx: tokio::sync::mpsc::UnboundedSender<crate::event::AppEvent>,
+) {
+    std::thread::Builder::new()
+        .name("global-usage-poller".into())
+        .spawn(move || {
+            // Brief delay so the TUI starts up without waiting on the first curl
+            std::thread::sleep(Duration::from_secs(2));
+            loop {
+                if let Some(usage) = poll_global_usage() {
+                    if event_tx
+                        .send(crate::event::AppEvent::GlobalUsageUpdated { usage })
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
+                std::thread::sleep(Duration::from_secs(30));
             }
-        }
+        })
+        .ok();
+}
+
+/// Read the OAuth access token from ~/.claude/.credentials.json.
+fn read_oauth_token() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let path = format!("{}/.claude/.credentials.json", home);
+    let content = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    json.get("claudeAiOauth")
+        .and_then(|o| o.get("accessToken"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Poll the Anthropic API for global usage data.
+fn poll_global_usage() -> Option<GlobalUsage> {
+    let token = read_oauth_token()?;
+
+    let output = std::process::Command::new("curl")
+        .args([
+            "-s",
+            "--max-time", "5",
+            "-H", &format!("Authorization: Bearer {}", token),
+            "-H", "anthropic-beta: oauth-2025-04-20",
+            "https://api.anthropic.com/api/oauth/usage",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
     }
-    None
+
+    let body = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+
+    let five_hour = json.get("five_hour")?;
+    let seven_day = json.get("seven_day")?;
+
+    Some(GlobalUsage {
+        five_hour_pct: five_hour.get("utilization")?.as_f64()?,
+        five_hour_reset: five_hour.get("resets_at")?.as_str()?.to_string(),
+        seven_day_pct: seven_day.get("utilization")?.as_f64()?,
+        seven_day_reset: seven_day.get("resets_at")?.as_str()?.to_string(),
+    })
 }
 
 /// Parse the last `autocompact:` line from a Claude debug log file.

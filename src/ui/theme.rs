@@ -1,7 +1,9 @@
 use ratatui::style::Color;
 
 // ── Panel borders ────────────────────────────────────────────────────
-pub const BORDER_FOCUSED: Color = Color::Cyan;
+pub const BORDER_FOCUSED_SIDEBAR: Color = Color::Cyan;
+pub const BORDER_FOCUSED_TERMINAL: Color = Color::Rgb(220, 80, 30);
+pub const BORDER_FOCUSED_PROMPT_QUEUE: Color = Color::Green;
 pub const BORDER_UNFOCUSED: Color = Color::DarkGray;
 
 // ── Sidebar ──────────────────────────────────────────────────────────
@@ -17,7 +19,7 @@ pub const STATUS_BAR_BG: Color = Color::Rgb(30, 30, 30);
 
 // ── Mode badge backgrounds ───────────────────────────────────────────
 pub const MODE_NORMAL_BG: Color = Color::Cyan;
-pub const MODE_TERMINAL_BG: Color = Color::Green;
+pub const MODE_TERMINAL_BG: Color = Color::Rgb(220, 80, 30);
 pub const MODE_DIALOG_BG: Color = Color::Yellow;
 
 // ── Dialog borders (semantic) ────────────────────────────────────────
@@ -56,3 +58,18 @@ pub const AGENT_WORKING: Color = Color::Yellow;
 pub const AGENT_IDLE: Color = Color::Green;
 pub const AGENT_NEEDS_INPUT: Color = Color::Cyan;
 pub const AGENT_EXITED: Color = Color::DarkGray;
+
+// ── Brand ───────────────────────────────────────────────────────
+pub const BRAND_CLAW: Color = Color::Rgb(90, 195, 90);
+pub const BRAND_NAME: Color = Color::Rgb(65, 150, 65);
+
+// ── Brand logo (big) ────────────────────────────────────────────
+//  Three claw marks + box-drawing "CLAWTREE"
+pub const LOGO_BIG: &[&str] = &[
+    "  ╱ ╱ ╱   ╔═╗ ╦   ╔═╗ ╦ ╦ ╔╦╗ ╦═╗ ╔═╗ ╔═╗",
+    " ╱ ╱ ╱    ║   ║   ╠═╣ ║║║  ║  ╠╦╝ ║╣  ║╣ ",
+    "╱ ╱ ╱     ╚═╝ ╩═╝ ╩ ╩ ╚╩╝  ╩  ╩╚═ ╚═╝ ╚═╝",
+];
+
+// ── Brand logo (small, inline for status bar) ───────────────────
+pub const LOGO_SMALL: &str = "╱╱╱";

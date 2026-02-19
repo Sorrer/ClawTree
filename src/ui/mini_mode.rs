@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap};
 use std::sync::atomic::Ordering;
 
 use crate::app::{AgentStatus, App, MiniModeFocus, SidebarItem};
@@ -14,7 +14,7 @@ fn spinner_char(app: &App) -> char {
     theme::SPINNER_FRAMES[idx]
 }
 
-/// Draw the mini mode agent list view.
+/// Draw the mini mode view (sidebar + detail pane).
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -39,156 +39,440 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 }
 
-/// Draw the mini mode main content area.
+/// Draw the mini mode main area: sidebar tree (left) + detail pane (right).
 fn draw_main(f: &mut Frame, app: &App, area: Rect) {
+    // Split horizontally: 30% sidebar, 70% detail pane (matching normal mode proportions)
+    let h_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(30),
+            Constraint::Percentage(70),
+        ])
+        .split(area);
+
+    draw_tree_sidebar(f, app, h_chunks[0]);
+
+    // Right pane content depends on focus
+    match app.mini.focus {
+        MiniModeFocus::AgentList | MiniModeFocus::DetailInput => {
+            draw_detail_pane(f, app, h_chunks[1]);
+        }
+        MiniModeFocus::WorktreeSelector => draw_worktree_selector(f, app, h_chunks[1]),
+        MiniModeFocus::PromptInput => draw_prompt_input(f, app, h_chunks[1]),
+        MiniModeFocus::SavedPrompts => draw_saved_prompts(f, app, h_chunks[1]),
+    }
+}
+
+// ── Tree sidebar (left pane) ───────────────────────────────────────
+
+fn draw_tree_sidebar(f: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.mini.focus == MiniModeFocus::AgentList;
+
+    let border_style = if is_focused {
+        Style::default().fg(theme::BORDER_FOCUSED_SIDEBAR).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::BORDER_UNFOCUSED)
+    };
+    let border_type = if is_focused { BorderType::Thick } else { BorderType::Plain };
+    let title = if is_focused { " ▸ Agents " } else { " Agents " };
+
     let block = Block::default()
-        .title(" Mini Mode ")
+        .title(title)
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Magenta));
+        .border_type(border_type)
+        .border_style(border_style);
+
+    let inner_width = area.width.saturating_sub(2) as usize;
+
+    if app.mini.items.is_empty() {
+        let empty = Paragraph::new(Line::styled(
+            " No agents. 'a' to create.",
+            Style::default().fg(Color::DarkGray),
+        ))
+        .block(block);
+        f.render_widget(empty, area);
+        return;
+    }
+
+    let items: Vec<ListItem> = app.mini.items
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| {
+            let is_selected = idx == app.mini.selected;
+            match item {
+                SidebarItem::Worktree(wi) => render_worktree(app, *wi, is_selected, inner_width),
+                SidebarItem::Session(wi, si) => render_session(app, *wi, *si, is_selected, inner_width),
+            }
+        })
+        .collect();
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, area);
+}
+
+// ── Detail pane (right side) ───────────────────────────────────────
+
+fn draw_detail_pane(f: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.mini.focus == MiniModeFocus::DetailInput;
+
+    let border_style = if is_focused {
+        Style::default().fg(theme::BORDER_FOCUSED_TERMINAL).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::BORDER_UNFOCUSED)
+    };
+    let border_type = if is_focused { BorderType::Thick } else { BorderType::Plain };
+
+    // Determine what's selected
+    match app.mini.items.get(app.mini.selected).copied() {
+        Some(SidebarItem::Session(wi, si)) => {
+            draw_session_detail(f, app, area, wi, si, border_style, border_type, is_focused);
+        }
+        Some(SidebarItem::Worktree(wi)) => {
+            draw_worktree_detail(f, app, area, wi, border_style, border_type);
+        }
+        None => {
+            let block = Block::default()
+                .title(" Details ")
+                .borders(Borders::ALL)
+                .border_type(border_type)
+                .border_style(border_style);
+            let msg = Paragraph::new(Line::styled(
+                " Select an agent to view details.",
+                Style::default().fg(Color::DarkGray),
+            ))
+            .block(block);
+            f.render_widget(msg, area);
+        }
+    }
+}
+
+fn draw_session_detail(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    wi: usize,
+    si: usize,
+    border_style: Style,
+    border_type: BorderType,
+    is_focused: bool,
+) {
+    let wt = match app.worktrees.get(wi) {
+        Some(wt) => wt,
+        None => return,
+    };
+    let sid = match wt.session_ids.get(si) {
+        Some(&sid) => sid,
+        None => return,
+    };
+    let session = app.sessions.get(&sid);
+
+    // Agent display name
+    let display_name = session
+        .and_then(|s| s.nickname.clone())
+        .or_else(|| session.and_then(|s| s.terminal_title()))
+        .unwrap_or_else(|| format!("Agent-{}", sid));
+    let clean_name = display_name
+        .trim_start_matches('✳')
+        .trim_start_matches('⠂')
+        .trim_start_matches('⠐')
+        .trim_start()
+        .to_string();
+
+    let title = format!(" {} ", clean_name);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(border_type)
+        .border_style(border_style);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    if inner.height < 3 {
+    if inner.height < 2 {
         return;
     }
 
-    match app.mini.focus {
-        MiniModeFocus::AgentList => draw_agent_list_view(f, app, inner),
-        MiniModeFocus::WorktreeSelector => draw_worktree_selector(f, app, inner),
-        MiniModeFocus::PromptInput => draw_prompt_input(f, app, inner),
-        MiniModeFocus::SavedPrompts => draw_saved_prompts(f, app, inner),
-    }
-}
+    let status = session
+        .map(|s| s.agent_status())
+        .unwrap_or(AgentStatus::Exited);
 
-/// Draw the tree-structured agent list with summary panel.
-fn draw_agent_list_view(f: &mut Frame, app: &App, area: Rect) {
-    let has_items = !app.mini.items.is_empty();
-    let tree_height = if has_items {
-        (app.mini.items.len() as u16).min(area.height.saturating_sub(6))
-    } else {
-        3
+    let (status_text, status_color) = match status {
+        AgentStatus::Working => ("Working", theme::AGENT_WORKING),
+        AgentStatus::Idle => ("Idle", theme::AGENT_IDLE),
+        AgentStatus::NeedsInput => ("Needs Input", theme::AGENT_NEEDS_INPUT),
+        AgentStatus::Exited => ("Exited", theme::AGENT_EXITED),
     };
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(tree_height), // tree list
-            Constraint::Min(3),              // summary panel
-            Constraint::Length(1),           // hints
-        ])
-        .split(area);
-
-    // ── Tree list ──
-    let inner_width = area.width as usize;
-
-    if app.mini.items.is_empty() {
-        let lines = vec![
-            Line::styled(
-                "  No worktrees. Press 'a' to create an agent.",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ];
-        f.render_widget(Paragraph::new(lines), chunks[0]);
+    // Status icon
+    let is_exited = session.map(|s| s.exited.load(Ordering::SeqCst)).unwrap_or(true);
+    let is_working = session.map(|s| s.is_active()).unwrap_or(false);
+    let status_icon: String = if is_exited {
+        "✗".to_string()
+    } else if is_working {
+        spinner_char(app).to_string()
     } else {
-        let items: Vec<ListItem> = app.mini.items
-            .iter()
-            .enumerate()
-            .map(|(idx, item)| {
-                let is_selected = idx == app.mini.selected;
-                match item {
-                    SidebarItem::Worktree(wi) => render_worktree(app, *wi, is_selected, inner_width),
-                    SidebarItem::Session(wi, si) => render_session(app, *wi, *si, is_selected, inner_width),
-                }
-            })
-            .collect();
-
-        let list = List::new(items);
-        f.render_widget(list, chunks[0]);
-    }
-
-    // ── Summary panel ──
-    let summary_area = chunks[1];
-    let mut summary_lines: Vec<Line> = Vec::new();
-    summary_lines.push(Line::styled(
-        format!("  {} Summary {}",
-            "──",
-            "─".repeat((summary_area.width as usize).saturating_sub(14).max(0))
-        ),
-        Style::default().fg(Color::DarkGray),
-    ));
-
-    // Show summary for the selected session (if a session is selected)
-    let selected_sid = match app.mini.items.get(app.mini.selected) {
-        Some(SidebarItem::Session(wi, si)) => {
-            app.worktrees.get(*wi).and_then(|wt| wt.session_ids.get(*si)).copied()
-        }
-        _ => None,
+        "○".to_string()
     };
 
-    if let Some(sid) = selected_sid {
-        if let Some(summary) = app.agent_summaries.get(&sid) {
-            for line in summary.lines().take(summary_area.height.saturating_sub(1) as usize) {
-                summary_lines.push(Line::styled(
-                    format!("  {}", line),
-                    Style::default().fg(Color::White),
-                ));
-            }
+    // Usage info
+    let usage_text = app.claude_usage.get(&sid).map(|u| {
+        if u.effective_window > 0 {
+            let pct = (u.tokens_used as f64 / u.effective_window as f64 * 100.0) as usize;
+            format!("Context: {}%", pct)
         } else {
-            summary_lines.push(Line::styled(
-                "  (no summary yet)",
-                Style::default().fg(Color::DarkGray),
+            String::new()
+        }
+    }).unwrap_or_default();
+
+    // Build content lines
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Status row
+    let mut status_spans = vec![
+        Span::styled(
+            format!(" {} ", status_icon),
+            Style::default().fg(status_color),
+        ),
+        Span::styled(
+            status_text,
+            Style::default().fg(status_color).add_modifier(
+                if status == AgentStatus::NeedsInput { Modifier::BOLD } else { Modifier::empty() }
+            ),
+        ),
+        Span::styled(
+            format!("  {}", wt.branch),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ];
+    if !usage_text.is_empty() {
+        status_spans.push(Span::styled(
+            format!("  {}", usage_text),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    lines.push(Line::from(status_spans));
+
+    // Separator
+    let sep = "─".repeat(inner.width.saturating_sub(2) as usize);
+    lines.push(Line::styled(format!(" {}", sep), Style::default().fg(Color::DarkGray)));
+
+    // Summary section
+    lines.push(Line::raw(""));
+    if let Some(summary) = app.agent_summaries.get(&sid) {
+        for line in summary.lines() {
+            lines.push(Line::styled(
+                format!(" {}", line),
+                Style::default().fg(Color::White),
             ));
         }
+    } else if status == AgentStatus::Working {
+        lines.push(Line::styled(
+            " Agent is working...",
+            Style::default().fg(Color::DarkGray),
+        ));
     } else {
-        // Worktree selected — show worktree info
-        if let Some(SidebarItem::Worktree(wi)) = app.mini.items.get(app.mini.selected) {
-            if let Some(wt) = app.worktrees.get(*wi) {
-                let total = wt.session_ids.len();
-                let working = wt.session_ids.iter().filter(|sid| {
-                    app.sessions.get(sid).map(|s| s.is_active()).unwrap_or(false)
-                }).count();
-                let idle = wt.session_ids.iter().filter(|sid| {
-                    app.sessions.get(sid).map(|s| {
-                        let status = s.agent_status();
-                        status == AgentStatus::Idle
-                    }).unwrap_or(false)
-                }).count();
-                summary_lines.push(Line::from(vec![
-                    Span::styled(format!("  {} agents", total), Style::default().fg(Color::White)),
-                    Span::styled(format!("  {} working", working), Style::default().fg(theme::AGENT_WORKING)),
-                    Span::styled(format!("  {} idle", idle), Style::default().fg(theme::AGENT_IDLE)),
+        lines.push(Line::styled(
+            " (no summary yet)",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    // Calculate space for summary vs input
+    let input_height: u16 = if status == AgentStatus::Idle || status == AgentStatus::NeedsInput {
+        4 // base height (separator + hints + 1 input line + blank)
+    } else {
+        0
+    };
+
+    // Input section (only when agent is idle or needs input)
+    // Calculate input height dynamically based on line count
+    let input_line_count = if input_height > 0 {
+        let text_lines = app.mini.detail_input.split('\n').count().max(1);
+        // 1 separator + 1 hints + text_lines (min 1) + 1 blank
+        (text_lines as u16) + 3
+    } else {
+        0
+    };
+    let effective_input_height = if input_height > 0 { input_line_count } else { 0 };
+
+    let summary_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: inner.height.saturating_sub(effective_input_height),
+    };
+    f.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        summary_area,
+    );
+
+    if effective_input_height > 0 && inner.height > effective_input_height + 2 {
+        let input_y = inner.y + inner.height.saturating_sub(effective_input_height);
+        let input_area = Rect {
+            x: inner.x,
+            y: input_y,
+            width: inner.width,
+            height: effective_input_height,
+        };
+
+        let sep2 = "─".repeat(inner.width.saturating_sub(2) as usize);
+        let cursor_style = if is_focused {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::RAPID_BLINK)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let prompt_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+
+        let hint_text = if is_focused {
+            " Tab:back  Enter:send  Alt+Enter:newline"
+        } else {
+            " Tab:focus input"
+        };
+
+        let mut input_lines = vec![
+            Line::styled(format!(" {}", sep2), Style::default().fg(Color::DarkGray)),
+            Line::from(vec![
+                Span::styled(hint_text, Style::default().fg(Color::DarkGray)),
+            ]),
+        ];
+
+        // Render multi-line input: first line gets the prompt, rest are indented
+        let text_parts: Vec<&str> = app.mini.detail_input.split('\n').collect();
+        for (i, part) in text_parts.iter().enumerate() {
+            if i == 0 {
+                input_lines.push(Line::from(vec![
+                    Span::styled(" ❯ ", Style::default().fg(prompt_color)),
+                    Span::raw(part.to_string()),
+                    if i == text_parts.len() - 1 {
+                        Span::styled("█", cursor_style)
+                    } else {
+                        Span::raw("")
+                    },
+                ]));
+            } else {
+                input_lines.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::raw(part.to_string()),
+                    if i == text_parts.len() - 1 {
+                        Span::styled("█", cursor_style)
+                    } else {
+                        Span::raw("")
+                    },
                 ]));
             }
         }
+
+        f.render_widget(Paragraph::new(input_lines), input_area);
     }
-
-    f.render_widget(Paragraph::new(summary_lines), summary_area);
-
-    // ── Hints bar ──
-    let hints = Line::from(vec![
-        Span::styled(" F2", Style::default().fg(Color::Yellow)),
-        Span::styled(":normal ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::styled(":open ", Style::default().fg(Color::DarkGray)),
-        Span::styled("a", Style::default().fg(Color::Yellow)),
-        Span::styled(":new ", Style::default().fg(Color::DarkGray)),
-        Span::styled("d", Style::default().fg(Color::Yellow)),
-        Span::styled(":kill ", Style::default().fg(Color::DarkGray)),
-        Span::styled("r", Style::default().fg(Color::Yellow)),
-        Span::styled(":rename ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Space", Style::default().fg(Color::Yellow)),
-        Span::styled(":expand ", Style::default().fg(Color::DarkGray)),
-        Span::styled("s", Style::default().fg(Color::Yellow)),
-        Span::styled(":prompts ", Style::default().fg(Color::DarkGray)),
-        Span::styled("?", Style::default().fg(Color::Yellow)),
-        Span::styled(":help", Style::default().fg(Color::DarkGray)),
-    ]);
-    f.render_widget(Paragraph::new(hints), chunks[2]);
 }
 
-/// Render a worktree row in the mini mode tree.
+fn draw_worktree_detail(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    wi: usize,
+    border_style: Style,
+    border_type: BorderType,
+) {
+    let wt = match app.worktrees.get(wi) {
+        Some(wt) => wt,
+        None => return,
+    };
+
+    let title = format!(" {} ", wt.branch);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(border_type)
+        .border_style(border_style);
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if inner.height < 2 {
+        return;
+    }
+
+    let total = wt.session_ids.len();
+    let alive = wt.session_ids.iter().filter(|sid| {
+        app.sessions.get(sid).map(|s| !s.exited.load(Ordering::SeqCst)).unwrap_or(false)
+    }).count();
+    let working = wt.session_ids.iter().filter(|sid| {
+        app.sessions.get(sid).map(|s| s.is_active()).unwrap_or(false)
+    }).count();
+    let idle = total.saturating_sub(working).saturating_sub(total.saturating_sub(alive));
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(vec![
+        Span::styled(" Agents: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{}", total), Style::default().fg(Color::White)),
+    ]));
+
+    if total > 0 {
+        lines.push(Line::from(vec![
+            Span::styled("   ", Style::default()),
+            Span::styled(format!("{} working", working), Style::default().fg(theme::AGENT_WORKING)),
+            Span::styled("  ", Style::default()),
+            Span::styled(format!("{} idle", idle), Style::default().fg(theme::AGENT_IDLE)),
+        ]));
+    }
+
+    let sep = "─".repeat(inner.width.saturating_sub(2) as usize);
+    lines.push(Line::styled(format!(" {}", sep), Style::default().fg(Color::DarkGray)));
+    lines.push(Line::raw(""));
+
+    // Show brief summary for each agent in this worktree
+    for &sid in &wt.session_ids {
+        let session = app.sessions.get(&sid);
+        let name = session
+            .and_then(|s| s.nickname.clone())
+            .or_else(|| session.and_then(|s| s.terminal_title()))
+            .unwrap_or_else(|| format!("Agent-{}", sid));
+        let clean = name.trim_start_matches('✳')
+            .trim_start_matches('⠂')
+            .trim_start_matches('⠐')
+            .trim_start();
+
+        let status = session.map(|s| s.agent_status()).unwrap_or(AgentStatus::Exited);
+        let (status_text, status_color) = match status {
+            AgentStatus::Working => ("working", theme::AGENT_WORKING),
+            AgentStatus::Idle => ("idle", theme::AGENT_IDLE),
+            AgentStatus::NeedsInput => ("needs input", theme::AGENT_NEEDS_INPUT),
+            AgentStatus::Exited => ("exited", theme::AGENT_EXITED),
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {}", clean), Style::default().fg(Color::White)),
+            Span::styled(format!(" ({})", status_text), Style::default().fg(status_color)),
+        ]));
+
+        if let Some(summary) = app.agent_summaries.get(&sid) {
+            let first_line = summary.lines().next().unwrap_or("");
+            let truncated = if first_line.len() > (inner.width as usize).saturating_sub(4) {
+                format!("{}...", &first_line[..(inner.width as usize).saturating_sub(7).max(3)])
+            } else {
+                first_line.to_string()
+            };
+            lines.push(Line::styled(
+                format!("   {}", truncated),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
+
+    if total == 0 {
+        lines.push(Line::styled(
+            " No agents. Press 'a' to create one.",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+// ── Tree item renderers ────────────────────────────────────────────
+
 fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) -> ListItem<'static> {
     let wt = &app.worktrees[wi];
     let icon = if wt.expanded { "▼" } else { "▶" };
@@ -205,7 +489,7 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) 
             .unwrap_or(false)
     }).count();
 
-    let bg = if is_selected { theme::MINI_SELECTED_BG } else { Color::Reset };
+    let bg = if is_selected { theme::SIDEBAR_SEL_BG } else { Color::Reset };
     let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
 
     let branch_style = Style::default()
@@ -214,7 +498,7 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) 
         .add_modifier(bold);
 
     let mut spans = vec![
-        Span::styled(format!(" {} {}", icon, wt.branch), branch_style),
+        Span::styled(format!("{} {}", icon, wt.branch), branch_style),
     ];
 
     if total > 0 {
@@ -230,7 +514,7 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) 
         }
     }
 
-    // Pad to full width so highlight covers the whole row
+    // Pad to full width
     let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
     if is_selected && text_len < inner_width {
         spans.push(Span::styled(
@@ -242,7 +526,6 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) 
     ListItem::new(Line::from(spans))
 }
 
-/// Render a session row in the mini mode tree with status badge and summary snippet.
 fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_width: usize) -> ListItem<'static> {
     let wt = &app.worktrees[wi];
     let sid = wt.session_ids[si];
@@ -258,13 +541,10 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
     let nickname = session.and_then(|s| s.nickname.clone());
     let title = session.and_then(|s| s.terminal_title());
 
-    // Prefer nickname, then terminal title (stripped of status chars), then label
     let display_name = nickname.unwrap_or_else(|| {
         title
             .unwrap_or_else(|| {
-                session
-                    .map(|s| s.label.clone())
-                    .unwrap_or_else(|| "???".to_string())
+                session.map(|s| s.label.clone()).unwrap_or_else(|| "???".to_string())
             })
             .trim_start_matches('✳')
             .trim_start_matches('⠂')
@@ -273,7 +553,6 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
             .to_string()
     });
 
-    // Status indicator
     let status_icon: String = if is_exited {
         "✗".to_string()
     } else if is_working {
@@ -282,19 +561,8 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
         "○".to_string()
     };
 
-    // Agent status for badge
-    let status = session
-        .map(|s| s.agent_status())
-        .unwrap_or(AgentStatus::Exited);
+    let status = session.map(|s| s.agent_status()).unwrap_or(AgentStatus::Exited);
 
-    let (status_text, status_color) = match status {
-        AgentStatus::Working => ("Working", theme::AGENT_WORKING),
-        AgentStatus::Idle => ("Idle", theme::AGENT_IDLE),
-        AgentStatus::NeedsInput => ("Needs Input", theme::AGENT_NEEDS_INPUT),
-        AgentStatus::Exited => ("Exited", theme::AGENT_EXITED),
-    };
-
-    // Status color for the icon
     let fg = if is_exited {
         Color::DarkGray
     } else if is_working {
@@ -303,10 +571,9 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
         Color::Gray
     };
 
-    let bg = if is_selected { theme::MINI_SELECTED_BG } else { Color::Reset };
+    let bg = if is_selected { theme::SIDEBAR_SEL_BG } else { Color::Reset };
     let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
 
-    // When highlighted, bump dim text to lighter so it's readable
     let sel_fg = if is_selected {
         match fg {
             Color::DarkGray => Color::Gray,
@@ -317,81 +584,40 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
         fg
     };
 
-    // Build context usage badge if available
-    let usage_badge = app.claude_usage.get(&sid).map(|u| {
-        let pct = if u.effective_window > 0 {
-            (u.tokens_used as f64 / u.effective_window as f64 * 100.0) as usize
+    // Usage percentage
+    let usage_str = app.claude_usage.get(&sid).and_then(|u| {
+        if u.effective_window > 0 {
+            Some(format!(" {}%", (u.tokens_used as f64 / u.effective_window as f64 * 100.0) as usize))
         } else {
-            0
-        };
-        let tokens_k = u.tokens_used / 1000;
-        let window_k = u.effective_window / 1000;
-        let color = if pct >= 80 {
-            Color::Red
-        } else if pct >= 50 {
-            Color::Yellow
-        } else {
-            Color::Green
-        };
-        (format!(" {}k/{}k", tokens_k, window_k), color)
+            None
+        }
     });
 
-    // Summary snippet (truncated)
-    let summary_snippet = app.agent_summaries.get(&sid)
-        .map(|s| {
-            let first_line = s.lines().next().unwrap_or("");
-            if first_line.len() > 40 {
-                format!("\"{}...\"", &first_line[..37])
-            } else {
-                format!("\"{}\"", first_line)
-            }
-        })
-        .unwrap_or_default();
-
-    // Truncate name to fit
     let prefix = format!("  {} ", status_icon);
-    let status_badge = format!(" {}", status_text);
-    let usage_len = usage_badge.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
-    let available = inner_width.saturating_sub(prefix.len() + status_badge.len() + usage_len + 2);
-    let truncated_name = if display_name.len() > available && available > 1 {
-        format!("{}…", &display_name[..available.saturating_sub(1)])
+    let usage_len = usage_str.as_ref().map(|s| s.len()).unwrap_or(0);
+    let max_name = inner_width.saturating_sub(prefix.len() + usage_len);
+    let truncated = if display_name.len() > max_name && max_name > 1 {
+        format!("{}…", &display_name[..max_name.saturating_sub(1)])
     } else {
         display_name
     };
 
+    let text = format!("{}{}", prefix, truncated);
+
     let mut spans = vec![
-        Span::styled(
-            prefix,
-            Style::default().fg(sel_fg).bg(bg),
-        ),
-        Span::styled(
-            truncated_name,
-            Style::default().fg(if is_selected { Color::White } else { sel_fg }).bg(bg).add_modifier(bold),
-        ),
-        Span::styled(
-            status_badge,
-            Style::default().fg(status_color).bg(bg).add_modifier(
-                if status == AgentStatus::NeedsInput { Modifier::BOLD } else { Modifier::empty() }
-            ),
-        ),
+        Span::styled(text, Style::default().fg(sel_fg).bg(bg).add_modifier(bold)),
     ];
 
-    // Append usage indicator
-    if let Some((usage_text, usage_color)) = usage_badge {
-        spans.push(Span::styled(
-            usage_text,
-            Style::default().fg(usage_color).bg(bg),
-        ));
+    if let Some(usage) = usage_str {
+        let usage_color = if status == AgentStatus::NeedsInput {
+            theme::AGENT_NEEDS_INPUT
+        } else {
+            Color::DarkGray
+        };
+        spans.push(Span::styled(usage, Style::default().fg(usage_color).bg(bg)));
     }
 
-    if !summary_snippet.is_empty() {
-        spans.push(Span::styled(
-            format!(" {}", summary_snippet),
-            Style::default().fg(Color::DarkGray).bg(bg),
-        ));
-    }
-
-    // Pad to full width so highlight covers the whole row
+    // Pad to full width
     let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
     if is_selected && text_len < inner_width {
         spans.push(Span::styled(
@@ -403,19 +629,20 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
     ListItem::new(Line::from(spans))
 }
 
-/// Draw the worktree selector for agent creation.
+// ── Agent creation sub-views (shown in right pane) ─────────────────
+
 fn draw_worktree_selector(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .title(" Select Worktree ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
     let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled("  SELECT WORKTREE", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-    ]));
-    lines.push(Line::styled(
-        format!("  {}", "─".repeat((area.width as usize).saturating_sub(4))),
-        Style::default().fg(Color::DarkGray),
-    ));
 
     if app.worktrees.is_empty() {
-        lines.push(Line::styled("  No worktrees available.", Style::default().fg(Color::DarkGray)));
+        lines.push(Line::styled(" No worktrees available.", Style::default().fg(Color::DarkGray)));
     } else {
         for (i, wt) in app.worktrees.iter().enumerate() {
             let is_selected = i == app.mini.target_worktree_idx;
@@ -427,122 +654,131 @@ fn draw_worktree_selector(f: &mut Frame, app: &App, area: Rect) {
                 String::new()
             };
 
-            let line = Line::from(vec![
-                Span::styled(
-                    selector,
-                    Style::default().fg(if is_selected { Color::White } else { Color::DarkGray }),
-                ),
-                Span::styled(
-                    wt.branch.clone(),
-                    Style::default().fg(if is_selected { Color::Cyan } else { Color::White }),
-                ),
+            lines.push(Line::from(vec![
+                Span::styled(selector, Style::default().fg(if is_selected { Color::White } else { Color::DarkGray })),
+                Span::styled(wt.branch.clone(), Style::default().fg(if is_selected { Color::Cyan } else { Color::White })),
                 Span::styled(count_text, Style::default().fg(Color::DarkGray)),
-            ]);
-            lines.push(line);
+            ]));
         }
     }
 
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
-        Span::styled("  Enter", Style::default().fg(Color::Yellow)),
+        Span::styled(" Enter", Style::default().fg(Color::Yellow)),
         Span::styled(": select  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
         Span::styled(": cancel", Style::default().fg(Color::DarkGray)),
     ]));
 
-    f.render_widget(Paragraph::new(lines), area);
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Draw the prompt input for agent creation.
 fn draw_prompt_input(f: &mut Frame, app: &App, area: Rect) {
     let wt_name = app.worktrees.get(app.mini.target_worktree_idx)
         .map(|wt| wt.branch.as_str())
         .unwrap_or("???");
 
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled("  NEW AGENT", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" in {}", wt_name), Style::default().fg(Color::Cyan)),
-    ]));
-    lines.push(Line::styled(
-        format!("  {}", "─".repeat((area.width as usize).saturating_sub(4))),
-        Style::default().fg(Color::DarkGray),
-    ));
-    lines.push(Line::styled("  Enter a prompt for the agent:", Style::default().fg(Color::DarkGray)));
+    let block = Block::default()
+        .title(format!(" New Agent in {} ", wt_name))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut lines = vec![
+        Line::styled(" Enter a prompt for the agent:", Style::default().fg(Color::DarkGray)),
+        Line::raw(""),
+    ];
+
+    // Render multi-line prompt input
+    let cursor_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::RAPID_BLINK);
+    let text_parts: Vec<&str> = app.mini.prompt_input.split('\n').collect();
+    for (i, part) in text_parts.iter().enumerate() {
+        if i == 0 {
+            lines.push(Line::from(vec![
+                Span::styled(" ❯ ", Style::default().fg(Color::Yellow)),
+                Span::raw(part.to_string()),
+                if i == text_parts.len() - 1 {
+                    Span::styled("█", cursor_style)
+                } else {
+                    Span::raw("")
+                },
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw("   "),
+                Span::raw(part.to_string()),
+                if i == text_parts.len() - 1 {
+                    Span::styled("█", cursor_style)
+                } else {
+                    Span::raw("")
+                },
+            ]));
+        }
+    }
+
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
-        Span::styled("  > ", Style::default().fg(Color::Yellow)),
-        Span::raw(app.mini.prompt_input.clone()),
-        Span::styled("_", Style::default().fg(Color::Yellow)),
-    ]));
-    lines.push(Line::raw(""));
-    lines.push(Line::from(vec![
-        Span::styled("  Enter", Style::default().fg(Color::Yellow)),
+        Span::styled(" Enter", Style::default().fg(Color::Yellow)),
         Span::styled(": spawn  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Alt+Enter", Style::default().fg(Color::Yellow)),
+        Span::styled(": newline  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Tab", Style::default().fg(Color::Yellow)),
         Span::styled(": saved prompts  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
         Span::styled(": cancel", Style::default().fg(Color::DarkGray)),
     ]));
 
-    f.render_widget(Paragraph::new(lines), area);
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Draw the saved prompts browser.
 fn draw_saved_prompts(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .title(" Saved Prompts ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
     let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled("  SAVED PROMPTS", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-    ]));
-    lines.push(Line::styled(
-        format!("  {}", "─".repeat((area.width as usize).saturating_sub(4))),
-        Style::default().fg(Color::DarkGray),
-    ));
 
     if app.saved_prompts.is_empty() {
-        lines.push(Line::styled("  No saved prompts. Press 'a' to save the current input.", Style::default().fg(Color::DarkGray)));
+        lines.push(Line::styled(" No saved prompts. Press 'a' to save current input.", Style::default().fg(Color::DarkGray)));
     } else {
         for (i, sp) in app.saved_prompts.iter().enumerate() {
             let is_selected = i == app.mini.saved_prompt_selected;
             let selector = if is_selected { " > " } else { "   " };
-            let prompt_preview = if sp.prompt.len() > 50 {
-                format!("{}...", &sp.prompt[..47])
+            let max_len = inner.width.saturating_sub(10) as usize;
+            let preview = if sp.prompt.len() > max_len {
+                format!("{}...", &sp.prompt[..max_len.saturating_sub(3)])
             } else {
                 sp.prompt.clone()
             };
 
-            let line = Line::from(vec![
-                Span::styled(
-                    selector,
-                    Style::default().fg(if is_selected { Color::White } else { Color::DarkGray }),
-                ),
-                Span::styled(
-                    format!("[{}] ", sp.name),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::styled(
-                    prompt_preview,
-                    Style::default().fg(if is_selected { Color::White } else { Color::DarkGray }),
-                ),
-            ]);
-            lines.push(line);
+            lines.push(Line::from(vec![
+                Span::styled(selector, Style::default().fg(if is_selected { Color::White } else { Color::DarkGray })),
+                Span::styled(format!("[{}] ", sp.name), Style::default().fg(Color::Yellow)),
+                Span::styled(preview, Style::default().fg(if is_selected { Color::White } else { Color::DarkGray })),
+            ]));
         }
     }
 
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
-        Span::styled("  Enter", Style::default().fg(Color::Yellow)),
+        Span::styled(" Enter", Style::default().fg(Color::Yellow)),
         Span::styled(": load  ", Style::default().fg(Color::DarkGray)),
         Span::styled("a", Style::default().fg(Color::Yellow)),
-        Span::styled(": save current  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(": save  ", Style::default().fg(Color::DarkGray)),
         Span::styled("d", Style::default().fg(Color::Yellow)),
         Span::styled(": delete  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
         Span::styled(": back", Style::default().fg(Color::DarkGray)),
     ]));
 
-    f.render_widget(Paragraph::new(lines), area);
+    f.render_widget(Paragraph::new(lines), inner);
 }
+
+// ── Drilldown view ─────────────────────────────────────────────────
 
 /// Draw the mini mode drilldown view (thin header + full terminal).
 pub fn draw_drilldown(f: &mut Frame, app: &App) {
@@ -595,7 +831,7 @@ pub fn draw_drilldown(f: &mut Frame, app: &App) {
         chunks[0],
     );
 
-    // ── Terminal pane (reuse existing draw) ──
+    // ── Terminal pane ──
     super::terminal_pane::draw(f, app, chunks[1]);
 
     // ── Status bar ──

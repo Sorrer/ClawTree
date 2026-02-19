@@ -48,7 +48,21 @@ fn draw_normal(f: &mut Frame, app: &App) {
             ])
             .split(chunks[0]);
 
-        sidebar::draw(f, app, main_chunks[0]);
+        // Split sidebar area for global usage panel when data is available
+        if app.global_usage.is_some() {
+            let sidebar_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(5),     // worktree list (flexible)
+                    Constraint::Length(4),  // global usage panel (border+2 lines+border)
+                ])
+                .split(main_chunks[0]);
+
+            sidebar::draw(f, app, sidebar_chunks[0]);
+            sidebar::draw_global_usage(f, app, sidebar_chunks[1]);
+        } else {
+            sidebar::draw(f, app, main_chunks[0]);
+        }
 
         if show_queue {
             let pane_chunks = Layout::default()

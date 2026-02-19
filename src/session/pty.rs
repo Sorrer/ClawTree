@@ -158,10 +158,11 @@ fn tmux_session_exists(name: &str) -> bool {
 const TMUX_WORKTREE_ENV: &str = "WCTUI_WORKTREE";
 
 /// List all tmux sessions that belong to us (prefixed with TMUX_PREFIX).
-/// Returns (session_name, worktree_path) pairs.
+/// Returns (session_name, worktree_path) pairs sorted by creation time (oldest first).
 pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf)> {
+    // Request session_created alongside the name so we can sort by creation time
     let output = match Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}"])
+        .args(["list-sessions", "-F", "#{session_created}\t#{session_name}"])
         .output()
     {
         Ok(o) if o.status.success() => o,
@@ -170,14 +171,22 @@ pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf)> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let prefixes = all_tmux_prefixes();
-    let our_sessions: Vec<String> = stdout
+    let mut our_sessions: Vec<(u64, String)> = stdout
         .lines()
-        .filter(|name| prefixes.iter().any(|pfx| name.starts_with(pfx)))
-        .map(|s| s.to_string())
+        .filter_map(|line| {
+            let (ts_str, name) = line.split_once('\t')?;
+            if prefixes.iter().any(|pfx| name.starts_with(pfx)) {
+                let ts = ts_str.parse::<u64>().unwrap_or(0);
+                Some((ts, name.to_string()))
+            } else {
+                None
+            }
+        })
         .collect();
+    our_sessions.sort_by_key(|(ts, _)| *ts);
 
     let mut results = Vec::new();
-    for name in our_sessions {
+    for (_ts, name) in our_sessions {
         // First try our env var (reliable — set at creation time)
         let env_output = Command::new("tmux")
             .args(["show-environment", "-t", &name, TMUX_WORKTREE_ENV])

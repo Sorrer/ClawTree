@@ -4,7 +4,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::event::AppEvent;
-use crate::session::{ClaudeUsage, Session};
+use crate::session::{ClaudeUsage, GlobalUsage, Session};
 use crate::worktree::{self, Worktree, WorktreeStatus};
 
 /// Which screen is currently displayed.
@@ -28,6 +28,7 @@ pub enum AgentStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MiniModeFocus {
     AgentList,
+    DetailInput,
     PromptInput,
     SavedPrompts,
     WorktreeSelector,
@@ -42,6 +43,8 @@ pub struct MiniModeState {
     pub prompt_input: String,
     pub saved_prompt_selected: usize,
     pub target_worktree_idx: usize,
+    /// Input buffer for sending text to the selected agent from the detail pane.
+    pub detail_input: String,
 }
 
 impl Default for MiniModeState {
@@ -53,6 +56,7 @@ impl Default for MiniModeState {
             prompt_input: String::new(),
             saved_prompt_selected: 0,
             target_worktree_idx: 0,
+            detail_input: String::new(),
         }
     }
 }
@@ -291,6 +295,8 @@ pub struct App {
     pub mouse_captured: bool,
     /// Claude Code context window usage per session, from debug logs.
     pub claude_usage: HashMap<u64, ClaudeUsage>,
+    /// Global account-level usage from the Anthropic API.
+    pub global_usage: Option<GlobalUsage>,
 }
 
 impl App {
@@ -346,6 +352,7 @@ impl App {
             mini_drilldown_session: None,
             mouse_captured: true,
             claude_usage: HashMap::new(),
+            global_usage: None,
         }
     }
 

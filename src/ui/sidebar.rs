@@ -19,7 +19,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == FocusTarget::Sidebar;
 
     let border_style = if is_focused {
-        Style::default().fg(theme::BORDER_FOCUSED).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme::BORDER_FOCUSED_SIDEBAR).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::BORDER_UNFOCUSED)
     };
@@ -167,23 +167,14 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
         fg
     };
 
-    // Build context usage suffix if available
+    // Build context usage suffix if available (percentage display, greyed text)
     let usage_suffix = app.claude_usage.get(&sid).map(|u| {
         let pct = if u.effective_window > 0 {
             (u.tokens_used as f64 / u.effective_window as f64 * 100.0) as usize
         } else {
             0
         };
-        let tokens_k = u.tokens_used / 1000;
-        let window_k = u.effective_window / 1000;
-        let color = if pct >= 80 {
-            Color::Red
-        } else if pct >= 50 {
-            Color::Yellow
-        } else {
-            Color::Green
-        };
-        (format!(" {}k/{}k", tokens_k, window_k), color)
+        (format!(" {}%", pct), Color::DarkGray)
     });
 
     // Truncate to fit sidebar width (account for usage suffix)
@@ -221,3 +212,118 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
 
     ListItem::new(Line::from(spans))
 }
+
+/// Draw the global usage panel below the sidebar worktree list.
+pub fn draw_global_usage(f: &mut Frame, app: &App, area: Rect) {
+    use ratatui::widgets::Paragraph;
+
+    let usage = match &app.global_usage {
+        Some(u) => u,
+        None => return,
+    };
+
+    let block = Block::default()
+        .title(" Usage ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::BORDER_UNFOCUSED));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if inner.height < 2 || inner.width < 10 {
+        return;
+    }
+
+    let bar_width: usize = 6;
+    let inner_w = inner.width as usize;
+
+    let five_hour_line = format_usage_line("5h", usage.five_hour_pct, &usage.five_hour_reset, bar_width, inner_w);
+    let seven_day_line = format_usage_line("7d", usage.seven_day_pct, &usage.seven_day_reset, bar_width, inner_w);
+
+    let mut lines = vec![five_hour_line];
+    if inner.height >= 2 {
+        lines.push(seven_day_line);
+    }
+
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Format a single usage line with label, percentage, mini bar, and reset datetime.
+fn format_usage_line(label: &str, pct: f64, reset_iso: &str, bar_width: usize, inner_w: usize) -> Line<'static> {
+    let pct_clamped = pct.clamp(0.0, 100.0);
+    let filled = ((pct_clamped / 100.0) * bar_width as f64).round() as usize;
+    let empty = bar_width.saturating_sub(filled);
+
+    let bar_filled: String = "\u{2588}".repeat(filled);
+    let bar_empty: String = "\u{2591}".repeat(empty);
+
+    let bar_color = if pct_clamped >= 80.0 {
+        Color::Red
+    } else if pct_clamped >= 50.0 {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+
+    let reset_display = format_reset_datetime(reset_iso);
+    let grey = Style::default().fg(Color::DarkGray);
+
+    // Build the core spans, then conditionally append reset time if it fits
+    let core_text_len = 1 + label.len() + 2 + 4 + 1 + bar_width; // " 5h: 45% ██████"
+    let reset_fits = core_text_len + 1 + reset_display.len() <= inner_w;
+
+    let mut spans = vec![
+        Span::styled(format!(" {}: ", label), grey),
+        Span::styled(format!("{:>2}%", pct_clamped as u32), grey),
+        Span::raw(" "),
+        Span::styled(bar_filled, Style::default().fg(bar_color)),
+        Span::styled(bar_empty, Style::default().fg(Color::DarkGray)),
+    ];
+
+    if reset_fits {
+        spans.push(Span::styled(format!(" {}", reset_display), grey));
+    }
+
+    Line::from(spans)
+}
+
+/// Format an ISO 8601 reset timestamp as "Mon DD HH:MM UTC".
+/// e.g., "2026-02-19T21:00:00+00:00" → "Feb 19 21:00 UTC"
+fn format_reset_datetime(iso: &str) -> String {
+    let parts: Vec<&str> = iso.split('T').collect();
+    if parts.len() != 2 {
+        return "?".to_string();
+    }
+
+    let date_parts: Vec<&str> = parts[0].split('-').collect();
+    if date_parts.len() != 3 {
+        return "?".to_string();
+    }
+
+    let month_num: u32 = match date_parts[1].parse() {
+        Ok(m) => m,
+        Err(_) => return "?".to_string(),
+    };
+    let day: u32 = match date_parts[2].parse() {
+        Ok(d) => d,
+        Err(_) => return "?".to_string(),
+    };
+
+    let month_name = match month_num {
+        1 => "Jan", 2 => "Feb", 3 => "Mar", 4 => "Apr",
+        5 => "May", 6 => "Jun", 7 => "Jul", 8 => "Aug",
+        9 => "Sep", 10 => "Oct", 11 => "Nov", 12 => "Dec",
+        _ => "???",
+    };
+
+    // Extract HH:MM from time part (before timezone offset)
+    let time_str = parts[1]
+        .split('+').next().unwrap_or("")
+        .split('-').next().unwrap_or("");
+    let time_parts: Vec<&str> = time_str.split(':').collect();
+    let hh = time_parts.first().unwrap_or(&"??");
+    let mm = time_parts.get(1).unwrap_or(&"??");
+
+    format!("{} {} {}:{} UTC", month_name, day, hh, mm)
+}
+

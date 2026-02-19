@@ -3,6 +3,7 @@ set -euo pipefail
 
 # ClawTree installer
 # Usage: curl -fsSL https://raw.githubusercontent.com/Sorrer/ClawTree/main/install.sh | bash
+# Pin a version: curl -fsSL https://raw.githubusercontent.com/Sorrer/ClawTree/main/install.sh | bash -s -- v0.1.0
 
 REPO="Sorrer/ClawTree"
 BINARY_NAME="clawtree"
@@ -34,14 +35,13 @@ detect_platform() {
 }
 
 get_release_tag() {
-    local tag="${CLAWTREE_VERSION:-latest}"
+    local tag="${1:-latest}"
 
     if [ "$tag" = "latest" ]; then
         tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
             | grep '"tag_name"' | head -1 | cut -d'"' -f4)"
         if [ -z "$tag" ]; then
-            # Fallback to nightly if no stable release exists
-            tag="nightly"
+            error "No stable release found. Specify a version: curl ... | bash -s -- v0.1.0"
         fi
     fi
 
@@ -137,7 +137,7 @@ main() {
 
     local platform tag
     platform="$(detect_platform)"
-    tag="$(get_release_tag)"
+    tag="$(get_release_tag "$@")"
 
     info "Platform: ${platform}"
     info "Release:  ${tag}"
@@ -150,4 +150,4 @@ main() {
     info "Done! Run 'clawtree /path/to/bare/repo' to get started."
 }
 
-main
+main "$@"

@@ -43,6 +43,7 @@ fn restore_terminal() {
         io::stdout(),
         LeaveAlternateScreen,
         DisableMouseCapture,
+        DisableBracketedPaste,
         crossterm::cursor::Show
     );
 }
@@ -259,9 +260,11 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
             *info = session::collect_tmux_session_info(&app);
         }
         session::spawn_tmux_title_poller(event_tx.clone(), std::sync::Arc::clone(&tmux_session_info));
-        // Claude usage poller — reuses the same session info snapshot
         session::spawn_claude_usage_poller(event_tx.clone(), std::sync::Arc::clone(&tmux_session_info));
     }
+
+    // ── Global usage poller — background thread ────────────────
+    session::spawn_global_usage_poller(event_tx.clone());
 
     // ── Worktree status poller — background thread ───────────────
     let status_poller_paths = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -301,14 +304,23 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
             continue; // redraw immediately
         }
 
-        // Timeout ensures we never block forever — always loop back to check should_quit
-        match tokio::time::timeout(
+        // Wait for at least one event, then drain all pending events before
+        // redrawing. Processing events in batches prevents input lag when
+        // many Tick/PtyOutput events are queued between redraws.
+        let first_event = match tokio::time::timeout(
             std::time::Duration::from_millis(100),
             event_rx.recv(),
         )
         .await
         {
-            Ok(Some(event)) => {
+            Ok(Some(e)) => e,
+            Ok(None) => break, // all senders dropped
+            Err(_) => continue, // timeout, loop back
+        };
+
+        let mut current_event = Some(first_event);
+        while let Some(event) = current_event.take().or_else(|| event_rx.try_recv().ok()) {
+            if app.should_quit { break; }
                 match event {
                     AppEvent::Input(CrosstermEvent::Key(key)) => {
                         // Re-enable mouse capture on any keypress if it was
@@ -369,6 +381,15 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                             }
                             _ => {}
                         }
+                    }
+                    AppEvent::Input(CrosstermEvent::Paste(data)) => {
+                        // Re-enable mouse capture if it was disabled for text selection
+                        if !app.mouse_captured {
+                            app.mouse_captured = true;
+                            let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
+                        }
+                        keys::handle_paste(&mut app, data);
+                        needs_redraw = true;
                     }
                     AppEvent::Input(CrosstermEvent::Resize(w, h)) => {
                         tracing::info!("RESIZE-EVENT from crossterm: {}x{}", w, h);
@@ -463,6 +484,10 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                         for (session_id, usage) in updates {
                             app.claude_usage.insert(session_id, usage);
                         }
+                        needs_redraw = true;
+                    }
+                    AppEvent::GlobalUsageUpdated { usage } => {
+                        app.global_usage = Some(usage);
                         needs_redraw = true;
                     }
                     AppEvent::WorktreeStatusReady { worktree_path, status, next_refresh_at } => {
@@ -596,11 +621,25 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                         needs_redraw = true;
                     }
                 }
-            }
-            Ok(None) => break, // all senders dropped
-            Err(_) => continue, // timeout, loop back
         }
     }
+
+    // Clean shutdown: explicitly detach our tmux clients before PTY handles
+    // are dropped. Without this, dropping the PTY master sends SIGHUP to the
+    // `tmux attach-session` process, which can cause tmux to briefly resize
+    // the window or inject artifacts (the cumulative "extra newline" bug).
+    // Detaching via server command is clean and immediate.
+    for session in app.sessions.values() {
+        if let Some(ref tmux_name) = session.tmux_session_name {
+            if !session.exited.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = std::process::Command::new("tmux")
+                    .args(["detach-client", "-s", tmux_name])
+                    .output();
+            }
+        }
+    }
+    // Brief pause to let tmux process the detach before PTY handles are dropped
+    std::thread::sleep(std::time::Duration::from_millis(50));
 
     Ok(())
 }

@@ -3,7 +3,9 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'          # Automatically build + release on version tags (e.g. v0.1.0)
+      - 'v*'          # Automatically build + release on version tags pushed via CLI
+  release:
+    types: [created]   # Automatically build when a release is created via GitHub UI
   workflow_dispatch:
     inputs:
       tag:
@@ -99,11 +101,17 @@ jobs:
         id: tag
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
-            # Tag push — use the pushed tag directly
+            # Tag push via CLI
             TAG="${GITHUB_REF_NAME}"
             echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
             echo "title=Release ${TAG}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            # Release created via GitHub UI
+            TAG="${{ github.event.release.tag_name }}"
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=${{ github.event.release.prerelease }}" >> "$GITHUB_OUTPUT"
+            echo "title=${{ github.event.release.name }}" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
             # Manual dispatch with a tag specified
             echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"

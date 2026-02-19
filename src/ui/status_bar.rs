@@ -12,27 +12,31 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         ScreenMode::Mini => "MINI",
         ScreenMode::MiniDrilldown => "MINI/DRILL",
         ScreenMode::Normal => match app.input_mode {
-            InputMode::Normal => "NORMAL",
-            InputMode::Terminal => "TERMINAL",
+            InputMode::Normal => if app.prompt_queue_focused() {
+                "Prompt Queue"
+            } else {
+                match app.selected_sidebar_item() {
+                    Some(crate::app::SidebarItem::Worktree(_)) => "Worktrees",
+                    _ => "NORMAL",
+                }
+            },
+            InputMode::Terminal => "Claude Code",
             InputMode::Dialog => "DIALOG",
         },
     };
 
-    let session_text = match app.active_session_id {
-        Some(sid) => app
-            .sessions
-            .get(&sid)
-            .map(|s| s.label.clone())
-            .unwrap_or_else(|| format!("session-{}", sid)),
-        None => "no session".to_string(),
-    };
-
     let wide = area.width > 120;
-    let help_text: &str = if app.screen_mode == ScreenMode::Mini {
+    let help_text: &str = if app.screen_mode == ScreenMode::Mini && app.mini.focus == crate::app::MiniModeFocus::DetailInput {
         if wide {
-            "j/k:navigate  Enter:open  Space:expand  a:new agent  d:kill  r:rename  s:prompts  F2:normal  ?:help"
+            "Tab:back to tree  Enter:send  Alt+Enter:newline  F2:normal  ?:help"
         } else {
-            "j/k:nav Enter:open a:new d:kill F2:normal ?:help"
+            "Tab:tree Enter:send F2:normal ?:help"
+        }
+    } else if app.screen_mode == ScreenMode::Mini {
+        if wide {
+            "j/k:navigate  Tab:input  o:terminal  a:new agent  d:kill  r:rename  F2:normal  ?:help"
+        } else {
+            "j/k:nav Tab:input a:new d:kill F2:normal ?:help"
         }
     } else if app.screen_mode == ScreenMode::MiniDrilldown {
         if wide {
@@ -123,6 +127,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     let line = Line::from(vec![
         Span::styled(
+            format!(" {} ", theme::LOGO_SMALL),
+            Style::default()
+                .fg(theme::BRAND_CLAW)
+                .bg(theme::STATUS_BAR_BG)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
             format!(" {} ", mode_text),
             Style::default()
                 .fg(Color::Black)
@@ -130,8 +141,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled(&session_text, Style::default().fg(Color::Green)),
-        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
         Span::styled(help_text, Style::default().fg(Color::DarkGray)),
         if !status.is_empty() {
             Span::styled(format!(" | {}", status), status_style)

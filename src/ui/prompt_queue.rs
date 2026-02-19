@@ -12,7 +12,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let queue = app.active_prompt_queue();
     let queue_len = queue.len();
 
-    let border_color = if focused { theme::BORDER_FOCUSED } else { theme::BORDER_UNFOCUSED };
+    let border_color = if focused { theme::BORDER_FOCUSED_PROMPT_QUEUE } else { theme::BORDER_UNFOCUSED };
     let border_mod = if focused { Modifier::BOLD } else { Modifier::empty() };
     let border_type = if focused { BorderType::Thick } else { BorderType::Plain };
     let title = if focused {

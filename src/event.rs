@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crossterm::event::Event as CrosstermEvent;
 
-use crate::session::ClaudeUsage;
+use crate::session::{ClaudeUsage, GlobalUsage};
 use crate::worktree::WorktreeStatus;
 
 /// Unified event type for the application.
@@ -48,5 +48,9 @@ pub enum AppEvent {
     /// Claude Code context usage data updated from debug logs.
     ClaudeUsageUpdated {
         updates: Vec<(u64, ClaudeUsage)>,
+    },
+    /// Global account-level usage data updated from the Anthropic API.
+    GlobalUsageUpdated {
+        usage: GlobalUsage,
     },
 }

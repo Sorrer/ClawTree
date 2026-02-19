@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, CommitPhase, ConfirmAction, Dialog, FocusTarget, InputMode, MiniModeFocus, PendingAction, ScreenMode, SidebarItem, SavedPrompt};
 use crate::session;
+use crate::ui::terminal_pane;
 use crate::worktree;
 
 // ── Keybinding registry ─────────────────────────────────────────────
@@ -119,15 +120,17 @@ const QUEUE_KEYS: &[KeyEntry] = &[
 const MINI_MODE_KEYS: &[KeyEntry] = &[
     ("j / Down",    "Navigate tree"),
     ("k / Up",      "Navigate tree"),
-    ("Enter",       "Open agent / toggle expand worktree"),
+    ("Tab/Enter",   "Focus detail input (on agent)"),
+    ("Enter",       "Toggle expand (on worktree)"),
     ("Space",       "Toggle expand/collapse worktree"),
+    ("o",           "Open full terminal (drilldown)"),
     ("a",           "Create new agent"),
     ("d",           "Kill agent / remove worktree"),
     ("r",           "Rename agent"),
     ("s",           "Browse saved prompts"),
     ("z / Z",       "Collapse / expand all"),
     ("Esc",         "Return to normal mode"),
-    ("Tab",         "Back to agent list (drilldown)"),
+    ("(detail)",    "Type + Enter: send to agent"),
 ];
 
 const INFO_PANEL_KEYS: &[KeyEntry] = &[
@@ -887,6 +890,7 @@ fn handle_terminal_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::PageUp => {
             app.terminal_scroll = app.terminal_scroll.saturating_add(SCROLL_PAGE);
+            clamp_terminal_scroll(app);
             return;
         }
         KeyCode::PageDown => {
@@ -909,6 +913,53 @@ fn handle_terminal_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Handle a bracketed paste event. Sends the entire pasted text to the PTY
+/// in one write (instead of character-by-character), or inserts into the
+/// active dialog/queue input field.
+pub fn handle_paste(app: &mut App, data: String) {
+    match app.input_mode {
+        InputMode::Terminal => {
+            app.terminal_scroll = 0;
+            if let Some(sid) = app.active_session_id {
+                if let Some(session) = app.sessions.get(&sid) {
+                    let _ = session.write_tx.send(bytes::Bytes::from(data));
+                }
+            }
+        }
+        InputMode::Dialog => {
+            // Insert pasted text into whichever dialog input field is active
+            match app.dialog {
+                Some(Dialog::CreateWorktree { ref mut branch_input, ref mut base_branch, focused_field, .. }) => {
+                    let field = if focused_field == 0 { branch_input } else { base_branch };
+                    field.push_str(&data);
+                }
+                Some(Dialog::InitRepo { ref mut url_input, ref mut branch_input, focused_field, .. }) => {
+                    let field = if focused_field == 0 { url_input } else { branch_input };
+                    field.push_str(&data);
+                }
+                Some(Dialog::RenameSession { ref mut input, .. }) => {
+                    input.push_str(&data);
+                }
+                Some(Dialog::GitCommit { ref mut commit_message, phase, .. }) if phase == CommitPhase::Message => {
+                    commit_message.push_str(&data);
+                }
+                _ => {}
+            }
+        }
+        InputMode::Normal => {
+            // Mini mode detail input
+            if app.screen_mode == ScreenMode::Mini && app.mini.focus == MiniModeFocus::DetailInput {
+                app.mini.detail_input.push_str(&data);
+            } else if app.screen_mode == ScreenMode::Mini && app.mini.focus == MiniModeFocus::PromptInput {
+                app.mini.prompt_input.push_str(&data);
+            } else if app.focus == FocusTarget::PromptQueue {
+                // Prompt queue input
+                app.prompt_queue_input.push_str(&data);
+            }
+        }
+    }
+}
+
 const SCROLL_LINES: usize = 3;
 const SCROLL_PAGE: usize = 20;
 
@@ -919,8 +970,24 @@ pub fn handle_scroll(app: &mut App, up: bool) {
     }
     if up {
         app.terminal_scroll = app.terminal_scroll.saturating_add(SCROLL_LINES);
+        clamp_terminal_scroll(app);
     } else {
         app.terminal_scroll = app.terminal_scroll.saturating_sub(SCROLL_LINES);
+    }
+}
+
+/// Clamp terminal_scroll to the actual tmux history size so it can't
+/// overshoot past the top, which would cause a "lag" when scrolling back down.
+fn clamp_terminal_scroll(app: &mut App) {
+    if let Some(sid) = app.active_session_id {
+        if let Some(session) = app.sessions.get(&sid) {
+            if let Some(ref tmux_name) = session.tmux_session_name {
+                let history = terminal_pane::tmux_history_size(tmux_name);
+                if app.terminal_scroll > history {
+                    app.terminal_scroll = history;
+                }
+            }
+        }
     }
 }
 
@@ -1616,6 +1683,7 @@ fn handle_git_commit_enter_message(app: &mut App) {
 fn handle_mini_mode_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     match app.mini.focus {
         MiniModeFocus::AgentList => handle_mini_agent_list_key(app, key, terminal_size),
+        MiniModeFocus::DetailInput => handle_mini_detail_input_key(app, key, terminal_size),
         MiniModeFocus::WorktreeSelector => handle_mini_worktree_selector_key(app, key),
         MiniModeFocus::PromptInput => handle_mini_prompt_input_key(app, key, terminal_size),
         MiniModeFocus::SavedPrompts => handle_mini_saved_prompts_key(app, key),
@@ -1649,30 +1717,36 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
                 app.mini.selected = app.mini.items.len() - 1;
             }
         }
-        KeyCode::Enter => {
-            // Session → drilldown; Worktree → toggle expand
+        KeyCode::Tab | KeyCode::Enter => {
+            // Session → focus detail input; Worktree → toggle expand (Enter) or no-op (Tab)
             match app.mini.items.get(app.mini.selected).copied() {
-                Some(SidebarItem::Session(wi, si)) => {
-                    if let Some(wt) = app.worktrees.get(wi) {
-                        if let Some(&sid) = wt.session_ids.get(si) {
-                            app.mini_drilldown_session = Some(sid);
-                            app.active_session_id = Some(sid);
-                            app.screen_mode = ScreenMode::MiniDrilldown;
-                            app.input_mode = InputMode::Terminal;
-                            app.focus = FocusTarget::TerminalPane;
-                            app.terminal_scroll = 0;
-                            session::resize_all(app, terminal_size.1, terminal_size.0);
-                        }
-                    }
+                Some(SidebarItem::Session(_, _)) => {
+                    app.mini.focus = MiniModeFocus::DetailInput;
                 }
-                Some(SidebarItem::Worktree(wi)) => {
+                Some(SidebarItem::Worktree(wi)) if key.code == KeyCode::Enter => {
                     if let Some(wt) = app.worktrees.get_mut(wi) {
                         wt.expanded = !wt.expanded;
                         app.rebuild_mini_agent_list();
                         app.rebuild_sidebar_items();
                     }
                 }
-                None => {}
+                _ => {}
+            }
+        }
+        KeyCode::Char('o') => {
+            // Open full terminal drilldown for selected session
+            if let Some(SidebarItem::Session(wi, si)) = app.mini.items.get(app.mini.selected).copied() {
+                if let Some(wt) = app.worktrees.get(wi) {
+                    if let Some(&sid) = wt.session_ids.get(si) {
+                        app.mini_drilldown_session = Some(sid);
+                        app.active_session_id = Some(sid);
+                        app.screen_mode = ScreenMode::MiniDrilldown;
+                        app.input_mode = InputMode::Terminal;
+                        app.focus = FocusTarget::TerminalPane;
+                        app.terminal_scroll = 0;
+                        session::resize_all(app, terminal_size.1, terminal_size.0);
+                    }
+                }
             }
         }
         KeyCode::Char(' ') => {
@@ -1782,6 +1856,79 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
     }
 }
 
+/// Instruction appended to every message sent from mini mode's detail input.
+/// Tells Claude to wrap important summary output in XML tags so extract_summary() can parse it.
+const CLAWTREE_INSTRUCTION: &str =
+    "\n\nIMPORTANT: Wrap any important summary information I need to know in <IMPORTANT_CLAWTREE_OUTPUT></IMPORTANT_CLAWTREE_OUTPUT> xml tags.";
+
+fn handle_mini_detail_input_key(app: &mut App, key: KeyEvent, _terminal_size: (u16, u16)) {
+    // Alt+Enter or Shift+Enter → insert newline
+    if key.code == KeyCode::Enter
+        && key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+    {
+        app.mini.detail_input.push('\n');
+        return;
+    }
+
+    match key.code {
+        KeyCode::Enter => {
+            if app.mini.detail_input.is_empty() {
+                return;
+            }
+            // Send the typed text + CLAWTREE instruction + Enter to the selected agent's PTY
+            let sid = match app.mini.items.get(app.mini.selected).copied() {
+                Some(SidebarItem::Session(wi, si)) => {
+                    app.worktrees.get(wi).and_then(|wt| wt.session_ids.get(si)).copied()
+                }
+                _ => None,
+            };
+            if let Some(sid) = sid {
+                if let Some(session) = app.sessions.get(&sid) {
+                    let user_text: String = app.mini.detail_input.drain(..).collect();
+                    let full_text = format!("{}{}", user_text, CLAWTREE_INSTRUCTION);
+
+                    if let Some(ref tmux_name) = session.tmux_session_name {
+                        let tmux = tmux_name.clone();
+                        std::thread::spawn(move || {
+                            // Use tmux set-buffer + paste-buffer for multi-line safety.
+                            // send-keys -l would interpret \n as Enter presses, submitting
+                            // each line separately. paste-buffer triggers bracketed paste
+                            // mode so the terminal receives the full text as a single paste.
+                            let _ = std::process::Command::new("tmux")
+                                .args(["set-buffer", &full_text])
+                                .output();
+                            let _ = std::process::Command::new("tmux")
+                                .args(["paste-buffer", "-t", &tmux])
+                                .output();
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            let _ = std::process::Command::new("tmux")
+                                .args(["send-keys", "-t", &tmux, "Enter"])
+                                .output();
+                        });
+                    } else {
+                        // Non-tmux fallback: write text + CR directly to PTY
+                        let mut payload = full_text.into_bytes();
+                        payload.push(b'\r');
+                        let _ = session.write_tx.send(bytes::Bytes::from(payload));
+                    }
+                    app.set_status("Sent to agent");
+                }
+            }
+        }
+        KeyCode::Tab | KeyCode::Esc => {
+            // Back to tree sidebar
+            app.mini.focus = MiniModeFocus::AgentList;
+        }
+        KeyCode::Backspace => {
+            app.mini.detail_input.pop();
+        }
+        KeyCode::Char(c) if c != '\n' && c != '\r' => {
+            app.mini.detail_input.push(c);
+        }
+        _ => {}
+    }
+}
+
 fn handle_mini_worktree_selector_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
@@ -1807,6 +1954,14 @@ fn handle_mini_worktree_selector_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_mini_prompt_input_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
+    // Alt+Enter or Shift+Enter → insert newline
+    if key.code == KeyCode::Enter
+        && key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+    {
+        app.mini.prompt_input.push('\n');
+        return;
+    }
+
     match key.code {
         KeyCode::Enter => {
             if app.mini.prompt_input.is_empty() {
