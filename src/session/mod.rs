@@ -48,6 +48,72 @@ impl Session {
         }
     }
 
+    /// Returns true if the session's terminal is at Claude Code's input prompt (`>`).
+    /// Scans the bottom of the VT100 screen for a line containing the `>` prompt,
+    /// handling both plain prompts and prompts inside box-drawing characters (│ > │).
+    pub fn is_at_input_prompt(&self) -> bool {
+        if self.exited.load(Ordering::Relaxed) {
+            return false;
+        }
+
+        // For tmux sessions, capture the full visible pane content
+        if let Some(ref tmux_name) = self.tmux_session_name {
+            if let Ok(output) = std::process::Command::new("tmux")
+                .args(["capture-pane", "-t", tmux_name, "-p"])
+                .output()
+            {
+                if output.status.success() {
+                    let content = String::from_utf8_lossy(&output.stdout);
+                    return Self::content_has_input_prompt(&content);
+                }
+            }
+        }
+
+        // Fallback: scan VT100 screen contents
+        match self.parser.try_read() {
+            Ok(guard) => {
+                let screen = guard.screen();
+                let contents = screen.contents();
+                Self::content_has_input_prompt(&contents)
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Check if terminal content contains Claude Code's input prompt.
+    /// Claude Code uses `❯` (U+276F) as the prompt character, rendered inside
+    /// box-drawing borders: `│ ❯ │` or `│ ❯ placeholder text │`.
+    ///
+    /// The key signal is `❯` (or `>` / `›`) appearing as the first non-whitespace
+    /// character between box-drawing borders. Placeholder text after the arrow
+    /// is ignored — it's just a hint shown when the input field is empty.
+    /// When Claude is processing, the area between borders shows different content
+    /// (spinner, status), so the presence of the arrow means "idle, ready for input".
+    fn content_has_input_prompt(content: &str) -> bool {
+        for line in content.lines() {
+            let trimmed = line.trim().trim_matches('\u{a0}').trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Strip box-drawing borders from both sides
+            let stripped = trimmed
+                .trim_start_matches(|c: char| c == '│' || c == '┃' || c == '|')
+                .trim_end_matches(|c: char| c == '│' || c == '┃' || c == '|')
+                .trim()
+                .trim_matches('\u{a0}')
+                .trim();
+            if !stripped.is_empty() && Self::starts_with_prompt(stripped) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns true if the string starts with a prompt character (❯, >, ›).
+    fn starts_with_prompt(s: &str) -> bool {
+        matches!(s.chars().next(), Some('❯') | Some('>') | Some('›'))
+    }
+
     /// Returns true if Claude is actively working, detected by the braille
     /// dot spinner characters (⠂ U+2802 / ⠐ U+2810) that Claude Code sets
     /// in the terminal title while processing.
@@ -76,7 +142,8 @@ pub fn spawn_session(app: &mut App, worktree_idx: usize, terminal_size: (u16, u1
 
     let pane_pct = if app.sidebar_visible { 0.7 } else { 1.0 };
     let cols = (terminal_size.0 as f32 * pane_pct) as u16 - 2;
-    let rows = terminal_size.1 - 3;
+    let queue_height = if app.prompt_queue_visible { app.queue_panel_height() } else { 0 };
+    let rows = terminal_size.1.saturating_sub(3).saturating_sub(queue_height);
 
     let handle = if app.tmux_available {
         let tmux_name = pty::tmux_session_name(&wt.branch, session_id);
@@ -139,6 +206,7 @@ pub fn kill_session(app: &mut App, session_id: u64) {
     }
 
     app.sessions.remove(&session_id);
+    app.prompt_queues.remove(&session_id);
 
     for wt in &mut app.worktrees {
         wt.session_ids.retain(|&id| id != session_id);
@@ -263,7 +331,12 @@ pub fn spawn_tmux_title_poller(
 pub fn resize_all(app: &App, rows: u16, cols: u16) {
     let pane_pct = if app.sidebar_visible { 0.7 } else { 1.0 };
     let pane_cols = (cols as f32 * pane_pct) as u16 - 2;
-    let pane_rows = rows - 3;
+    let queue_height = if app.prompt_queue_visible && app.active_session_id.is_some() {
+        app.queue_panel_height()
+    } else {
+        0
+    };
+    let pane_rows = rows.saturating_sub(3).saturating_sub(queue_height);
 
     for session in app.sessions.values() {
         if !session.exited.load(Ordering::SeqCst) {

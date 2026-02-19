@@ -23,8 +23,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
+    let title = if is_focused { " ▸ Worktrees " } else { " Worktrees " };
     let block = Block::default()
-        .title(" Worktrees ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(border_style);
 

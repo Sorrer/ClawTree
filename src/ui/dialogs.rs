@@ -62,15 +62,20 @@ pub fn draw(f: &mut Frame, app: &App) {
             draw_dirty_worktree(f, branch_name, files, *selected);
         }
         Dialog::GitCommit {
+            worktree_idx,
             unstaged,
             staged,
             section,
             selected,
             phase,
             commit_message,
-            ..
         } => {
-            draw_git_commit(f, unstaged, staged, *section, *selected, *phase, commit_message);
+            let branch_name = app
+                .worktrees
+                .get(*worktree_idx)
+                .map(|w| w.branch.as_str())
+                .unwrap_or("???");
+            draw_git_commit(f, branch_name, unstaged, staged, *section, *selected, *phase, commit_message);
         }
     }
 }
@@ -603,6 +608,7 @@ fn draw_dirty_worktree(
 
 fn draw_git_commit(
     f: &mut Frame,
+    branch: &str,
     unstaged: &[(char, String)],
     staged: &[(char, String)],
     section: usize,
@@ -612,30 +618,57 @@ fn draw_git_commit(
 ) {
     match phase {
         CommitPhase::Staging => {
-            draw_git_commit_staging(f, unstaged, staged, section, selected);
+            draw_git_commit_staging(f, branch, unstaged, staged, section, selected);
         }
         CommitPhase::Message => {
-            draw_git_commit_message(f, staged, commit_message);
+            draw_git_commit_message(f, branch, staged, commit_message);
         }
     }
 }
 
 fn draw_git_commit_staging(
     f: &mut Frame,
+    branch: &str,
     unstaged: &[(char, String)],
     staged: &[(char, String)],
     section: usize,
     selected: usize,
 ) {
-    let unstaged_visible = unstaged.len().min(10);
-    let staged_visible = staged.len().min(10);
-    // unstaged header(1) + unstaged files + staged header(1) + staged files + blank(1) + help(1)
-    let height = (unstaged_visible as u16) + (staged_visible as u16) + 5;
-    let area = centered_rect(55, height, f.area());
+    // Use up to 80% of terminal height, leaving room for surrounding UI
+    let max_height = (f.area().height as f32 * 0.8) as u16;
+    // Fixed rows: unstaged header(1) + staged header(1) + help(1) + borders(2) = 5
+    let fixed_rows: u16 = 5;
+    let available_for_files = max_height.saturating_sub(fixed_rows);
+
+    // Split available space between the two sections
+    let unstaged_visible = if unstaged.is_empty() {
+        0
+    } else if staged.is_empty() {
+        (unstaged.len() as u16).min(available_for_files)
+    } else {
+        // Give each section at least 1 row, then split remaining proportionally
+        let half = available_for_files / 2;
+        (unstaged.len() as u16).min(half.max(3))
+    };
+    let staged_visible = if staged.is_empty() {
+        0
+    } else {
+        let remaining = available_for_files.saturating_sub(unstaged_visible);
+        (staged.len() as u16).min(remaining.max(3))
+    };
+
+    // Reclaim unused space from whichever section didn't need it all
+    let unstaged_visible = {
+        let staged_unused = available_for_files.saturating_sub(unstaged_visible).saturating_sub(staged_visible);
+        (unstaged.len() as u16).min(unstaged_visible + staged_unused)
+    };
+
+    let height = unstaged_visible + staged_visible + 3 + 2; // +3 for headers+help, +2 for borders
+    let area = centered_rect(60, height, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Commit Changes ")
+        .title(format!(" Commit — {} ", branch))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Green));
 
@@ -646,12 +679,24 @@ fn draw_git_commit_staging(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),                       // unstaged header
-            Constraint::Length(unstaged_visible as u16), // unstaged files
+            Constraint::Length(unstaged_visible),        // unstaged files
             Constraint::Length(1),                       // staged header
-            Constraint::Length(staged_visible as u16),   // staged files
+            Constraint::Length(staged_visible),          // staged files
             Constraint::Length(1),                       // help
         ])
         .split(inner);
+
+    // Scroll offset for the active section
+    let unstaged_scroll = if section == 0 && unstaged_visible > 0 {
+        scroll_offset_for(selected, unstaged_visible as usize)
+    } else {
+        0
+    };
+    let staged_scroll = if section == 1 && staged_visible > 0 {
+        scroll_offset_for(selected, staged_visible as usize)
+    } else {
+        0
+    };
 
     // Unstaged header
     let unstaged_hdr_style = if section == 0 {
@@ -659,17 +704,23 @@ fn draw_git_commit_staging(
     } else {
         Style::default().fg(Color::DarkGray)
     };
+    let unstaged_scroll_hint = if unstaged.len() as u16 > unstaged_visible {
+        format!(" [{}/{}]", (selected + 1).min(unstaged.len()), unstaged.len())
+    } else {
+        String::new()
+    };
     f.render_widget(
-        Paragraph::new(format!("── Unstaged ({}) ──", unstaged.len()))
+        Paragraph::new(format!("── Unstaged ({}) ──{}", unstaged.len(), if section == 0 { &unstaged_scroll_hint } else { "" }))
             .style(unstaged_hdr_style),
         chunks[0],
     );
 
-    // Unstaged files
+    // Unstaged files (with scroll)
     let unstaged_items: Vec<ListItem> = unstaged
         .iter()
         .enumerate()
-        .take(unstaged_visible)
+        .skip(unstaged_scroll)
+        .take(unstaged_visible as usize)
         .map(|(idx, (status, path))| {
             let is_sel = section == 0 && idx == selected;
             let marker = if is_sel { ">" } else { " " };
@@ -694,17 +745,23 @@ fn draw_git_commit_staging(
     } else {
         Style::default().fg(Color::DarkGray)
     };
+    let staged_scroll_hint = if staged.len() as u16 > staged_visible {
+        format!(" [{}/{}]", (selected + 1).min(staged.len()), staged.len())
+    } else {
+        String::new()
+    };
     f.render_widget(
-        Paragraph::new(format!("── Staged ({}) ──", staged.len()))
+        Paragraph::new(format!("── Staged ({}) ──{}", staged.len(), if section == 1 { &staged_scroll_hint } else { "" }))
             .style(staged_hdr_style),
         chunks[2],
     );
 
-    // Staged files
+    // Staged files (with scroll)
     let staged_items: Vec<ListItem> = staged
         .iter()
         .enumerate()
-        .take(staged_visible)
+        .skip(staged_scroll)
+        .take(staged_visible as usize)
         .map(|(idx, (status, path))| {
             let is_sel = section == 1 && idx == selected;
             let marker = if is_sel { ">" } else { " " };
@@ -730,19 +787,33 @@ fn draw_git_commit_staging(
     );
 }
 
+/// Calculate scroll offset to keep `selected` visible within `visible_count` rows.
+fn scroll_offset_for(selected: usize, visible_count: usize) -> usize {
+    if visible_count == 0 {
+        return 0;
+    }
+    if selected >= visible_count {
+        selected - visible_count + 1
+    } else {
+        0
+    }
+}
+
 fn draw_git_commit_message(
     f: &mut Frame,
+    branch: &str,
     staged: &[(char, String)],
     commit_message: &str,
 ) {
-    let staged_visible = staged.len().min(8);
-    // staged header(1) + staged files + blank(1) + label(1) + input(1) + blank(1) + help(1)
-    let height = (staged_visible as u16) + 7;
-    let area = centered_rect(55, height, f.area());
+    let max_height = (f.area().height as f32 * 0.6) as u16;
+    let fixed_rows = 6; // header + blank + label + input + help + borders
+    let staged_visible = (staged.len() as u16).min(max_height.saturating_sub(fixed_rows));
+    let height = staged_visible + fixed_rows;
+    let area = centered_rect(60, height, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Commit Changes ")
+        .title(format!(" Commit — {} ", branch))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Green));
 
@@ -753,7 +824,7 @@ fn draw_git_commit_message(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),                     // staged header
-            Constraint::Length(staged_visible as u16), // staged files
+            Constraint::Length(staged_visible),          // staged files
             Constraint::Length(1),                     // blank
             Constraint::Length(1),                     // label
             Constraint::Length(1),                     // input
@@ -769,7 +840,7 @@ fn draw_git_commit_message(
 
     let staged_items: Vec<ListItem> = staged
         .iter()
-        .take(staged_visible)
+        .take(staged_visible as usize)
         .map(|(status, path)| {
             ListItem::new(Line::from(Span::styled(
                 format!("  {} {}", status, path),

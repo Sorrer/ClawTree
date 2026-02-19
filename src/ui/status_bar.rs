@@ -16,6 +16,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let focus_text = match app.focus {
         FocusTarget::Sidebar => "Sidebar",
         FocusTarget::TerminalPane => "Terminal",
+        FocusTarget::PromptQueue => "Queue",
     };
 
     let session_text = match app.active_session_id {
@@ -29,22 +30,30 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     let help_text = if !app.repo_detected && app.input_mode != InputMode::Dialog {
         "i:init-repo ^q:quit"
+    } else if app.prompt_queue_focused() {
+        "Enter:add/edit d:del \u{2191}\u{2193}:nav Tab:sidebar Esc:back ^p:hide"
     } else {
         match app.input_mode {
             InputMode::Normal => {
                 match app.selected_sidebar_item() {
                     Some(crate::app::SidebarItem::Session(_, _)) => {
-                        "Enter:switch c:claude d:del w:term W:ext-claude j/k:nav ^q:quit"
+                        "Enter:switch c:claude d:del ^p:queue j/k:nav ^q:quit"
                     }
                     Some(crate::app::SidebarItem::Worktree(_)) => {
-                        "c:claude C:yolo n:new-wt d:del m:merge w:term W:ext-claude ^q:quit"
+                        "c:claude C:yolo n:new-wt d:del m:merge ^p:queue ^q:quit"
                     }
                     None => {
                         "n:new-wt ^b:sidebar ^q:quit"
                     }
                 }
             }
-            InputMode::Terminal => "Esc/Tab:sidebar ^b:sidebar ^q:quit",
+            InputMode::Terminal => {
+                if app.prompt_queue_visible {
+                    "Tab:queue ^p:queue ^b:sidebar ^q:quit"
+                } else {
+                    "Tab:sidebar ^p:queue ^b:sidebar ^q:quit"
+                }
+            }
             InputMode::Dialog => "Enter:confirm Esc:cancel Tab:next-field",
         }
     };

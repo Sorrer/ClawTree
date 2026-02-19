@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::event::AppEvent;
@@ -11,6 +12,7 @@ use crate::worktree::{Worktree, WorktreeStatus};
 pub enum FocusTarget {
     Sidebar,
     TerminalPane,
+    PromptQueue,
 }
 
 /// Current input mode.
@@ -161,6 +163,20 @@ pub struct App {
     pub terminal_scroll: usize,
     /// Merge to retry after a commit completes (set when target worktree was dirty).
     pub pending_merge: Option<PendingAction>,
+    /// Whether the prompt queue panel is visible.
+    pub prompt_queue_visible: bool,
+    /// Per-session prompt queues.
+    pub prompt_queues: HashMap<u64, Vec<String>>,
+    /// Selected index in the prompt queue list.
+    pub prompt_queue_selected: usize,
+    /// Current input text in the prompt queue input field.
+    pub prompt_queue_input: String,
+    /// Index of the queue item being edited (None = not editing).
+    pub prompt_queue_editing: Option<usize>,
+    /// Timestamp of last auto-sent prompt (for cooldown).
+    pub prompt_queue_last_send: Option<Instant>,
+    /// Timestamp of last auto-send check (throttle tmux queries to ~1/sec).
+    pub prompt_queue_last_check: Option<Instant>,
 }
 
 impl App {
@@ -191,10 +207,17 @@ impl App {
             tmux_available,
             terminal_scroll: 0,
             pending_merge: None,
+            prompt_queue_visible: false,
+            prompt_queues: HashMap::new(),
+            prompt_queue_selected: 0,
+            prompt_queue_input: String::new(),
+            prompt_queue_editing: None,
+            prompt_queue_last_send: None,
+            prompt_queue_last_check: None,
         }
     }
 
-    /// Toggle focus between sidebar and terminal pane.
+    /// Toggle focus: Sidebar → TerminalPane → PromptQueue (if visible) → Sidebar.
     pub fn toggle_focus(&mut self) {
         match self.focus {
             FocusTarget::Sidebar => {
@@ -207,9 +230,18 @@ impl App {
                 }
             }
             FocusTarget::TerminalPane => {
+                if self.prompt_queue_visible && self.active_session_id.is_some() {
+                    self.focus = FocusTarget::PromptQueue;
+                    self.input_mode = InputMode::Normal;
+                } else {
+                    self.focus = FocusTarget::Sidebar;
+                    self.input_mode = InputMode::Normal;
+                    self.info_panel_commit_msg = None;
+                }
+            }
+            FocusTarget::PromptQueue => {
                 self.focus = FocusTarget::Sidebar;
                 self.input_mode = InputMode::Normal;
-                self.info_panel_commit_msg = None;
             }
         }
     }
@@ -373,10 +405,104 @@ impl App {
                     InputMode::Terminal
                 }
             }
+            FocusTarget::PromptQueue => InputMode::Normal,
         };
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
+    }
+
+    /// Get the prompt queue for the active session (immutable).
+    pub fn active_prompt_queue(&self) -> &[String] {
+        self.active_session_id
+            .and_then(|sid| self.prompt_queues.get(&sid))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Returns true if the prompt queue panel is focused.
+    pub fn prompt_queue_focused(&self) -> bool {
+        self.focus == FocusTarget::PromptQueue
+    }
+
+    /// Height of the queue panel in rows (including borders).
+    pub fn queue_panel_height(&self) -> u16 {
+        let queue_len = self.active_prompt_queue().len();
+        // 2 for borders + 1 for input line + queue items (min 1 for empty state)
+        let content_rows = 1 + queue_len.max(1);
+        (content_rows as u16 + 2).min(12) // cap at 12 rows
+    }
+
+    /// Path to the prompt queues persistence file.
+    fn prompt_queues_path(&self) -> PathBuf {
+        self.bare_repo_path.join(".prompt_queues.json")
+    }
+
+    /// Save all prompt queues to disk, keyed by tmux session name.
+    pub fn save_prompt_queues(&self) {
+        let mut data: HashMap<String, Vec<String>> = HashMap::new();
+        for (sid, queue) in &self.prompt_queues {
+            if queue.is_empty() {
+                continue;
+            }
+            // Use tmux session name as stable key; skip non-tmux sessions
+            if let Some(session) = self.sessions.get(sid) {
+                if let Some(ref tmux_name) = session.tmux_session_name {
+                    data.insert(tmux_name.clone(), queue.clone());
+                }
+            }
+        }
+        let path = self.prompt_queues_path();
+        if data.is_empty() {
+            // Remove file if no queues to save
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        match serde_json::to_string_pretty(&data) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    tracing::warn!("Failed to save prompt queues: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to serialize prompt queues: {}", e);
+            }
+        }
+    }
+
+    /// Load prompt queues from disk for all current sessions (by tmux name).
+    pub fn load_prompt_queues(&mut self) {
+        let path = self.prompt_queues_path();
+        let json = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => return, // No file, nothing to load
+        };
+        let data: HashMap<String, Vec<String>> = match serde_json::from_str(&json) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("Failed to parse prompt queues file: {}", e);
+                return;
+            }
+        };
+        if data.is_empty() {
+            return;
+        }
+        // Match tmux session names to current session IDs
+        for (sid, session) in &self.sessions {
+            if let Some(ref tmux_name) = session.tmux_session_name {
+                if let Some(queue) = data.get(tmux_name) {
+                    // Trim whitespace/newlines that may have accumulated
+                    let cleaned: Vec<String> = queue
+                        .iter()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !cleaned.is_empty() {
+                        self.prompt_queues.insert(*sid, cleaned);
+                    }
+                }
+            }
+        }
     }
 }

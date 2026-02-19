@@ -1,4 +1,5 @@
 pub mod dialogs;
+pub mod prompt_queue;
 pub mod sidebar;
 pub mod status_bar;
 pub mod terminal_pane;
@@ -22,6 +23,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
+    let show_queue = app.prompt_queue_visible && app.active_session_id.is_some();
+
     if !app.repo_detected {
         welcome::draw(f, app, chunks[0]);
     } else if app.sidebar_visible {
@@ -34,9 +37,36 @@ pub fn draw(f: &mut Frame, app: &App) {
             .split(chunks[0]);
 
         sidebar::draw(f, app, main_chunks[0]);
-        terminal_pane::draw(f, app, main_chunks[1]);
+
+        if show_queue {
+            let pane_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(5),                             // terminal pane
+                    Constraint::Length(app.queue_panel_height()),   // prompt queue
+                ])
+                .split(main_chunks[1]);
+
+            terminal_pane::draw(f, app, pane_chunks[0]);
+            prompt_queue::draw(f, app, pane_chunks[1]);
+        } else {
+            terminal_pane::draw(f, app, main_chunks[1]);
+        }
     } else {
-        terminal_pane::draw(f, app, chunks[0]);
+        if show_queue {
+            let pane_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(5),
+                    Constraint::Length(app.queue_panel_height()),
+                ])
+                .split(chunks[0]);
+
+            terminal_pane::draw(f, app, pane_chunks[0]);
+            prompt_queue::draw(f, app, pane_chunks[1]);
+        } else {
+            terminal_pane::draw(f, app, chunks[0]);
+        }
     }
 
     status_bar::draw(f, app, chunks[1]);

@@ -2153,6 +2153,8 @@ dependencies = [
  "libc",
  "portable-pty",
  "ratatui",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

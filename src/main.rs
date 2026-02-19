@@ -8,6 +8,7 @@ mod worktree;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, MouseEventKind};
@@ -221,6 +222,8 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, tmu
         let reconnected = session::reconnect_tmux_sessions(&mut app, (size.width, size.height));
         if reconnected > 0 {
             app.set_status(format!("Reconnected {} tmux session(s)", reconnected));
+            // Restore persisted prompt queues for reconnected sessions
+            app.load_prompt_queues();
         }
     }
 
@@ -345,6 +348,85 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, tmu
                         needs_redraw = true;
                     }
                     AppEvent::Tick => {
+                        // Auto-send next queued prompt when Claude is idle.
+                        // Checks ALL sessions with queues, not just the active one.
+                        // Throttled to ~1 check/sec to avoid hammering tmux.
+                        if app.dialog.is_none() && app.loading_message.is_none() {
+                            let cooldown_ok = app.prompt_queue_last_send
+                                .map(|t| t.elapsed() > Duration::from_secs(5))
+                                .unwrap_or(true);
+                            let check_ok = app.prompt_queue_last_check
+                                .map(|t| t.elapsed() > Duration::from_millis(1000))
+                                .unwrap_or(true);
+
+                            if cooldown_ok && check_ok {
+                                app.prompt_queue_last_check = Some(Instant::now());
+                                // Phase 1: find a session ready to receive a prompt (immutable borrows)
+                                let candidates: Vec<u64> = app.prompt_queues.iter()
+                                    .filter(|(_, q)| !q.is_empty())
+                                    .map(|(sid, _)| *sid)
+                                    .collect();
+
+                                let mut send_to: Option<(u64, Option<String>, tokio::sync::mpsc::UnboundedSender<bytes::Bytes>)> = None;
+                                for sid in &candidates {
+                                    if let Some(session) = app.sessions.get(sid) {
+                                        if !session.exited.load(Ordering::Relaxed)
+                                            && !session.is_active()
+                                        {
+                                            let settled = session.last_output
+                                                .read()
+                                                .ok()
+                                                .map(|t| t.elapsed() > Duration::from_secs(2))
+                                                .unwrap_or(false);
+                                            if settled {
+                                                send_to = Some((*sid, session.tmux_session_name.clone(), session.write_tx.clone()));
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Phase 2: send the prompt and submit it.
+                                if let Some((sid, tmux_name, write_tx)) = send_to {
+                                    if let Some(queue) = app.prompt_queues.get_mut(&sid) {
+                                        if !queue.is_empty() {
+                                            let prompt = queue.remove(0);
+                                            if let Some(ref tmux) = tmux_name {
+                                                // Use tmux send-keys — the reliable way to
+                                                // type into a tmux pane. -l sends literal text,
+                                                // then a separate Enter key submits.
+                                                let tmux = tmux.clone();
+                                                let prompt_clone = prompt.clone();
+                                                tokio::spawn(async move {
+                                                    let _ = std::process::Command::new("tmux")
+                                                        .args(["send-keys", "-t", &tmux, "-l", &prompt_clone])
+                                                        .output();
+                                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                                    let _ = std::process::Command::new("tmux")
+                                                        .args(["send-keys", "-t", &tmux, "Enter"])
+                                                        .output();
+                                                });
+                                            } else {
+                                                // Non-tmux fallback: write to PTY directly
+                                                let mut payload = prompt.into_bytes();
+                                                payload.push(b'\r');
+                                                let _ = write_tx.send(bytes::Bytes::from(payload));
+                                            }
+                                            app.prompt_queue_last_send = Some(Instant::now());
+                                            // Clamp selected index if this is the active session
+                                            if app.active_session_id == Some(sid) {
+                                                if queue.is_empty() {
+                                                    app.prompt_queue_selected = 0;
+                                                } else if app.prompt_queue_selected >= queue.len() {
+                                                    app.prompt_queue_selected = queue.len() - 1;
+                                                }
+                                            }
+                                            app.set_status("Queue: sent prompt");
+                                            app.save_prompt_queues();
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         needs_redraw = true;
                     }
                 }

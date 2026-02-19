@@ -15,6 +15,22 @@ pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         app.sidebar_visible = !app.sidebar_visible;
         return;
     }
+    if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
+        if app.active_session_id.is_some() {
+            app.prompt_queue_visible = !app.prompt_queue_visible;
+            session::resize_all(app, terminal_size.1, terminal_size.0);
+            if app.prompt_queue_visible {
+                // Focus the queue panel
+                app.focus = FocusTarget::PromptQueue;
+                app.input_mode = InputMode::Normal;
+            } else if app.focus == FocusTarget::PromptQueue {
+                // Was focused on queue, go back to terminal
+                app.focus = FocusTarget::TerminalPane;
+                app.input_mode = InputMode::Terminal;
+            }
+        }
+        return;
+    }
 
     match app.input_mode {
         InputMode::Normal => handle_normal_key(app, key, terminal_size),
@@ -24,6 +40,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
 }
 
 fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
+    // Prompt queue focused — handle queue keys
+    if app.prompt_queue_focused() {
+        handle_prompt_queue_key(app, key, terminal_size);
+        return;
+    }
+
     // Info panel focused — handle file navigation/staging keys
     if app.info_panel_focused() {
         handle_info_panel_key(app, key, terminal_size);
@@ -137,6 +159,16 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         // W — open new Windows Terminal tab with claude in worktree directory
         (KeyModifiers::SHIFT, KeyCode::Char('W')) => {
             open_wsl_window(app, true);
+        }
+
+        // q — toggle prompt queue panel
+        (_, KeyCode::Char('q')) => {
+            if app.active_session_id.is_some() {
+                app.prompt_queue_visible = !app.prompt_queue_visible;
+                // Trigger PTY resize since available height changed
+                let size = terminal_size;
+                session::resize_all(app, size.1, size.0);
+            }
         }
 
         _ => {}
@@ -493,12 +525,118 @@ fn handle_merge(app: &mut App) {
     }
 }
 
+fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
+    let sid = match app.active_session_id {
+        Some(sid) => sid,
+        None => return,
+    };
+
+    match key.code {
+        KeyCode::Esc => {
+            if app.prompt_queue_editing.is_some() {
+                // Cancel editing
+                app.prompt_queue_editing = None;
+                app.prompt_queue_input.clear();
+            } else {
+                // Go back to terminal pane
+                app.focus = FocusTarget::TerminalPane;
+                app.input_mode = InputMode::Terminal;
+            }
+        }
+        KeyCode::Tab => {
+            // Escape to sidebar
+            app.focus = FocusTarget::Sidebar;
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Enter => {
+            if let Some(edit_idx) = app.prompt_queue_editing.take() {
+                // Save edited item back to queue
+                if !app.prompt_queue_input.is_empty() {
+                    let input = app.prompt_queue_input.drain(..).collect::<String>();
+                    if let Some(queue) = app.prompt_queues.get_mut(&sid) {
+                        if edit_idx < queue.len() {
+                            queue[edit_idx] = input;
+                        }
+                    }
+                    app.save_prompt_queues();
+                }
+            } else if !app.prompt_queue_input.is_empty() {
+                // Add new item to queue
+                let input = app.prompt_queue_input.drain(..).collect::<String>();
+                app.prompt_queues.entry(sid).or_default().push(input);
+                app.save_prompt_queues();
+            } else {
+                // Input empty + item selected → load for editing
+                let queue_len = app.active_prompt_queue().len();
+                if queue_len > 0 && app.prompt_queue_selected < queue_len {
+                    let text = app.active_prompt_queue()[app.prompt_queue_selected].clone();
+                    app.prompt_queue_input = text;
+                    app.prompt_queue_editing = Some(app.prompt_queue_selected);
+                }
+            }
+        }
+        KeyCode::Up => {
+            if app.prompt_queue_input.is_empty() && app.prompt_queue_editing.is_none() {
+                if app.prompt_queue_selected > 0 {
+                    app.prompt_queue_selected -= 1;
+                }
+            }
+        }
+        KeyCode::Down => {
+            if app.prompt_queue_input.is_empty() && app.prompt_queue_editing.is_none() {
+                let queue_len = app.active_prompt_queue().len();
+                if queue_len > 0 && app.prompt_queue_selected + 1 < queue_len {
+                    app.prompt_queue_selected += 1;
+                }
+            }
+        }
+        KeyCode::Char('d') if app.prompt_queue_input.is_empty() && app.prompt_queue_editing.is_none() => {
+            let queue_len = app.active_prompt_queue().len();
+            if queue_len > 0 && app.prompt_queue_selected < queue_len {
+                if let Some(queue) = app.prompt_queues.get_mut(&sid) {
+                    queue.remove(app.prompt_queue_selected);
+                    if app.prompt_queue_selected >= queue.len() && app.prompt_queue_selected > 0 {
+                        app.prompt_queue_selected -= 1;
+                    }
+                }
+                app.save_prompt_queues();
+            }
+        }
+        KeyCode::Delete if app.prompt_queue_input.is_empty() && app.prompt_queue_editing.is_none() => {
+            let queue_len = app.active_prompt_queue().len();
+            if queue_len > 0 && app.prompt_queue_selected < queue_len {
+                if let Some(queue) = app.prompt_queues.get_mut(&sid) {
+                    queue.remove(app.prompt_queue_selected);
+                    if app.prompt_queue_selected >= queue.len() && app.prompt_queue_selected > 0 {
+                        app.prompt_queue_selected -= 1;
+                    }
+                }
+                app.save_prompt_queues();
+            }
+        }
+        KeyCode::Backspace => {
+            app.prompt_queue_input.pop();
+        }
+        KeyCode::Char(c) if c != '\n' && c != '\r' => {
+            app.prompt_queue_input.push(c);
+        }
+        _ => {}
+    }
+
+    // Suppress unused warning for terminal_size — we accept it for consistency with other handlers
+    let _ = terminal_size;
+}
+
 fn handle_terminal_key(app: &mut App, key: KeyEvent) {
-    // Tab escapes back to the sidebar; Escape passes through to the PTY
-    // so Claude Code can use it (e.g. cancel operations).
+    // Tab: go to PromptQueue if visible, else escape to sidebar
     if key.code == KeyCode::Tab && key.modifiers.is_empty() {
         app.terminal_scroll = 0;
-        app.escape_to_sidebar();
+        if app.prompt_queue_visible && app.active_session_id.is_some() {
+            app.focus = FocusTarget::PromptQueue;
+            app.input_mode = InputMode::Normal;
+        } else {
+            app.escape_to_sidebar();
+        }
         return;
     }
 
@@ -575,8 +713,8 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     return;
                 }
             }
-            // Clear any pending merge if cancelling a commit dialog
-            if matches!(app.dialog, Some(Dialog::GitCommit { .. })) {
+            // Clear any pending merge if cancelling a commit or dirty worktree dialog
+            if matches!(app.dialog, Some(Dialog::GitCommit { .. }) | Some(Dialog::DirtyWorktree { .. })) {
                 app.pending_merge = None;
             }
             app.close_dialog();
@@ -653,6 +791,11 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         // Quick check: source worktree clean?
                         match worktree::is_worktree_clean(app, source_worktree_idx) {
                             Ok(false) => {
+                                // Remember the merge so we can retry after commit
+                                app.pending_merge = Some(PendingAction::MergeExecute {
+                                    source_worktree_idx,
+                                    target_branch: target_branch.clone(),
+                                });
                                 match worktree::status_porcelain(app, source_worktree_idx) {
                                     Ok(changes) => {
                                         let files: Vec<(String, String)> = changes
@@ -671,6 +814,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                                         });
                                     }
                                     Err(e) => {
+                                        app.pending_merge = None;
                                         app.set_status(format!("Failed to get status: {}", e));
                                         app.close_dialog();
                                     }
@@ -753,9 +897,13 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             let target_branch = app.worktrees.get(worktree_idx)
                                 .map(|w| w.branch.clone())
                                 .unwrap_or_default();
+                            // Get source branch HEAD commit info for context
+                            let source_head = app.worktrees.get(worktree_idx)
+                                .and_then(|wt| worktree::git::branch_head_oneline(&wt.path, &source_branch).ok())
+                                .unwrap_or_else(|| source_branch.clone());
                             let prompt = format!(
-                                "Resolve the merge conflicts in this repository. Branch '{}' was being merged into '{}'.",
-                                source_branch, target_branch
+                                "Resolve the merge conflicts in this repository. Branch '{}' (HEAD: {}) was being merged into '{}'. Resolve all conflicts and create a commit.",
+                                source_branch, source_head, target_branch
                             );
                             app.close_dialog();
                             if app.worktrees.get(worktree_idx).is_some() {
@@ -850,6 +998,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         }
                         _ => {
                             // Cancel
+                            app.pending_merge = None;
                             app.close_dialog();
                         }
                     }

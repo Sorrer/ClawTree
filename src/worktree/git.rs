@@ -447,6 +447,26 @@ pub fn head_subject(worktree_path: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Get the short hash + subject of a specific branch or ref (e.g. "abc1234 Fix something").
+/// `repo_path` can be any worktree or the bare repo — git resolves the ref from there.
+pub fn branch_head_oneline(repo_path: &Path, branch: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(["log", "--oneline", "-1", branch])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to run git log --oneline for branch")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "git log --oneline -1 {} failed: {}",
+            branch,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Push a branch to the remote.
 /// Tries `git push`, falls back to `git push -u origin <branch>` if no upstream.
 pub fn push_branch(worktree_path: &Path, branch: &str) -> Result<String> {

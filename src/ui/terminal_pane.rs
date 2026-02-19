@@ -16,17 +16,19 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
+    let focus_indicator = if is_focused { " ▸" } else { "" };
     let mut title = match app.active_session_id {
         Some(sid) => {
             let session = app.sessions.get(&sid);
-            let label = session.map(|s| s.label.as_str()).unwrap_or("???");
             let term_title = session.and_then(|s| s.terminal_title());
+            let label = session.map(|s| s.label.as_str()).unwrap_or("???");
+            // Prefer terminal title (set by Claude); fall back to session label
             match term_title {
-                Some(t) => format!(" {} - {} ", label, t),
-                None => format!(" {} ", label),
+                Some(t) => format!("{} {} ", focus_indicator, t),
+                None => format!("{} {} ", focus_indicator, label),
             }
         }
-        None => " Terminal ".to_string(),
+        None => format!("{} Terminal ", focus_indicator),
     };
 
     if app.terminal_scroll > 0 {
@@ -107,7 +109,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         if let Some(wt) = app.worktrees.get(wi) {
             let branch = &wt.branch;
             let block = Block::default()
-                .title(format!(" {} ", branch))
+                .title(format!("{} {} ", focus_indicator, branch))
                 .borders(Borders::ALL)
                 .border_style(border_style);
             let inner = block.inner(area);
