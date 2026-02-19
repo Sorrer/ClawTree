@@ -30,7 +30,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let wide = area.width > 120;
     let help_text: &str = if app.screen_mode == ScreenMode::Mini {
         if wide {
-            "j/k:navigate  Enter:open  a:new agent  d:kill  r:rename  s:prompts  F2:normal  ?:help"
+            "j/k:navigate  Enter:open  Space:expand  a:new agent  d:kill  r:rename  s:prompts  F2:normal  ?:help"
         } else {
             "j/k:nav Enter:open a:new d:kill F2:normal ?:help"
         }

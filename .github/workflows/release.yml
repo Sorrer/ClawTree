@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    tags:
+      - 'v*'          # Automatically build + release on version tags (e.g. v0.1.0)
   workflow_dispatch:
     inputs:
       tag:
@@ -8,7 +11,7 @@ on:
         required: false
         default: ''
   schedule:
-    - cron: '0 4 * * *' # 4 AM UTC daily
+    - cron: '0 4 * * *' # 4 AM UTC daily — nightly build
 
 permissions:
   contents: write
@@ -66,30 +69,46 @@ jobs:
           cd target/${{ matrix.target }}/release
           tar czf "../../../${ARCHIVE}" "${BINARY_NAME}"
           cd ../../..
+          sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
-          path: ${{ env.ARCHIVE }}
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
 
   release:
     needs: build
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout (for changelog context)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Determine tag
         id: tag
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ] || [ -z "${{ github.event.inputs.tag }}" ]; then
-            echo "tag=nightly" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "title=Nightly Build ($(date -u +%Y-%m-%d))" >> "$GITHUB_OUTPUT"
-          else
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # Tag push — use the pushed tag directly
+            TAG="${GITHUB_REF_NAME}"
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "title=Release ${TAG}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
+            # Manual dispatch with a tag specified
             echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
             echo "title=Release ${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            # Schedule or manual dispatch without tag — nightly
+            echo "tag=nightly" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "title=Nightly Build ($(date -u +%Y-%m-%d))" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Download all artifacts
@@ -108,13 +127,30 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
 
-      - name: Create release
+      - name: Create or update release
         run: |
-          gh release create "${{ steps.tag.outputs.tag }}" \
-            artifacts/*.tar.gz \
-            --repo "${{ github.repository }}" \
-            --title "${{ steps.tag.outputs.title }}" \
-            --generate-notes \
-            ${{ steps.tag.outputs.prerelease == 'true' && '--prerelease' || '' }}
+          TAG="${{ steps.tag.outputs.tag }}"
+          TITLE="${{ steps.tag.outputs.title }}"
+          PRERELEASE_FLAG=""
+          if [ "${{ steps.tag.outputs.prerelease }}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          # If the release already exists (e.g. created via GitHub UI), upload assets to it
+          if gh release view "$TAG" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "Release $TAG already exists — uploading artifacts..."
+            gh release upload "$TAG" \
+              artifacts/*.tar.gz artifacts/*.sha256 \
+              --repo "${{ github.repository }}" \
+              --clobber
+          else
+            echo "Creating release $TAG..."
+            gh release create "$TAG" \
+              artifacts/*.tar.gz artifacts/*.sha256 \
+              --repo "${{ github.repository }}" \
+              --title "$TITLE" \
+              --generate-notes \
+              $PRERELEASE_FLAG
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

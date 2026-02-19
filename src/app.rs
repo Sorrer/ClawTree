@@ -4,7 +4,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::event::AppEvent;
-use crate::session::Session;
+use crate::session::{ClaudeUsage, Session};
 use crate::worktree::{self, Worktree, WorktreeStatus};
 
 /// Which screen is currently displayed.
@@ -36,8 +36,8 @@ pub enum MiniModeFocus {
 /// State for the mini mode view.
 pub struct MiniModeState {
     pub selected: usize,
-    /// Flat list of (session_id, worktree_idx) across all worktrees.
-    pub agent_list: Vec<(u64, usize)>,
+    /// Tree items (worktrees + sessions) mirroring sidebar structure.
+    pub items: Vec<SidebarItem>,
     pub focus: MiniModeFocus,
     pub prompt_input: String,
     pub saved_prompt_selected: usize,
@@ -48,7 +48,7 @@ impl Default for MiniModeState {
     fn default() -> Self {
         Self {
             selected: 0,
-            agent_list: Vec::new(),
+            items: Vec::new(),
             focus: MiniModeFocus::AgentList,
             prompt_input: String::new(),
             saved_prompt_selected: 0,
@@ -289,6 +289,8 @@ pub struct App {
     pub mini_drilldown_session: Option<u64>,
     /// Whether mouse capture is active (enables scroll wheel, disables text selection).
     pub mouse_captured: bool,
+    /// Claude Code context window usage per session, from debug logs.
+    pub claude_usage: HashMap<u64, ClaudeUsage>,
 }
 
 impl App {
@@ -343,6 +345,7 @@ impl App {
             agent_summaries: HashMap::new(),
             mini_drilldown_session: None,
             mouse_captured: true,
+            claude_usage: HashMap::new(),
         }
     }
 
@@ -643,16 +646,19 @@ impl App {
         }
     }
 
-    /// Rebuild the flat agent list for mini mode from all worktrees' sessions.
+    /// Rebuild the tree item list for mini mode from all worktrees and sessions.
     pub fn rebuild_mini_agent_list(&mut self) {
-        self.mini.agent_list.clear();
+        self.mini.items.clear();
         for (wi, wt) in self.worktrees.iter().enumerate() {
-            for &sid in &wt.session_ids {
-                self.mini.agent_list.push((sid, wi));
+            self.mini.items.push(SidebarItem::Worktree(wi));
+            if wt.expanded {
+                for (si, _sid) in wt.session_ids.iter().enumerate() {
+                    self.mini.items.push(SidebarItem::Session(wi, si));
+                }
             }
         }
-        if !self.mini.agent_list.is_empty() && self.mini.selected >= self.mini.agent_list.len() {
-            self.mini.selected = self.mini.agent_list.len() - 1;
+        if !self.mini.items.is_empty() && self.mini.selected >= self.mini.items.len() {
+            self.mini.selected = self.mini.items.len() - 1;
         }
     }
 

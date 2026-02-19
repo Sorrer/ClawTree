@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use crossterm::event::Event as CrosstermEvent;
 
+use crate::session::ClaudeUsage;
 use crate::worktree::WorktreeStatus;
 
 /// Unified event type for the application.
@@ -43,5 +44,9 @@ pub enum AppEvent {
         worktree_path: PathBuf,
         status: WorktreeStatus,
         next_refresh_at: Instant,
+    },
+    /// Claude Code context usage data updated from debug logs.
+    ClaudeUsageUpdated {
+        updates: Vec<(u64, ClaudeUsage)>,
     },
 }

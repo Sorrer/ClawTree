@@ -8,6 +8,14 @@ use tokio::sync::mpsc;
 
 use crate::app::{AgentStatus, App};
 
+/// Claude Code context window usage data parsed from debug logs.
+#[derive(Debug, Clone)]
+pub struct ClaudeUsage {
+    pub tokens_used: usize,
+    pub effective_window: usize,
+    pub threshold: usize,
+}
+
 /// A Claude Code session running in a PTY.
 pub struct Session {
     pub id: u64,
@@ -119,6 +127,11 @@ impl Session {
     }
 
     /// Compute the agent status for mini mode display.
+    /// - Working: spinner chars in title (actively processing)
+    /// - Idle: at the input prompt (Claude finished, waiting for next command)
+    /// - NeedsInput: not active, not at prompt, not exited (Claude asked a question
+    ///   or is waiting for user input outside the normal prompt)
+    /// - Exited: process terminated
     pub fn agent_status(&self) -> AgentStatus {
         if self.exited.load(Ordering::Relaxed) {
             return AgentStatus::Exited;
@@ -127,9 +140,9 @@ impl Session {
             return AgentStatus::Working;
         }
         if self.is_at_input_prompt() {
-            return AgentStatus::NeedsInput;
+            return AgentStatus::Idle;
         }
-        AgentStatus::Idle
+        AgentStatus::NeedsInput
     }
 
     /// Get the visible terminal content (via tmux capture-pane or vt100 parser).
@@ -572,4 +585,205 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
     }
 
     count
+}
+
+/// Spawn a background thread that polls Claude Code debug logs for context
+/// window usage and sends events when usage data is found.
+pub fn spawn_claude_usage_poller(
+    event_tx: tokio::sync::mpsc::UnboundedSender<crate::event::AppEvent>,
+    session_info: std::sync::Arc<std::sync::Mutex<Vec<TmuxSessionInfo>>>,
+) {
+    std::thread::Builder::new()
+        .name("claude-usage-poller".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(5));
+
+                let sessions = {
+                    match session_info.lock() {
+                        Ok(guard) => guard.clone(),
+                        Err(_) => continue,
+                    }
+                };
+
+                if sessions.is_empty() {
+                    continue;
+                }
+
+                let mut updates = Vec::new();
+                for info in &sessions {
+                    if info.exited {
+                        continue;
+                    }
+                    if let Some(usage) = poll_claude_usage(&info.tmux_name) {
+                        updates.push((info.session_id, usage));
+                    }
+                }
+
+                if !updates.is_empty() {
+                    if event_tx
+                        .send(crate::event::AppEvent::ClaudeUsageUpdated { updates })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        })
+        .ok();
+}
+
+/// Poll Claude Code context usage for a single tmux session.
+/// Chain: tmux pane PID -> /proc/<pid>/fd/ -> .claude/tasks/<uuid> -> debug log -> autocompact line
+fn poll_claude_usage(tmux_name: &str) -> Option<ClaudeUsage> {
+    // Step 1: Get the pane PID from tmux
+    let output = std::process::Command::new("tmux")
+        .args(["display-message", "-t", tmux_name, "-p", "#{pane_pid}"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let pid: u32 = pid_str.parse().ok()?;
+
+    // Step 2: Find the claude task UUID by scanning /proc/<pid>/fd/ symlinks
+    // We need to find child processes since the tmux pane runs a shell that runs claude
+    let uuid = find_claude_task_uuid(pid)?;
+
+    // Step 3: Read the debug log and find the last autocompact line
+    let home = std::env::var("HOME").ok()?;
+    let debug_path = format!("{}/.claude/debug/{}.txt", home, uuid);
+    parse_last_autocompact(&debug_path)
+}
+
+/// Search for a Claude task UUID by scanning process file descriptors.
+/// Looks at the given PID and its children for an fd pointing to .claude/tasks/<uuid>.
+fn find_claude_task_uuid(root_pid: u32) -> Option<String> {
+    // Try the root PID first, then scan children
+    if let Some(uuid) = scan_pid_fds(root_pid) {
+        return Some(uuid);
+    }
+
+    // Scan children of the root PID
+    let proc_dir = match std::fs::read_dir("/proc") {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+
+    for entry in proc_dir.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let child_pid: u32 = match name_str.parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        // Check if this process is a child of root_pid
+        let stat_path = format!("/proc/{}/stat", child_pid);
+        if let Ok(stat) = std::fs::read_to_string(&stat_path) {
+            // Format: pid (comm) state ppid ...
+            // Find ppid after the closing paren
+            if let Some(after_paren) = stat.rfind(')') {
+                let remainder = &stat[after_paren + 2..]; // skip ") "
+                let fields: Vec<&str> = remainder.split_whitespace().collect();
+                if let Some(ppid_str) = fields.get(1) {
+                    if let Ok(ppid) = ppid_str.parse::<u32>() {
+                        if ppid == root_pid {
+                            if let Some(uuid) = scan_pid_fds(child_pid) {
+                                return Some(uuid);
+                            }
+                            // Also check grandchildren (shell -> node -> claude)
+                            if let Some(uuid) = find_claude_task_uuid(child_pid) {
+                                return Some(uuid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Scan /proc/<pid>/fd/ for a symlink pointing to a .claude/tasks/<uuid> path.
+fn scan_pid_fds(pid: u32) -> Option<String> {
+    let fd_dir = format!("/proc/{}/fd", pid);
+    let entries = match std::fs::read_dir(&fd_dir) {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+
+    for entry in entries.flatten() {
+        if let Ok(target) = std::fs::read_link(entry.path()) {
+            let target_str = target.to_string_lossy();
+            // Look for .claude/tasks/<uuid> pattern
+            if let Some(pos) = target_str.find(".claude/tasks/") {
+                let after = &target_str[pos + ".claude/tasks/".len()..];
+                // UUID is the next path component (before any '/' or end of string)
+                let uuid = after.split('/').next().unwrap_or("");
+                if !uuid.is_empty() && uuid.len() >= 32 {
+                    return Some(uuid.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse the last `autocompact:` line from a Claude debug log file.
+/// Reads the file from the end for efficiency.
+fn parse_last_autocompact(path: &str) -> Option<ClaudeUsage> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let file_len = file.metadata().ok()?.len();
+
+    // Read the last 8KB (autocompact lines are short, this is plenty)
+    let read_size = 8192u64.min(file_len);
+    if read_size == 0 {
+        return None;
+    }
+
+    file.seek(SeekFrom::End(-(read_size as i64))).ok()?;
+    let mut buf = vec![0u8; read_size as usize];
+    file.read_exact(&mut buf).ok()?;
+    let content = String::from_utf8_lossy(&buf);
+
+    // Find the last autocompact line
+    let mut last_line = None;
+    for line in content.lines() {
+        if line.contains("autocompact:") {
+            last_line = Some(line);
+        }
+    }
+
+    let line = last_line?;
+    parse_autocompact_line(line)
+}
+
+/// Parse an autocompact log line: `autocompact: tokens=78536 threshold=167000 effectiveWindow=180000`
+fn parse_autocompact_line(line: &str) -> Option<ClaudeUsage> {
+    let after = line.split("autocompact:").nth(1)?;
+
+    let mut tokens = None;
+    let mut threshold = None;
+    let mut effective_window = None;
+
+    for part in after.split_whitespace() {
+        if let Some(val) = part.strip_prefix("tokens=") {
+            tokens = val.parse().ok();
+        } else if let Some(val) = part.strip_prefix("threshold=") {
+            threshold = val.parse().ok();
+        } else if let Some(val) = part.strip_prefix("effectiveWindow=") {
+            effective_window = val.parse().ok();
+        }
+    }
+
+    Some(ClaudeUsage {
+        tokens_used: tokens?,
+        effective_window: effective_window?,
+        threshold: threshold?,
+    })
 }

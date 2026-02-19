@@ -2,10 +2,17 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
+use std::sync::atomic::Ordering;
 
-use crate::app::{AgentStatus, App, MiniModeFocus};
+use crate::app::{AgentStatus, App, MiniModeFocus, SidebarItem};
 use super::theme;
+
+/// Get the current spinner character based on the app's frame counter.
+fn spinner_char(app: &App) -> char {
+    let idx = (app.spinner_frame / 3) % theme::SPINNER_FRAMES.len();
+    theme::SPINNER_FRAMES[idx]
+}
 
 /// Draw the mini mode agent list view.
 pub fn draw(f: &mut Frame, app: &App) {
@@ -55,12 +62,11 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// Draw the agent list with summary panel and quick prompts.
+/// Draw the tree-structured agent list with summary panel.
 fn draw_agent_list_view(f: &mut Frame, app: &App, area: Rect) {
-    // Split: agent list top, summary middle, hints bottom
-    let has_agents = !app.mini.agent_list.is_empty();
-    let agent_list_height = if has_agents {
-        (app.mini.agent_list.len() as u16 + 2).min(area.height.saturating_sub(6))
+    let has_items = !app.mini.items.is_empty();
+    let tree_height = if has_items {
+        (app.mini.items.len() as u16).min(area.height.saturating_sub(6))
     } else {
         3
     };
@@ -68,168 +74,60 @@ fn draw_agent_list_view(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(agent_list_height), // agent list
-            Constraint::Min(3),                     // summary panel
-            Constraint::Length(1),                  // hints
+            Constraint::Length(tree_height), // tree list
+            Constraint::Min(3),              // summary panel
+            Constraint::Length(1),           // hints
         ])
         .split(area);
 
-    // ── Agent list ──
-    let mut lines: Vec<Line> = Vec::new();
-    let header = Line::from(vec![
-        Span::styled(
-            format!("  AGENTS ({})", app.mini.agent_list.len()),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    lines.push(header);
-    lines.push(Line::styled(
-        "  ".to_string() + &"─".repeat((area.width as usize).saturating_sub(4)),
-        Style::default().fg(Color::DarkGray),
-    ));
+    // ── Tree list ──
+    let inner_width = area.width as usize;
 
-    if app.mini.agent_list.is_empty() {
-        lines.push(Line::styled(
-            "  No agents running. Press 'a' to create one.",
-            Style::default().fg(Color::DarkGray),
-        ));
+    if app.mini.items.is_empty() {
+        let lines = vec![
+            Line::styled(
+                "  No worktrees. Press 'a' to create an agent.",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
+        f.render_widget(Paragraph::new(lines), chunks[0]);
     } else {
-        for (i, &(sid, wi)) in app.mini.agent_list.iter().enumerate() {
-            let is_selected = i == app.mini.selected;
-            let wt_name = app.worktrees.get(wi)
-                .map(|wt| wt.branch.as_str())
-                .unwrap_or("???");
-
-            let session = app.sessions.get(&sid);
-            let display_name = session
-                .and_then(|s| s.nickname.clone())
-                .or_else(|| session.and_then(|s| s.terminal_title()))
-                .unwrap_or_else(|| format!("Agent-{}", sid));
-
-            let status = session
-                .map(|s| s.agent_status())
-                .unwrap_or(AgentStatus::Exited);
-
-            let (status_text, status_color) = match status {
-                AgentStatus::Working => ("Working", theme::AGENT_WORKING),
-                AgentStatus::Idle => ("Idle", theme::AGENT_IDLE),
-                AgentStatus::NeedsInput => ("Needs Input", theme::AGENT_NEEDS_INPUT),
-                AgentStatus::Exited => ("Exited", theme::AGENT_EXITED),
-            };
-
-            // Summary snippet (truncated)
-            let summary_snippet = app.agent_summaries.get(&sid)
-                .map(|s| {
-                    let first_line = s.lines().next().unwrap_or("");
-                    if first_line.len() > 40 {
-                        format!("\"{}...\"", &first_line[..37])
-                    } else {
-                        format!("\"{}\"", first_line)
-                    }
-                })
-                .unwrap_or_default();
-
-            let selector = if is_selected { " > " } else { "   " };
-
-            let mut spans = vec![
-                Span::styled(
-                    selector,
-                    Style::default().fg(if is_selected { Color::White } else { Color::DarkGray }),
-                ),
-                Span::styled(
-                    format!("{}/", wt_name),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(
-                    format!("{:<20}", display_name),
-                    Style::default().fg(Color::White),
-                ),
-                Span::styled(
-                    format!(" {:<12}", status_text),
-                    Style::default().fg(status_color).add_modifier(
-                        if status == AgentStatus::NeedsInput { Modifier::BOLD } else { Modifier::empty() }
-                    ),
-                ),
-            ];
-
-            if !summary_snippet.is_empty() {
-                spans.push(Span::styled(
-                    format!(" {}", summary_snippet),
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-
-            let line = Line::from(spans);
-            if is_selected {
-                // Render with highlight background
-                let para = Paragraph::new(line)
-                    .style(Style::default().bg(theme::MINI_SELECTED_BG));
-                let row_area = Rect {
-                    x: area.x,
-                    y: chunks[0].y + 2 + i as u16,
-                    width: area.width,
-                    height: 1,
-                };
-                if row_area.y < chunks[0].y + chunks[0].height {
-                    f.render_widget(para, row_area);
+        let items: Vec<ListItem> = app.mini.items
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| {
+                let is_selected = idx == app.mini.selected;
+                match item {
+                    SidebarItem::Worktree(wi) => render_worktree(app, *wi, is_selected, inner_width),
+                    SidebarItem::Session(wi, si) => render_session(app, *wi, *si, is_selected, inner_width),
                 }
-            } else {
-                lines.push(line);
-            }
-        }
-    }
+            })
+            .collect();
 
-    // Render lines that aren't the selected one (which is rendered separately with bg)
-    if app.mini.agent_list.is_empty() || app.mini.selected >= app.mini.agent_list.len() {
-        let para = Paragraph::new(lines);
-        f.render_widget(para, chunks[0]);
-    } else {
-        // We need to render all lines, inserting a placeholder for the selected row
-        let mut all_lines: Vec<Line> = Vec::new();
-        let mut agent_idx = 0;
-        for (line_idx, line) in lines.into_iter().enumerate() {
-            if line_idx >= 2 { // After header lines
-                if agent_idx == app.mini.selected {
-                    all_lines.push(Line::raw("")); // placeholder, rendered separately
-                    agent_idx += 1;
-                }
-                agent_idx += 1;
-            }
-            all_lines.push(line);
-        }
-        // If selected was after all pushed lines
-        if app.mini.selected >= app.mini.agent_list.len().saturating_sub(1) {
-            // Already handled
-        }
-        let para = Paragraph::new(all_lines);
-        f.render_widget(para, chunks[0]);
-
-        // Render selected row with highlight
-        let selected_row_y = chunks[0].y + 2 + app.mini.selected as u16;
-        if selected_row_y < chunks[0].y + chunks[0].height {
-            let &(sid, wi) = &app.mini.agent_list[app.mini.selected];
-            let row_line = build_agent_row(app, sid, wi, true);
-            let para = Paragraph::new(row_line)
-                .style(Style::default().bg(theme::MINI_SELECTED_BG));
-            let row_area = Rect {
-                x: area.x,
-                y: selected_row_y,
-                width: area.width,
-                height: 1,
-            };
-            f.render_widget(para, row_area);
-        }
+        let list = List::new(items);
+        f.render_widget(list, chunks[0]);
     }
 
     // ── Summary panel ──
     let summary_area = chunks[1];
     let mut summary_lines: Vec<Line> = Vec::new();
     summary_lines.push(Line::styled(
-        format!("  {} Summary {}", "──", "─".repeat((summary_area.width as usize).saturating_sub(14).max(0))),
+        format!("  {} Summary {}",
+            "──",
+            "─".repeat((summary_area.width as usize).saturating_sub(14).max(0))
+        ),
         Style::default().fg(Color::DarkGray),
     ));
 
-    if let Some(&(sid, _)) = app.mini.agent_list.get(app.mini.selected) {
+    // Show summary for the selected session (if a session is selected)
+    let selected_sid = match app.mini.items.get(app.mini.selected) {
+        Some(SidebarItem::Session(wi, si)) => {
+            app.worktrees.get(*wi).and_then(|wt| wt.session_ids.get(*si)).copied()
+        }
+        _ => None,
+    };
+
+    if let Some(sid) = selected_sid {
         if let Some(summary) = app.agent_summaries.get(&sid) {
             for line in summary.lines().take(summary_area.height.saturating_sub(1) as usize) {
                 summary_lines.push(Line::styled(
@@ -242,6 +140,27 @@ fn draw_agent_list_view(f: &mut Frame, app: &App, area: Rect) {
                 "  (no summary yet)",
                 Style::default().fg(Color::DarkGray),
             ));
+        }
+    } else {
+        // Worktree selected — show worktree info
+        if let Some(SidebarItem::Worktree(wi)) = app.mini.items.get(app.mini.selected) {
+            if let Some(wt) = app.worktrees.get(*wi) {
+                let total = wt.session_ids.len();
+                let working = wt.session_ids.iter().filter(|sid| {
+                    app.sessions.get(sid).map(|s| s.is_active()).unwrap_or(false)
+                }).count();
+                let idle = wt.session_ids.iter().filter(|sid| {
+                    app.sessions.get(sid).map(|s| {
+                        let status = s.agent_status();
+                        status == AgentStatus::Idle
+                    }).unwrap_or(false)
+                }).count();
+                summary_lines.push(Line::from(vec![
+                    Span::styled(format!("  {} agents", total), Style::default().fg(Color::White)),
+                    Span::styled(format!("  {} working", working), Style::default().fg(theme::AGENT_WORKING)),
+                    Span::styled(format!("  {} idle", idle), Style::default().fg(theme::AGENT_IDLE)),
+                ]));
+            }
         }
     }
 
@@ -259,6 +178,8 @@ fn draw_agent_list_view(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(":kill ", Style::default().fg(Color::DarkGray)),
         Span::styled("r", Style::default().fg(Color::Yellow)),
         Span::styled(":rename ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Space", Style::default().fg(Color::Yellow)),
+        Span::styled(":expand ", Style::default().fg(Color::DarkGray)),
         Span::styled("s", Style::default().fg(Color::Yellow)),
         Span::styled(":prompts ", Style::default().fg(Color::DarkGray)),
         Span::styled("?", Style::default().fg(Color::Yellow)),
@@ -267,18 +188,101 @@ fn draw_agent_list_view(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(hints), chunks[2]);
 }
 
-/// Build a single agent row as a Line.
-fn build_agent_row(app: &App, sid: u64, wi: usize, is_selected: bool) -> Line<'static> {
-    let wt_name = app.worktrees.get(wi)
-        .map(|wt| wt.branch.clone())
-        .unwrap_or_else(|| "???".to_string());
+/// Render a worktree row in the mini mode tree.
+fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) -> ListItem<'static> {
+    let wt = &app.worktrees[wi];
+    let icon = if wt.expanded { "▼" } else { "▶" };
 
+    let total = wt.session_ids.len();
+    let alive = wt.session_ids.iter().filter(|sid| {
+        app.sessions.get(sid)
+            .map(|s| !s.exited.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    }).count();
+    let working = wt.session_ids.iter().filter(|sid| {
+        app.sessions.get(sid)
+            .map(|s| s.is_active())
+            .unwrap_or(false)
+    }).count();
+
+    let bg = if is_selected { theme::MINI_SELECTED_BG } else { Color::Reset };
+    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+
+    let branch_style = Style::default()
+        .fg(Color::White)
+        .bg(bg)
+        .add_modifier(bold);
+
+    let mut spans = vec![
+        Span::styled(format!(" {} {}", icon, wt.branch), branch_style),
+    ];
+
+    if total > 0 {
+        spans.push(Span::styled(
+            format!(" {}", alive),
+            Style::default().fg(Color::DarkGray).bg(bg),
+        ));
+        if working > 0 {
+            spans.push(Span::styled(
+                format!(" {}", working),
+                Style::default().fg(Color::Yellow).bg(bg),
+            ));
+        }
+    }
+
+    // Pad to full width so highlight covers the whole row
+    let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
+    if is_selected && text_len < inner_width {
+        spans.push(Span::styled(
+            " ".repeat(inner_width - text_len),
+            Style::default().bg(bg),
+        ));
+    }
+
+    ListItem::new(Line::from(spans))
+}
+
+/// Render a session row in the mini mode tree with status badge and summary snippet.
+fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_width: usize) -> ListItem<'static> {
+    let wt = &app.worktrees[wi];
+    let sid = wt.session_ids[si];
     let session = app.sessions.get(&sid);
-    let display_name = session
-        .and_then(|s| s.nickname.clone())
-        .or_else(|| session.and_then(|s| s.terminal_title()))
-        .unwrap_or_else(|| format!("Agent-{}", sid));
 
+    let is_exited = session
+        .map(|s| s.exited.load(Ordering::SeqCst))
+        .unwrap_or(true);
+    let is_working = session
+        .map(|s| s.is_active())
+        .unwrap_or(false);
+
+    let nickname = session.and_then(|s| s.nickname.clone());
+    let title = session.and_then(|s| s.terminal_title());
+
+    // Prefer nickname, then terminal title (stripped of status chars), then label
+    let display_name = nickname.unwrap_or_else(|| {
+        title
+            .unwrap_or_else(|| {
+                session
+                    .map(|s| s.label.clone())
+                    .unwrap_or_else(|| "???".to_string())
+            })
+            .trim_start_matches('✳')
+            .trim_start_matches('⠂')
+            .trim_start_matches('⠐')
+            .trim_start()
+            .to_string()
+    });
+
+    // Status indicator
+    let status_icon: String = if is_exited {
+        "✗".to_string()
+    } else if is_working {
+        spinner_char(app).to_string()
+    } else {
+        "○".to_string()
+    };
+
+    // Agent status for badge
     let status = session
         .map(|s| s.agent_status())
         .unwrap_or(AgentStatus::Exited);
@@ -290,6 +294,49 @@ fn build_agent_row(app: &App, sid: u64, wi: usize, is_selected: bool) -> Line<'s
         AgentStatus::Exited => ("Exited", theme::AGENT_EXITED),
     };
 
+    // Status color for the icon
+    let fg = if is_exited {
+        Color::DarkGray
+    } else if is_working {
+        Color::Yellow
+    } else {
+        Color::Gray
+    };
+
+    let bg = if is_selected { theme::MINI_SELECTED_BG } else { Color::Reset };
+    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+
+    // When highlighted, bump dim text to lighter so it's readable
+    let sel_fg = if is_selected {
+        match fg {
+            Color::DarkGray => Color::Gray,
+            Color::Gray => Color::White,
+            other => other,
+        }
+    } else {
+        fg
+    };
+
+    // Build context usage badge if available
+    let usage_badge = app.claude_usage.get(&sid).map(|u| {
+        let pct = if u.effective_window > 0 {
+            (u.tokens_used as f64 / u.effective_window as f64 * 100.0) as usize
+        } else {
+            0
+        };
+        let tokens_k = u.tokens_used / 1000;
+        let window_k = u.effective_window / 1000;
+        let color = if pct >= 80 {
+            Color::Red
+        } else if pct >= 50 {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+        (format!(" {}k/{}k", tokens_k, window_k), color)
+    });
+
+    // Summary snippet (truncated)
     let summary_snippet = app.agent_summaries.get(&sid)
         .map(|s| {
             let first_line = s.lines().next().unwrap_or("");
@@ -301,37 +348,59 @@ fn build_agent_row(app: &App, sid: u64, wi: usize, is_selected: bool) -> Line<'s
         })
         .unwrap_or_default();
 
-    let selector = if is_selected { " > " } else { "   " };
+    // Truncate name to fit
+    let prefix = format!("  {} ", status_icon);
+    let status_badge = format!(" {}", status_text);
+    let usage_len = usage_badge.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
+    let available = inner_width.saturating_sub(prefix.len() + status_badge.len() + usage_len + 2);
+    let truncated_name = if display_name.len() > available && available > 1 {
+        format!("{}…", &display_name[..available.saturating_sub(1)])
+    } else {
+        display_name
+    };
 
     let mut spans = vec![
         Span::styled(
-            selector.to_string(),
-            Style::default().fg(if is_selected { Color::White } else { Color::DarkGray }),
+            prefix,
+            Style::default().fg(sel_fg).bg(bg),
         ),
         Span::styled(
-            format!("{}/", wt_name),
-            Style::default().fg(Color::DarkGray),
+            truncated_name,
+            Style::default().fg(if is_selected { Color::White } else { sel_fg }).bg(bg).add_modifier(bold),
         ),
         Span::styled(
-            format!("{:<20}", display_name),
-            Style::default().fg(Color::White),
-        ),
-        Span::styled(
-            format!(" {:<12}", status_text),
-            Style::default().fg(status_color).add_modifier(
+            status_badge,
+            Style::default().fg(status_color).bg(bg).add_modifier(
                 if status == AgentStatus::NeedsInput { Modifier::BOLD } else { Modifier::empty() }
             ),
         ),
     ];
 
-    if !summary_snippet.is_empty() {
+    // Append usage indicator
+    if let Some((usage_text, usage_color)) = usage_badge {
         spans.push(Span::styled(
-            format!(" {}", summary_snippet),
-            Style::default().fg(Color::DarkGray),
+            usage_text,
+            Style::default().fg(usage_color).bg(bg),
         ));
     }
 
-    Line::from(spans)
+    if !summary_snippet.is_empty() {
+        spans.push(Span::styled(
+            format!(" {}", summary_snippet),
+            Style::default().fg(Color::DarkGray).bg(bg),
+        ));
+    }
+
+    // Pad to full width so highlight covers the whole row
+    let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
+    if is_selected && text_len < inner_width {
+        spans.push(Span::styled(
+            " ".repeat(inner_width - text_len),
+            Style::default().bg(bg),
+        ));
+    }
+
+    ListItem::new(Line::from(spans))
 }
 
 /// Draw the worktree selector for agent creation.

@@ -36,7 +36,7 @@ The target directory should contain a `.bare` git repository structure.
 |---|---|---|
 | **git** | Yes | Worktree management, staging, commits, merges |
 | **claude** (Claude Code CLI) | Yes | AI assistant sessions spawned per worktree |
-| **tmux** | Recommended | Session persistence and reconnection across restarts |
+| **tmux** | Yes | Session persistence and reconnection across restarts |
 | **wt.exe** | Optional | Windows Terminal tab integration (WSL only) |
 
 ## Building from source

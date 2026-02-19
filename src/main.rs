@@ -259,6 +259,8 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
             *info = session::collect_tmux_session_info(&app);
         }
         session::spawn_tmux_title_poller(event_tx.clone(), std::sync::Arc::clone(&tmux_session_info));
+        // Claude usage poller — reuses the same session info snapshot
+        session::spawn_claude_usage_poller(event_tx.clone(), std::sync::Arc::clone(&tmux_session_info));
     }
 
     // ── Worktree status poller — background thread ───────────────
@@ -309,19 +311,16 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
             Ok(Some(event)) => {
                 match event {
                     AppEvent::Input(CrosstermEvent::Key(key)) => {
+                        // Re-enable mouse capture on any keypress if it was
+                        // disabled for text selection
+                        if !app.mouse_captured {
+                            app.mouse_captured = true;
+                            let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
+                        }
                         let session_count_before = app.sessions.len();
                         let worktree_count_before = app.worktrees.len();
-                        let mouse_was_captured = app.mouse_captured;
                         let size = terminal.size()?;
                         keys::handle_key(&mut app, key, (size.width, size.height));
-                        // Toggle mouse capture if it changed
-                        if app.mouse_captured != mouse_was_captured {
-                            if app.mouse_captured {
-                                let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
-                            } else {
-                                let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
-                            }
-                        }
                         // If sessions changed, update the tmux poller's snapshot
                         if tmux_available && app.sessions.len() != session_count_before {
                             if let Ok(mut info) = tmux_session_info.lock() {
@@ -359,6 +358,13 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                             }
                             MouseEventKind::ScrollDown => {
                                 keys::handle_scroll(&mut app, false);
+                                needs_redraw = true;
+                            }
+                            MouseEventKind::Down(_) => {
+                                // Disable mouse capture so the terminal handles
+                                // native text selection. Any keypress re-enables it.
+                                app.mouse_captured = false;
+                                let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
                                 needs_redraw = true;
                             }
                             _ => {}
@@ -450,6 +456,12 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                         // Update the poller's snapshot so it knows the current titles
                         if let Ok(mut info) = tmux_session_info.lock() {
                             *info = session::collect_tmux_session_info(&app);
+                        }
+                        needs_redraw = true;
+                    }
+                    AppEvent::ClaudeUsageUpdated { updates } => {
+                        for (session_id, usage) in updates {
+                            app.claude_usage.insert(session_id, usage);
                         }
                         needs_redraw = true;
                     }

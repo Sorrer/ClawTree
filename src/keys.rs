@@ -67,9 +67,9 @@ const GLOBAL_KEYS: &[KeyEntry] = &[
     ("Ctrl+Q",  "Quit application"),
     ("Ctrl+B",  "Toggle sidebar"),
     ("Ctrl+P",  "Toggle prompt queue"),
-    ("Ctrl+G",  "Toggle mouse capture (select text / scroll)"),
     ("F2",      "Toggle Mini Mode"),
     ("?",       "Show/hide this help"),
+    ("Click",   "Enable text selection (any key restores scroll)"),
 ];
 
 const SIDEBAR_KEYS: &[KeyEntry] = &[
@@ -117,13 +117,15 @@ const QUEUE_KEYS: &[KeyEntry] = &[
 ];
 
 const MINI_MODE_KEYS: &[KeyEntry] = &[
-    ("j / Down",    "Navigate agents"),
-    ("k / Up",      "Navigate agents"),
-    ("Enter",       "Drilldown into agent terminal"),
+    ("j / Down",    "Navigate tree"),
+    ("k / Up",      "Navigate tree"),
+    ("Enter",       "Open agent / toggle expand worktree"),
+    ("Space",       "Toggle expand/collapse worktree"),
     ("a",           "Create new agent"),
-    ("d",           "Kill selected agent"),
-    ("r",           "Rename selected agent"),
+    ("d",           "Kill agent / remove worktree"),
+    ("r",           "Rename agent"),
     ("s",           "Browse saved prompts"),
+    ("z / Z",       "Collapse / expand all"),
     ("Esc",         "Return to normal mode"),
     ("Tab",         "Back to agent list (drilldown)"),
 ];
@@ -155,17 +157,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     // ── Global keybindings (work in ALL modes) ─────────────────────
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q') {
         app.should_quit = true;
-        return;
-    }
-
-    // Ctrl+G — toggle mouse capture (off = text selection, on = scroll wheel)
-    if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('g') {
-        app.mouse_captured = !app.mouse_captured;
-        if app.mouse_captured {
-            app.set_status("Mouse capture ON — scroll wheel enabled");
-        } else {
-            app.set_status("Mouse capture OFF — text selection enabled");
-        }
         return;
     }
 
@@ -1641,7 +1632,7 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
 
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            if !app.mini.agent_list.is_empty() && app.mini.selected + 1 < app.mini.agent_list.len() {
+            if !app.mini.items.is_empty() && app.mini.selected + 1 < app.mini.items.len() {
                 app.mini.selected += 1;
             }
         }
@@ -1650,52 +1641,137 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
                 app.mini.selected -= 1;
             }
         }
+        KeyCode::Home => {
+            app.mini.selected = 0;
+        }
+        KeyCode::End | KeyCode::Char('G') if key.modifiers == KeyModifiers::SHIFT || key.code == KeyCode::End => {
+            if !app.mini.items.is_empty() {
+                app.mini.selected = app.mini.items.len() - 1;
+            }
+        }
         KeyCode::Enter => {
-            // Drilldown into selected agent's terminal
-            if let Some(&(sid, _)) = app.mini.agent_list.get(app.mini.selected) {
-                app.mini_drilldown_session = Some(sid);
-                app.active_session_id = Some(sid);
-                app.screen_mode = ScreenMode::MiniDrilldown;
-                app.input_mode = InputMode::Terminal;
-                app.focus = FocusTarget::TerminalPane;
-                app.terminal_scroll = 0;
-                session::resize_all(app, terminal_size.1, terminal_size.0);
+            // Session → drilldown; Worktree → toggle expand
+            match app.mini.items.get(app.mini.selected).copied() {
+                Some(SidebarItem::Session(wi, si)) => {
+                    if let Some(wt) = app.worktrees.get(wi) {
+                        if let Some(&sid) = wt.session_ids.get(si) {
+                            app.mini_drilldown_session = Some(sid);
+                            app.active_session_id = Some(sid);
+                            app.screen_mode = ScreenMode::MiniDrilldown;
+                            app.input_mode = InputMode::Terminal;
+                            app.focus = FocusTarget::TerminalPane;
+                            app.terminal_scroll = 0;
+                            session::resize_all(app, terminal_size.1, terminal_size.0);
+                        }
+                    }
+                }
+                Some(SidebarItem::Worktree(wi)) => {
+                    if let Some(wt) = app.worktrees.get_mut(wi) {
+                        wt.expanded = !wt.expanded;
+                        app.rebuild_mini_agent_list();
+                        app.rebuild_sidebar_items();
+                    }
+                }
+                None => {}
+            }
+        }
+        KeyCode::Char(' ') => {
+            // Toggle expand on worktree
+            if let Some(SidebarItem::Worktree(wi)) = app.mini.items.get(app.mini.selected).copied() {
+                if let Some(wt) = app.worktrees.get_mut(wi) {
+                    wt.expanded = !wt.expanded;
+                    app.rebuild_mini_agent_list();
+                    app.rebuild_sidebar_items();
+                }
             }
         }
         KeyCode::Char('a') => {
-            // Start creating a new agent — go to worktree selector
+            // Create new agent — determine target worktree from selection
             if app.worktrees.is_empty() {
                 app.set_status("No worktrees available");
                 return;
             }
-            app.mini.target_worktree_idx = 0;
-            app.mini.focus = MiniModeFocus::WorktreeSelector;
+            let target_wi = match app.mini.items.get(app.mini.selected).copied() {
+                Some(SidebarItem::Worktree(wi)) => wi,
+                Some(SidebarItem::Session(wi, _)) => wi,
+                None => 0,
+            };
+            app.mini.target_worktree_idx = target_wi;
+            // If only one worktree, skip selection and go straight to prompt
+            if app.worktrees.len() == 1 {
+                app.mini.prompt_input.clear();
+                app.mini.focus = MiniModeFocus::PromptInput;
+            } else {
+                app.mini.focus = MiniModeFocus::WorktreeSelector;
+            }
         }
         KeyCode::Char('d') => {
-            // Kill selected agent
-            if let Some(&(sid, _)) = app.mini.agent_list.get(app.mini.selected) {
-                app.open_dialog(Dialog::Confirm {
-                    message: format!("Kill agent {}?", session::session_label(app, sid)),
-                    on_confirm: ConfirmAction::DeleteSession(sid),
-                });
+            // Kill selected agent or delete worktree
+            match app.mini.items.get(app.mini.selected).copied() {
+                Some(SidebarItem::Session(wi, si)) => {
+                    if let Some(wt) = app.worktrees.get(wi) {
+                        if let Some(&sid) = wt.session_ids.get(si) {
+                            app.open_dialog(Dialog::Confirm {
+                                message: format!("Kill agent {}?", session::session_label(app, sid)),
+                                on_confirm: ConfirmAction::DeleteSession(sid),
+                            });
+                        }
+                    }
+                }
+                Some(SidebarItem::Worktree(wi)) => {
+                    if let Some(wt) = app.worktrees.get(wi) {
+                        let path = wt.path.clone();
+                        let has_sessions = !wt.session_ids.is_empty();
+                        let msg = if has_sessions {
+                            format!("Remove worktree '{}' and kill {} session(s)?", wt.branch, wt.session_ids.len())
+                        } else {
+                            format!("Remove worktree '{}'?", wt.branch)
+                        };
+                        app.open_dialog(Dialog::Confirm {
+                            message: msg,
+                            on_confirm: ConfirmAction::DeleteWorktree(path),
+                        });
+                    }
+                }
+                None => {}
             }
         }
         KeyCode::Char('r') => {
             // Rename selected agent
-            if let Some(&(sid, _)) = app.mini.agent_list.get(app.mini.selected) {
-                let current = app.sessions.get(&sid)
-                    .and_then(|s| s.nickname.clone())
-                    .unwrap_or_default();
-                app.open_dialog(Dialog::RenameSession {
-                    session_id: sid,
-                    input: current,
-                });
+            if let Some(SidebarItem::Session(wi, si)) = app.mini.items.get(app.mini.selected).copied() {
+                if let Some(wt) = app.worktrees.get(wi) {
+                    if let Some(&sid) = wt.session_ids.get(si) {
+                        let current = app.sessions.get(&sid)
+                            .and_then(|s| s.nickname.clone())
+                            .unwrap_or_default();
+                        app.open_dialog(Dialog::RenameSession {
+                            session_id: sid,
+                            input: current,
+                        });
+                    }
+                }
             }
         }
         KeyCode::Char('s') => {
             // Open saved prompts browser
             app.mini.saved_prompt_selected = 0;
             app.mini.focus = MiniModeFocus::SavedPrompts;
+        }
+        KeyCode::Char('z') => {
+            // Collapse all
+            for wt in &mut app.worktrees {
+                wt.expanded = false;
+            }
+            app.rebuild_mini_agent_list();
+            app.rebuild_sidebar_items();
+        }
+        KeyCode::Char('Z') if key.modifiers == KeyModifiers::SHIFT => {
+            // Expand all
+            for wt in &mut app.worktrees {
+                wt.expanded = true;
+            }
+            app.rebuild_mini_agent_list();
+            app.rebuild_sidebar_items();
         }
         KeyCode::Esc => {
             // Return to normal mode
@@ -1745,11 +1821,11 @@ fn handle_mini_prompt_input_key(app: &mut App, key: KeyEvent, terminal_size: (u1
             // Spawn the agent
             match session::spawn_session(app, wi, terminal_size, false, Some(&prompt)) {
                 Ok(_sid) => {
-                    app.rebuild_mini_agent_list();
                     app.rebuild_sidebar_items();
+                    app.rebuild_mini_agent_list();
                     // Select the newly created agent (last in list)
-                    if !app.mini.agent_list.is_empty() {
-                        app.mini.selected = app.mini.agent_list.len() - 1;
+                    if !app.mini.items.is_empty() {
+                        app.mini.selected = app.mini.items.len() - 1;
                     }
                     app.set_status("Agent spawned");
                 }

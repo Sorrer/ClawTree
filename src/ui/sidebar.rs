@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem};
 use std::sync::atomic::Ordering;
 
-use crate::app::{App, FocusTarget, SidebarItem};
+use crate::app::{AgentStatus, App, FocusTarget, SidebarItem};
 use super::theme;
 
 /// Get the current spinner character based on the app's frame counter.
@@ -117,12 +117,9 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
     let sid = wt.session_ids[si];
     let session = app.sessions.get(&sid);
     let is_active_session = app.active_session_id == Some(sid);
-    let is_exited = session
-        .map(|s| s.exited.load(Ordering::SeqCst))
-        .unwrap_or(true);
-    let is_working = session
-        .map(|s| s.is_active())
-        .unwrap_or(false);
+    let status = session
+        .map(|s| s.agent_status())
+        .unwrap_or(AgentStatus::Exited);
     let nickname = session.and_then(|s| s.nickname.clone());
     let title = session.and_then(|s| s.terminal_title());
 
@@ -141,22 +138,12 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
             .to_string()
     });
 
-    // Status indicator — only reflects working state, not active selection
-    let status_icon: String = if is_exited {
-        "✗".to_string()
-    } else if is_working {
-        spinner_char(app).to_string()
-    } else {
-        "○".to_string()
-    };
-
-    // Status color — only reflects working state
-    let fg = if is_exited {
-        Color::DarkGray
-    } else if is_working {
-        Color::Yellow
-    } else {
-        Color::Gray
+    // Status indicator and color based on agent status
+    let (status_icon, fg): (String, Color) = match status {
+        AgentStatus::Exited => ("✗".to_string(), Color::DarkGray),
+        AgentStatus::Working => (spinner_char(app).to_string(), Color::Yellow),
+        AgentStatus::NeedsInput => ("●".to_string(), theme::AGENT_NEEDS_INPUT),
+        AgentStatus::Idle => ("○".to_string(), Color::Gray),
     };
 
     // Background: selection highlight and active session highlight are independent
@@ -180,9 +167,29 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
         fg
     };
 
-    // Truncate to fit sidebar width
+    // Build context usage suffix if available
+    let usage_suffix = app.claude_usage.get(&sid).map(|u| {
+        let pct = if u.effective_window > 0 {
+            (u.tokens_used as f64 / u.effective_window as f64 * 100.0) as usize
+        } else {
+            0
+        };
+        let tokens_k = u.tokens_used / 1000;
+        let window_k = u.effective_window / 1000;
+        let color = if pct >= 80 {
+            Color::Red
+        } else if pct >= 50 {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+        (format!(" {}k/{}k", tokens_k, window_k), color)
+    });
+
+    // Truncate to fit sidebar width (account for usage suffix)
     let prefix = format!("  {} ", status_icon);
-    let max_name = inner_width.saturating_sub(prefix.len());
+    let suffix_len = usage_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
+    let max_name = inner_width.saturating_sub(prefix.len()).saturating_sub(suffix_len);
     let truncated = if display_name.len() > max_name && max_name > 1 {
         format!("{}…", &display_name[..max_name.saturating_sub(1)])
     } else {
@@ -194,6 +201,14 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
     let mut spans = vec![
         Span::styled(text, Style::default().fg(sel_fg).bg(bg).add_modifier(bold)),
     ];
+
+    // Append usage indicator
+    if let Some((usage_text, usage_color)) = usage_suffix {
+        spans.push(Span::styled(
+            usage_text,
+            Style::default().fg(usage_color).bg(bg),
+        ));
+    }
 
     // Pad to full width so the highlight covers the whole row
     let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
