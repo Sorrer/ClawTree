@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, MouseEventKind};
+use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event as CrosstermEvent, MouseEventKind};
 
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -178,7 +178,7 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
     // Initialize terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+    crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)
         .context("Failed to enter alternate screen")?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("Failed to create terminal")?;

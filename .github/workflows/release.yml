@@ -27,18 +27,23 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
+            artifact: x86_64-linux-musl
             os: ubuntu-latest
             use_cross: true
           - target: aarch64-unknown-linux-musl
+            artifact: aarch64-linux-musl
             os: ubuntu-latest
             use_cross: true
           - target: x86_64-apple-darwin
-            os: macos-13
+            artifact: x86_64-apple-darwin
+            os: macos-latest
             use_cross: false
           - target: aarch64-apple-darwin
+            artifact: aarch64-apple-darwin
             os: macos-latest
             use_cross: false
 
+    name: build (${{ matrix.artifact }})
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -65,7 +70,7 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          ARCHIVE="${BINARY_NAME}-${{ matrix.target }}.tar.gz"
+          ARCHIVE="${BINARY_NAME}-${{ matrix.artifact }}.tar.gz"
           cd target/${{ matrix.target }}/release
           tar czf "../../../${ARCHIVE}" "${BINARY_NAME}"
           cd ../../..
@@ -75,7 +80,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
+          name: ${{ env.BINARY_NAME }}-${{ matrix.artifact }}
           path: |
             ${{ env.ARCHIVE }}
             ${{ env.ARCHIVE }}.sha256
