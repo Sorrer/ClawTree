@@ -3,8 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-echo "Building worktree-claude-tui (release)..."
+echo "Building clawtree (release)..."
 cargo build --release
 
 echo ""
-echo "Done. Binary at: target/release/worktree-claude-tui"
+echo "Done. Binary at: target/release/clawtree"

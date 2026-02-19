@@ -1,7 +1,11 @@
+use std::path::PathBuf;
+use std::time::Instant;
+
 use crossterm::event::Event as CrosstermEvent;
 
+use crate::worktree::WorktreeStatus;
+
 /// Unified event type for the application.
-#[derive(Debug)]
 pub enum AppEvent {
     /// A crossterm input event (key press, mouse, resize).
     Input(CrosstermEvent),
@@ -20,6 +24,11 @@ pub enum AppEvent {
     InitRepoComplete {
         error: Option<String>,
     },
+    /// Background repo conversion completed.
+    ConvertRepoComplete {
+        bare_repo_path: PathBuf,
+        error: Option<String>,
+    },
     /// Background git push completed.
     PushComplete {
         branch: String,
@@ -28,5 +37,11 @@ pub enum AppEvent {
     /// Tmux title(s) changed — maps session_id to new title.
     TmuxTitlesChanged {
         updates: Vec<(u64, String)>,
+    },
+    /// Background git status fetch completed for a worktree.
+    WorktreeStatusReady {
+        worktree_path: PathBuf,
+        status: WorktreeStatus,
+        next_refresh_at: Instant,
     },
 }

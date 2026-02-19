@@ -606,6 +606,256 @@ pub fn commit(worktree_path: &Path, message: &str) -> Result<()> {
     Ok(())
 }
 
+/// Detect a regular (non-bare) git repo by walking up from `start`.
+/// Returns the first directory containing a `.git/` **directory** (not a file).
+pub fn detect_regular_repo(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        let dot_git = dir.join(".git");
+        if dot_git.is_dir() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
+/// Get the current branch name of a repo.
+pub fn current_branch_name(repo_path: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to run git rev-parse --abbrev-ref HEAD")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "git rev-parse failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Check for in-progress operations (rebase, merge, cherry-pick) in a repo.
+fn has_in_progress_operation(repo_path: &Path) -> Option<&'static str> {
+    let git_dir = repo_path.join(".git");
+    if git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir() {
+        return Some("rebase");
+    }
+    if git_dir.join("MERGE_HEAD").is_file() {
+        return Some("merge");
+    }
+    if git_dir.join("CHERRY_PICK_HEAD").is_file() {
+        return Some("cherry-pick");
+    }
+    None
+}
+
+/// Convert a regular git repo to bare worktree layout **in-place**.
+/// Returns the branch name on success.
+pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<String> {
+    // 1. Get current branch name
+    let branch = if branch_override.is_empty() {
+        current_branch_name(repo_path)?
+    } else {
+        branch_override.to_string()
+    };
+
+    // 2. Guard: check for in-progress operations
+    if let Some(op) = has_in_progress_operation(repo_path) {
+        anyhow::bail!("Cannot convert: {} in progress. Complete or abort it first.", op);
+    }
+
+    // 3. Stash uncommitted changes
+    let stash_output = Command::new("git")
+        .args(["stash", "push", "--include-untracked", "-m", "clawtree-conversion"])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to stash changes")?;
+    let stashed = stash_output.status.success()
+        && !String::from_utf8_lossy(&stash_output.stdout).contains("No local changes");
+
+    // 4. Collect all root entries except .git
+    let root_entries: Vec<_> = std::fs::read_dir(repo_path)
+        .context("Failed to read repo directory")?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name() != ".git")
+        .collect();
+
+    // 5. Rename .git/ directory to .bare/
+    let dot_git = repo_path.join(".git");
+    let dot_bare = repo_path.join(".bare");
+    std::fs::rename(&dot_git, &dot_bare)
+        .context("Failed to rename .git to .bare")?;
+
+    // 6. Write .git text file
+    std::fs::write(repo_path.join(".git"), "gitdir: ./.bare\n")
+        .context("Failed to write .git pointer file")?;
+
+    // 7. Fix remote fetch refspec
+    let _ = Command::new("git")
+        .args(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
+        .current_dir(repo_path)
+        .output();
+
+    // 8. Create worktree for the branch
+    let wt_output = Command::new("git")
+        .args(["worktree", "add", &branch])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to create worktree")?;
+
+    if !wt_output.status.success() {
+        // If worktree add failed, try to recover
+        let stderr = String::from_utf8_lossy(&wt_output.stderr);
+        // It might fail because branch is already checked out — try with a different path
+        if stderr.contains("already checked out") || stderr.contains("is already used") {
+            // Detach HEAD in bare repo first
+            let head_ref = format!("refs/heads/{}", branch);
+            let _ = Command::new("git")
+                .args(["symbolic-ref", "HEAD", &head_ref])
+                .current_dir(&dot_bare)
+                .output();
+            // Try again
+            let retry = Command::new("git")
+                .args(["worktree", "add", "--force", &branch])
+                .current_dir(repo_path)
+                .output();
+            if let Ok(ref out) = retry {
+                if !out.status.success() {
+                    tracing::warn!("worktree add retry failed: {}", String::from_utf8_lossy(&out.stderr));
+                }
+            }
+        } else {
+            tracing::warn!("worktree add failed: {}", stderr);
+        }
+    }
+
+    // 9. Remove the leftover working tree files from root
+    for entry in root_entries {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // Don't remove .bare, .git, or the new worktree directory
+        if name_str == ".bare" || name_str == ".git" || name_str == branch {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    // 10. Pop stash in the new worktree if one was saved
+    if stashed {
+        let wt_path = repo_path.join(&branch);
+        if wt_path.is_dir() {
+            let _ = Command::new("git")
+                .args(["stash", "pop"])
+                .current_dir(&wt_path)
+                .output();
+        }
+    }
+
+    Ok(branch)
+}
+
+/// Convert a regular git repo to bare worktree layout at a **different location**.
+/// Returns the branch name on success.
+pub fn convert_repo_to_location(source_repo: &Path, target_dir: &Path, branch_override: &str) -> Result<String> {
+    // 1. Get branch name from source repo
+    let branch = if branch_override.is_empty() {
+        current_branch_name(source_repo)?
+    } else {
+        branch_override.to_string()
+    };
+
+    // 2. Guard: target directory must be empty or non-existent
+    if target_dir.is_dir() {
+        let count = std::fs::read_dir(target_dir)
+            .context("Failed to read target directory")?
+            .count();
+        if count > 0 {
+            anyhow::bail!("Target directory is not empty: {}", target_dir.display());
+        }
+    }
+
+    // 3. Create target directory
+    std::fs::create_dir_all(target_dir)
+        .context("Failed to create target directory")?;
+
+    // 4. Clone bare from source's .git directory
+    let source_git = source_repo.join(".git");
+    let source_url = if source_git.is_dir() {
+        source_git.to_string_lossy().to_string()
+    } else {
+        source_repo.to_string_lossy().to_string()
+    };
+
+    let output = Command::new("git")
+        .args(["clone", "--bare", &source_url, ".bare"])
+        .current_dir(target_dir)
+        .output()
+        .context("Failed to run git clone --bare")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "git clone --bare failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // 5. Write .git text file in target
+    std::fs::write(target_dir.join(".git"), "gitdir: ./.bare\n")
+        .context("Failed to write .git pointer file")?;
+
+    // 6. Fix remote fetch refspec
+    let _ = Command::new("git")
+        .args(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
+        .current_dir(target_dir)
+        .output();
+
+    // 7. Preserve original remote URL (point to upstream, not local clone)
+    let original_url = Command::new("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .current_dir(source_repo)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+
+    if let Some(url) = original_url {
+        if !url.is_empty() {
+            let _ = Command::new("git")
+                .args(["remote", "set-url", "origin", &url])
+                .current_dir(target_dir)
+                .output();
+        }
+    }
+
+    // 8. Create worktree for the branch
+    let wt_output = Command::new("git")
+        .args(["worktree", "add", &branch])
+        .current_dir(target_dir)
+        .output()
+        .context("Failed to create worktree")?;
+
+    if !wt_output.status.success() {
+        // Try creating with -b flag
+        let _ = Command::new("git")
+            .args(["worktree", "add", "-b", &branch, &branch])
+            .current_dir(target_dir)
+            .output();
+    }
+
+    Ok(branch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

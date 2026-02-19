@@ -1,20 +1,25 @@
+use std::time::Instant;
+
 use ansi_to_tui::IntoText as _;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::style::Modifier;
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{App, FocusTarget};
+use super::theme;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == FocusTarget::TerminalPane;
 
     let border_style = if is_focused {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme::BORDER_FOCUSED).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme::BORDER_UNFOCUSED)
     };
+    let border_type = if is_focused { BorderType::Thick } else { BorderType::Plain };
 
     let focus_indicator = if is_focused { " ▸" } else { "" };
     let mut title = match app.active_session_id {
@@ -38,6 +43,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
+        .border_type(border_type)
         .border_style(border_style);
 
     if let Some(sid) = app.active_session_id {
@@ -111,6 +117,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             let block = Block::default()
                 .title(format!("{} {} ", focus_indicator, branch))
                 .borders(Borders::ALL)
+                .border_type(border_type)
                 .border_style(border_style);
             let inner = block.inner(area);
             f.render_widget(block, area);
@@ -155,6 +162,21 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
             Span::styled(&wt.commit_hash, Style::default().fg(Color::Yellow)),
         ]));
     }
+
+    // Show next refresh countdown
+    let refresh_text = match app.next_status_refresh {
+        Some(next) => {
+            let now = Instant::now();
+            if next > now {
+                let secs = (next - now).as_secs();
+                format!("  \u{27F3} Refresh in {}s", secs)
+            } else {
+                "  \u{27F3} Refreshing...".to_string()
+            }
+        }
+        None => "  \u{27F3} Fetching...".to_string(),
+    };
+    lines.push(Line::styled(refresh_text, Style::default().fg(Color::DarkGray)));
 
     lines.push(Line::raw(""));
 
@@ -267,22 +289,20 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
     // Keybinding hints at bottom
     let hints = if focused && app.info_panel_commit_msg.is_none() {
         Line::from(vec![
-            Span::styled("  Space", Style::default().fg(Color::Cyan)),
+            Span::styled("  Space/Enter", Style::default().fg(Color::Cyan)),
             Span::styled(": stage/unstage  ", Style::default().fg(Color::DarkGray)),
             Span::styled("a", Style::default().fg(Color::Cyan)),
             Span::styled(": stage all  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
+            Span::styled("c", Style::default().fg(Color::Cyan)),
             Span::styled(": commit  ", Style::default().fg(Color::DarkGray)),
             Span::styled("Tab", Style::default().fg(Color::Cyan)),
-            Span::styled(": switch section  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(": section  ", Style::default().fg(Color::DarkGray)),
             Span::styled("Esc", Style::default().fg(Color::Cyan)),
             Span::styled(": back", Style::default().fg(Color::DarkGray)),
         ])
     } else if app.info_panel_commit_msg.is_none() {
         Line::from(vec![
-            Span::styled("  Tab", Style::default().fg(Color::Cyan)),
-            Span::styled(": focus files  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("c", Style::default().fg(Color::Cyan)),
+            Span::styled("  c", Style::default().fg(Color::Cyan)),
             Span::styled(": claude  ", Style::default().fg(Color::DarkGray)),
             Span::styled("p", Style::default().fg(Color::Cyan)),
             Span::styled(": push  ", Style::default().fg(Color::DarkGray)),
@@ -318,11 +338,11 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
 /// Color for a file status character.
 fn file_status_color(status: char) -> Color {
     match status {
-        '?' => Color::Blue,
-        'M' => Color::Yellow,
-        'D' => Color::Red,
-        'A' => Color::Green,
-        _ => Color::White,
+        '?' => theme::FILE_UNTRACKED,
+        'M' => theme::FILE_MODIFIED,
+        'D' => theme::FILE_DELETED,
+        'A' => theme::FILE_ADDED,
+        _ => theme::FILE_DEFAULT,
     }
 }
 
@@ -396,10 +416,10 @@ fn draw_scrollbar(f: &mut Frame, area: Rect, total_lines: usize, scroll_offset: 
             let cell = &mut buf[(x, y)];
             if in_thumb {
                 cell.set_char('█');
-                cell.set_fg(Color::DarkGray);
+                cell.set_fg(theme::SCROLLBAR_THUMB);
             } else {
                 cell.set_char('│');
-                cell.set_fg(Color::Rgb(40, 40, 40));
+                cell.set_fg(theme::SCROLLBAR_TRACK);
             }
         }
     }

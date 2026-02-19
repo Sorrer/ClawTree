@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -5,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
 use crate::app::{App, CommitPhase, Dialog};
+use super::theme;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let dialog = match &app.dialog {
@@ -77,6 +80,15 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .unwrap_or("???");
             draw_git_commit(f, branch_name, unstaged, staged, *section, *selected, *phase, commit_message);
         }
+        Dialog::ConvertRepo {
+            mode,
+            target_path_input,
+            branch_name,
+            focused_field,
+            source_repo_path,
+        } => {
+            draw_convert_repo(f, source_repo_path, *mode, target_path_input, branch_name, *focused_field);
+        }
     }
 }
 
@@ -107,7 +119,7 @@ fn draw_create_worktree(f: &mut Frame, branch: &str, base: &str, focused: usize)
     let block = Block::default()
         .title(" New Worktree ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(theme::DIALOG_CREATION));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -194,7 +206,7 @@ fn draw_merge(f: &mut Frame, source: &str, branches: &[String], selected: usize)
     let block = Block::default()
         .title(" Merge Branch ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
+        .border_style(Style::default().fg(theme::DIALOG_NEUTRAL));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -271,7 +283,7 @@ fn draw_confirm(f: &mut Frame, message: &str) {
     let block = Block::default()
         .title(" Confirm ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Red));
+        .border_style(Style::default().fg(theme::DIALOG_DESTRUCTIVE));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -304,7 +316,7 @@ fn draw_init_repo(f: &mut Frame, url: &str, branch: &str, focused: usize) {
     let block = Block::default()
         .title(" Initialize Bare Repo ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::DIALOG_CREATION));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -393,7 +405,7 @@ fn draw_merge_conflict(f: &mut Frame, branch: &str, selected: usize) {
     let block = Block::default()
         .title(" Merge Conflict ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Red));
+        .border_style(Style::default().fg(theme::DIALOG_DESTRUCTIVE));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -468,7 +480,7 @@ fn draw_rename_session(f: &mut Frame, name: &str) {
     let block = Block::default()
         .title(" Rename Session ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(theme::DIALOG_NEUTRAL));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -522,7 +534,7 @@ fn draw_dirty_worktree(
     let block = Block::default()
         .title(" Uncommitted Changes ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(theme::DIALOG_WARNING));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -670,7 +682,7 @@ fn draw_git_commit_staging(
     let block = Block::default()
         .title(format!(" Commit — {} ", branch))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Green));
+        .border_style(Style::default().fg(theme::DIALOG_CREATION));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -815,7 +827,7 @@ fn draw_git_commit_message(
     let block = Block::default()
         .title(format!(" Commit — {} ", branch))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Green));
+        .border_style(Style::default().fg(theme::DIALOG_CREATION));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -870,5 +882,166 @@ fn draw_git_commit_message(
         Paragraph::new("Enter: commit  Esc: back")
             .style(Style::default().fg(Color::DarkGray)),
         chunks[5],
+    );
+}
+
+fn draw_convert_repo(
+    f: &mut Frame,
+    source_path: &PathBuf,
+    mode: usize,
+    target_path: &str,
+    branch: &str,
+    focused: usize,
+) {
+    let height: u16 = if mode == 1 { 15 } else { 12 };
+    let area = centered_rect(60, height, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Convert Existing Repo ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut constraints = vec![
+        Constraint::Length(1), // source label
+        Constraint::Length(1), // source path
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // mode label
+        Constraint::Length(1), // mode selector
+        Constraint::Length(1), // spacer
+    ];
+
+    if mode == 1 {
+        constraints.push(Constraint::Length(1)); // target label
+        constraints.push(Constraint::Length(1)); // target input
+        constraints.push(Constraint::Length(1)); // spacer
+    }
+
+    constraints.push(Constraint::Length(1)); // branch label
+    constraints.push(Constraint::Length(1)); // branch input
+    constraints.push(Constraint::Length(1)); // spacer
+    constraints.push(Constraint::Length(1)); // help
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner);
+
+    let mut idx = 0;
+
+    // Source path (read-only)
+    f.render_widget(
+        Paragraph::new("Source repository:")
+            .style(Style::default().fg(Color::Gray)),
+        chunks[idx],
+    );
+    idx += 1;
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            source_path.display().to_string(),
+            Style::default().fg(Color::White),
+        ))),
+        chunks[idx],
+    );
+    idx += 2; // skip spacer
+
+    // Mode selector
+    let mode_label_style = if focused == 0 {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    f.render_widget(
+        Paragraph::new("Conversion mode (Left/Right to toggle):")
+            .style(mode_label_style),
+        chunks[idx],
+    );
+    idx += 1;
+
+    let inplace_marker = if mode == 0 { "[x]" } else { "[ ]" };
+    let location_marker = if mode == 1 { "[x]" } else { "[ ]" };
+    let mode_style = if focused == 0 {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{} In-place    {} Different location", inplace_marker, location_marker),
+            mode_style,
+        ))),
+        chunks[idx],
+    );
+    idx += 2; // skip spacer
+
+    // Target path (only if mode == 1)
+    if mode == 1 {
+        let target_label_style = if focused == 1 {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        f.render_widget(
+            Paragraph::new("Target directory:")
+                .style(target_label_style),
+            chunks[idx],
+        );
+        idx += 1;
+
+        let target_style = if focused == 1 {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
+        let target_display = if focused == 1 {
+            if target_path.is_empty() { "_".to_string() } else { format!("{}_", target_path) }
+        } else {
+            target_path.to_string()
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(target_display, target_style))),
+            chunks[idx],
+        );
+        idx += 2; // skip spacer
+    }
+
+    // Branch name
+    let branch_label_style = if focused == 2 {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    f.render_widget(
+        Paragraph::new("Branch name:")
+            .style(branch_label_style),
+        chunks[idx],
+    );
+    idx += 1;
+
+    let branch_style = if focused == 2 {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
+    let branch_display = if focused == 2 {
+        format!("{}_", branch)
+    } else {
+        branch.to_string()
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(branch_display, branch_style))),
+        chunks[idx],
+    );
+    idx += 2; // skip spacer
+
+    // Help line
+    f.render_widget(
+        Paragraph::new("Tab:next  Left/Right:mode  Enter:convert  Esc:cancel")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[idx],
     );
 }

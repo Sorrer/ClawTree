@@ -55,7 +55,64 @@ pub struct PtyHandle {
 }
 
 /// Prefix for all tmux sessions we manage.
-const TMUX_PREFIX: &str = "wctui";
+const TMUX_PREFIX: &str = "clawtree";
+
+/// Configure the tmux server for truecolor passthrough (called once per process).
+///
+/// tmux decides whether to pass 24-bit RGB colors through to the outer terminal
+/// (our PTY) or downconvert them to the 256-color palette.  It checks the `Tc`
+/// capability in `terminal-overrides` (tmux < 3.2) and the `RGB` flag in
+/// `terminal-features` (tmux >= 3.2).  We need both to cover all tmux versions.
+///
+/// We also set `default-terminal` to `tmux-256color` so programs *inside* tmux
+/// (e.g. Claude Code) see a TERM that advertises full color, rather than the
+/// default `screen` which only declares 8 colors.
+fn ensure_tmux_truecolor() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // 1. Wildcard Tc — tells tmux that ANY outer terminal supports truecolor.
+        //    Uses `-sa` (server-append) so we don't clobber user overrides.
+        let _ = Command::new("tmux")
+            .args(["set", "-sa", "terminal-overrides", ",*:Tc"])
+            .output();
+
+        // 2. terminal-features RGB — the modern equivalent for tmux >= 3.2.
+        //    Harmless on older tmux (unrecognized option is silently ignored).
+        let _ = Command::new("tmux")
+            .args(["set", "-sa", "terminal-features", ",xterm-256color:RGB"])
+            .output();
+
+        // 3. default-terminal — controls what TERM is set inside tmux panes.
+        //    `tmux-256color` advertises 256-color + tmux-specific capabilities.
+        //    Programs like Claude Code check TERM to decide their color output level.
+        let _ = Command::new("tmux")
+            .args(["set", "-g", "default-terminal", "tmux-256color"])
+            .output();
+    });
+}
+
+/// Return all prefixes we should scan for when listing/reconnecting tmux sessions.
+/// Always includes TMUX_PREFIX. Additional legacy prefixes can be supplied via the
+/// `CLAWTREE_LEGACY_PREFIXES` environment variable (comma-separated, e.g. "wctui,oldname").
+fn all_tmux_prefixes() -> Vec<&'static str> {
+    use std::sync::OnceLock;
+    static PREFIXES: OnceLock<Vec<String>> = OnceLock::new();
+    let prefixes = PREFIXES.get_or_init(|| {
+        let mut v = vec![TMUX_PREFIX.to_string()];
+        if let Ok(val) = std::env::var("CLAWTREE_LEGACY_PREFIXES") {
+            for p in val.split(',') {
+                let p = p.trim();
+                if !p.is_empty() && p != TMUX_PREFIX {
+                    v.push(p.to_string());
+                }
+            }
+        }
+        v
+    });
+    // SAFETY: OnceLock guarantees the Vec lives for 'static, so we can hand out &str refs.
+    prefixes.iter().map(|s| s.as_str()).collect()
+}
 
 /// Check if tmux is available on the system.
 pub fn tmux_available() -> bool {
@@ -112,9 +169,10 @@ pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf)> {
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let prefixes = all_tmux_prefixes();
     let our_sessions: Vec<String> = stdout
         .lines()
-        .filter(|name| name.starts_with(TMUX_PREFIX))
+        .filter(|name| prefixes.iter().any(|pfx| name.starts_with(pfx)))
         .map(|s| s.to_string())
         .collect();
 
@@ -192,10 +250,8 @@ pub fn spawn_claude_pty_tmux(
         tmux_args.push(prompt.to_string());
     }
 
-    // Enable truecolor passthrough in tmux so it doesn't downgrade RGB to 256-color
-    let _ = Command::new("tmux")
-        .args(["set", "-as", "terminal-overrides", ",xterm-256color:Tc"])
-        .output();
+    // Ensure the tmux server is configured for truecolor passthrough (once)
+    ensure_tmux_truecolor();
 
     let output = Command::new("tmux")
         .args(&tmux_args)
@@ -211,6 +267,13 @@ pub fn spawn_claude_pty_tmux(
         );
     }
 
+    // Disable the tmux status bar so the pane fills the full PTY dimensions.
+    // This eliminates the 1-row discrepancy between PTY size and pane size
+    // that causes content reflow / extra blank lines on resize.
+    let _ = Command::new("tmux")
+        .args(["set-option", "-t", tmux_name, "status", "off"])
+        .output();
+
     // Store the worktree path and COLORTERM in the tmux session environment
     let _ = Command::new("tmux")
         .args([
@@ -223,6 +286,12 @@ pub fn spawn_claude_pty_tmux(
         .output();
     let _ = Command::new("tmux")
         .args(["set-environment", "-t", tmux_name, "COLORTERM", "truecolor"])
+        .output();
+
+    // Allow passthrough of escape sequences that tmux normally strips
+    // (OSC for hyperlinks, styled underlines, kitty graphics, etc.)
+    let _ = Command::new("tmux")
+        .args(["set-option", "-t", tmux_name, "allow-passthrough", "on"])
         .output();
 
     // Clear the default pane title (usually username@host) so it doesn't
@@ -258,6 +327,19 @@ pub fn attach_tmux_session(
     rows: u16,
     cols: u16,
 ) -> Result<PtyHandle> {
+    // Ensure truecolor is configured (idempotent — runs once per process)
+    ensure_tmux_truecolor();
+
+    // Ensure status bar is off so pane fills the full PTY dimensions
+    let _ = Command::new("tmux")
+        .args(["set-option", "-t", tmux_name, "status", "off"])
+        .output();
+
+    // NOTE: We intentionally do NOT call `tmux resize-window` here.
+    // The tmux session already has the correct size from the previous run,
+    // and resize-window can send SIGWINCH to Claude even when the size
+    // hasn't changed, causing content to scroll into the scrollback buffer.
+
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {

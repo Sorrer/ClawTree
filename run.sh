@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BINARY="$SCRIPT_DIR/target/release/worktree-claude-tui"
+BINARY="$SCRIPT_DIR/target/release/clawtree"
 
 if [ ! -f "$BINARY" ]; then
     echo "Binary not found. Run ./build.sh first."

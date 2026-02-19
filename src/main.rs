@@ -20,7 +20,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tracing_subscriber::EnvFilter;
 
-use crate::app::{App, PendingAction, CommitPhase, Dialog};
+use crate::app::{App, PendingAction, CommitPhase, Dialog, ScreenMode, StatusSeverity};
 use crate::event::AppEvent;
 
 /// Global flag set by the signal handler, read by the watchdog thread.
@@ -133,6 +133,15 @@ fn main() -> Result<()> {
             (target_dir.clone(), false)
         }
     };
+    // Detect regular (non-bare) git repo if no bare repo found
+    let regular_repo_path = if !repo_detected {
+        worktree::git::detect_regular_repo(&target_dir)
+    } else {
+        None
+    };
+    if let Some(ref p) = regular_repo_path {
+        tracing::info!("Regular repo detected at {:?}", p);
+    }
     tracing::info!("Bare repo path: {:?}, detected: {}", bare_repo_path, repo_detected);
 
     // Build tokio runtime manually so we control shutdown
@@ -145,7 +154,18 @@ fn main() -> Result<()> {
     let tmux_available = session::pty::tmux_available();
     tracing::info!("tmux available: {}", tmux_available);
 
-    let result = rt.block_on(async_main(bare_repo_path, repo_detected, tmux_available));
+    // Check Windows Terminal availability (use `which` to avoid flashing a console window)
+    let wt_available = std::env::var("WSL_DISTRO_NAME").is_ok()
+        && std::process::Command::new("which")
+            .arg("wt.exe")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+    tracing::info!("wt.exe available: {}", wt_available);
+
+    let result = rt.block_on(async_main(bare_repo_path, repo_detected, regular_repo_path, tmux_available, wt_available));
 
     // Clean exit — tell watchdog to stop, restore terminal
     alive.store(false, Ordering::Relaxed);
@@ -154,7 +174,7 @@ fn main() -> Result<()> {
     result
 }
 
-async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, tmux_available: bool) -> Result<()> {
+async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, regular_repo_path: Option<std::path::PathBuf>, tmux_available: bool, wt_available: bool) -> Result<()> {
     // Initialize terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
@@ -165,7 +185,8 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, tmu
 
     // Create event channel and app
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
-    let mut app = App::new(bare_repo_path.clone(), event_tx.clone(), repo_detected, tmux_available);
+    let mut app = App::new(bare_repo_path.clone(), event_tx.clone(), repo_detected, tmux_available, wt_available);
+    app.regular_repo_path = regular_repo_path;
 
     // Set the outer terminal title to the repo name
     let repo_name = bare_repo_path
@@ -173,7 +194,7 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, tmu
         .or_else(|| bare_repo_path.parent().and_then(|p| p.file_name()))
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "worktree-tui".to_string());
-    set_terminal_title(&format!("wctui — {}", repo_name));
+    set_terminal_title(&format!("clawtree — {}", repo_name));
 
     // ── Input reader — plain OS thread ─────────────────────────────
     let input_tx = event_tx.clone();
@@ -225,6 +246,9 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, tmu
             // Restore persisted prompt queues for reconnected sessions
             app.load_prompt_queues();
         }
+
+        // Load saved prompt templates for mini mode
+        app.load_saved_prompts();
     }
 
     // ── Tmux title poller — background thread ──────────────────────
@@ -235,6 +259,16 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, tmu
             *info = session::collect_tmux_session_info(&app);
         }
         session::spawn_tmux_title_poller(event_tx.clone(), std::sync::Arc::clone(&tmux_session_info));
+    }
+
+    // ── Worktree status poller — background thread ───────────────
+    let status_poller_paths = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    if repo_detected {
+        // Seed initial worktree paths
+        if let Ok(mut paths) = status_poller_paths.lock() {
+            *paths = worktree::collect_worktree_paths(&app);
+        }
+        worktree::spawn_status_poller(event_tx.clone(), std::sync::Arc::clone(&status_poller_paths));
     }
 
     // ── Main event loop ────────────────────────────────────────────
@@ -252,8 +286,15 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, tmu
 
         // Execute pending actions after drawing the loading overlay
         if let Some(action) = app.pending_action.take() {
+            let wt_count_before = app.worktrees.len();
             execute_pending_action(&mut app, action);
             app.loading_message = None;
+            // Update status poller if worktrees changed during action
+            if repo_detected && app.worktrees.len() != wt_count_before {
+                if let Ok(mut paths) = status_poller_paths.lock() {
+                    *paths = worktree::collect_worktree_paths(&app);
+                }
+            }
             needs_redraw = true;
             continue; // redraw immediately
         }
@@ -269,13 +310,44 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, tmu
                 match event {
                     AppEvent::Input(CrosstermEvent::Key(key)) => {
                         let session_count_before = app.sessions.len();
+                        let worktree_count_before = app.worktrees.len();
+                        let mouse_was_captured = app.mouse_captured;
                         let size = terminal.size()?;
                         keys::handle_key(&mut app, key, (size.width, size.height));
-                        // If sessions changed, update the poller's snapshot
+                        // Toggle mouse capture if it changed
+                        if app.mouse_captured != mouse_was_captured {
+                            if app.mouse_captured {
+                                let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
+                            } else {
+                                let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
+                            }
+                        }
+                        // If sessions changed, update the tmux poller's snapshot
                         if tmux_available && app.sessions.len() != session_count_before {
                             if let Ok(mut info) = tmux_session_info.lock() {
                                 *info = session::collect_tmux_session_info(&app);
                             }
+                        }
+                        // If worktrees changed, update the status poller's snapshot
+                        if repo_detected && app.worktrees.len() != worktree_count_before {
+                            if let Ok(mut paths) = status_poller_paths.lock() {
+                                *paths = worktree::collect_worktree_paths(&app);
+                            }
+                        }
+                        // Handle immediate background status fetch requests
+                        if let Some(path) = app.request_status_fetch.take() {
+                            let tx = event_tx.clone();
+                            let next_refresh = app.next_status_refresh
+                                .unwrap_or_else(|| Instant::now() + worktree::STATUS_REFRESH_INTERVAL);
+                            tokio::task::spawn_blocking(move || {
+                                if let Ok(status) = worktree::fetch_worktree_status_by_path(&path) {
+                                    let _ = tx.send(AppEvent::WorktreeStatusReady {
+                                        worktree_path: path,
+                                        status,
+                                        next_refresh_at: next_refresh,
+                                    });
+                                }
+                            });
                         }
                         needs_redraw = true;
                     }
@@ -293,6 +365,7 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, tmu
                         }
                     }
                     AppEvent::Input(CrosstermEvent::Resize(w, h)) => {
+                        tracing::info!("RESIZE-EVENT from crossterm: {}x{}", w, h);
                         session::resize_all(&app, h, w);
                         needs_redraw = true;
                     }
@@ -311,30 +384,63 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, tmu
                     }
                     AppEvent::WorktreeCreated { branch, error } => {
                         match error {
-                            Some(e) => app.set_status(format!("Error creating '{}': {}", branch, e)),
+                            Some(e) => app.set_status_with(StatusSeverity::Error, format!("Error creating '{}': {}", branch, e)),
                             None => {
-                                app.set_status(format!("Created worktree '{}'", branch));
+                                app.set_status_with(StatusSeverity::Success, format!("Created worktree '{}'", branch));
                                 let _ = worktree::refresh_worktrees(&mut app);
+                                // Update status poller paths
+                                if let Ok(mut paths) = status_poller_paths.lock() {
+                                    *paths = worktree::collect_worktree_paths(&app);
+                                }
                             }
                         }
                         needs_redraw = true;
                     }
                     AppEvent::PushComplete { branch, error } => {
                         match error {
-                            Some(e) => app.set_status(format!("Push '{}' failed: {}", branch, e)),
+                            Some(e) => app.set_status_with(StatusSeverity::Error, format!("Push '{}' failed: {}", branch, e)),
                             None => {
-                                app.set_status(format!("Pushed '{}'", branch));
+                                app.set_status_with(StatusSeverity::Success, format!("Pushed '{}'", branch));
                             }
                         }
                         needs_redraw = true;
                     }
                     AppEvent::InitRepoComplete { error, .. } => {
                         match error {
-                            Some(e) => app.set_status(format!("Init error: {}", e)),
+                            Some(e) => app.set_status_with(StatusSeverity::Error, format!("Init error: {}", e)),
                             None => {
                                 app.repo_detected = true;
-                                app.set_status("Repository initialized!");
+                                app.set_status_with(StatusSeverity::Success, "Repository initialized!");
                                 let _ = worktree::refresh_worktrees(&mut app);
+                                // Start the status poller now that we have a repo
+                                if let Ok(mut paths) = status_poller_paths.lock() {
+                                    *paths = worktree::collect_worktree_paths(&app);
+                                }
+                                worktree::spawn_status_poller(
+                                    event_tx.clone(),
+                                    std::sync::Arc::clone(&status_poller_paths),
+                                );
+                            }
+                        }
+                        needs_redraw = true;
+                    }
+                    AppEvent::ConvertRepoComplete { bare_repo_path: new_path, error } => {
+                        match error {
+                            Some(e) => app.set_status_with(StatusSeverity::Error, format!("Convert error: {}", e)),
+                            None => {
+                                app.bare_repo_path = new_path;
+                                app.repo_detected = true;
+                                app.regular_repo_path = None;
+                                app.set_status_with(StatusSeverity::Success, "Repository converted to bare worktree layout!");
+                                let _ = worktree::refresh_worktrees(&mut app);
+                                // Start the status poller now that we have a repo
+                                if let Ok(mut paths) = status_poller_paths.lock() {
+                                    *paths = worktree::collect_worktree_paths(&app);
+                                }
+                                worktree::spawn_status_poller(
+                                    event_tx.clone(),
+                                    std::sync::Arc::clone(&status_poller_paths),
+                                );
                             }
                         }
                         needs_redraw = true;
@@ -347,7 +453,55 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, tmu
                         }
                         needs_redraw = true;
                     }
+                    AppEvent::WorktreeStatusReady { worktree_path, status, next_refresh_at } => {
+                        // Update the per-worktree cache
+                        app.worktree_statuses.insert(worktree_path.clone(), status.clone());
+                        app.next_status_refresh = Some(next_refresh_at);
+                        // If this is the currently viewed worktree, update the display
+                        if let Some(wi) = app.active_worktree_idx {
+                            if app.worktrees.get(wi).map(|wt| &wt.path) == Some(&worktree_path) {
+                                app.worktree_status = Some(status);
+                                app.clamp_info_panel_cursor();
+                            }
+                        }
+                        needs_redraw = true;
+                    }
                     AppEvent::Tick => {
+                        // Increment spinner frame (~30fps from 33ms tick)
+                        // We want ~10fps for the spinner, so advance every 3rd tick
+                        app.spinner_frame = app.spinner_frame.wrapping_add(1);
+
+                        // ── Mini mode agent tracking (~1/sec, on every 30th tick) ──
+                        if app.spinner_frame % 30 == 0 {
+                            // Rebuild agent list if in mini mode
+                            if app.screen_mode == ScreenMode::Mini {
+                                app.rebuild_mini_agent_list();
+                            }
+
+                            // Detect Working→Idle transitions and capture summaries
+                            let sids: Vec<u64> = app.sessions.keys().copied().collect();
+                            for sid in &sids {
+                                if let Some(session) = app.sessions.get(sid) {
+                                    let currently_active = session.is_active();
+                                    let was_active = session.was_active;
+                                    let exited = session.exited.load(std::sync::atomic::Ordering::Relaxed);
+
+                                    // Transition: was working, now idle/done
+                                    if was_active && !currently_active && !exited {
+                                        if let Some(summary) = session::extract_summary(session) {
+                                            app.agent_summaries.insert(*sid, summary);
+                                        }
+                                    }
+                                }
+                            }
+                            // Update was_active flags (separate loop to avoid borrow issues)
+                            for sid in &sids {
+                                if let Some(session) = app.sessions.get_mut(sid) {
+                                    session.was_active = session.is_active();
+                                }
+                            }
+                        }
+
                         // Auto-send next queued prompt when Claude is idle.
                         // Checks ALL sessions with queues, not just the active one.
                         // Throttled to ~1 check/sec to avoid hammering tmux.
@@ -482,11 +636,11 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                         app.set_status("Committed — retrying merge...");
                         app.queue_action("Merging...", merge_action);
                     } else {
-                        app.set_status("Changes committed successfully");
+                        app.set_status_with(StatusSeverity::Success, "Changes committed successfully");
                     }
                 }
                 Err(e) => {
-                    app.set_status(format!("Commit failed: {}", e));
+                    app.set_status_with(StatusSeverity::Error, format!("Commit failed: {}", e));
                 }
             }
         }

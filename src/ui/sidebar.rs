@@ -2,31 +2,35 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem};
 use std::sync::atomic::Ordering;
 
 use crate::app::{App, FocusTarget, SidebarItem};
+use super::theme;
 
-/// Cursor/selection highlight (blue-tint).
-const SEL_BG: Color = Color::Rgb(50, 50, 60);
-/// Active session highlight (green-tint) — shows which session is in the terminal pane.
-const ACTIVE_BG: Color = Color::Rgb(30, 50, 35);
-/// Both selected and active.
-const SEL_ACTIVE_BG: Color = Color::Rgb(40, 55, 50);
+/// Get the current spinner character based on the app's frame counter.
+fn spinner_char(app: &App) -> char {
+    // spinner_frame increments every tick (~33ms). Advance spinner every 3rd tick for ~10fps.
+    let idx = (app.spinner_frame / 3) % theme::SPINNER_FRAMES.len();
+    theme::SPINNER_FRAMES[idx]
+}
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == FocusTarget::Sidebar;
 
     let border_style = if is_focused {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme::BORDER_FOCUSED).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme::BORDER_UNFOCUSED)
     };
+
+    let border_type = if is_focused { BorderType::Thick } else { BorderType::Plain };
 
     let title = if is_focused { " ▸ Worktrees " } else { " Worktrees " };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
+        .border_type(border_type)
         .border_style(border_style);
 
     let inner_width = area.width.saturating_sub(2) as usize;
@@ -68,7 +72,7 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) 
             .unwrap_or(false)
     }).count();
 
-    let bg = if is_selected { SEL_BG } else { Color::Reset };
+    let bg = if is_selected { theme::SIDEBAR_SEL_BG } else { Color::Reset };
     let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
 
     let branch_style = Style::default()
@@ -138,12 +142,12 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
     });
 
     // Status indicator — only reflects working state, not active selection
-    let status_icon = if is_exited {
-        "✗"
+    let status_icon: String = if is_exited {
+        "✗".to_string()
     } else if is_working {
-        "⟳"
+        spinner_char(app).to_string()
     } else {
-        "○"
+        "○".to_string()
     };
 
     // Status color — only reflects working state
@@ -158,9 +162,9 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
     // Background: selection highlight and active session highlight are independent
     let has_bg = is_selected || is_active_session;
     let bg = match (is_selected, is_active_session) {
-        (true, true) => SEL_ACTIVE_BG,
-        (true, false) => SEL_BG,
-        (false, true) => ACTIVE_BG,
+        (true, true) => theme::SIDEBAR_SEL_ACTIVE_BG,
+        (true, false) => theme::SIDEBAR_SEL_BG,
+        (false, true) => theme::SIDEBAR_ACTIVE_BG,
         (false, false) => Color::Reset,
     };
     let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };

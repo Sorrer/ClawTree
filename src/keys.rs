@@ -1,18 +1,212 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, CommitPhase, ConfirmAction, Dialog, FocusTarget, InputMode, PendingAction, SidebarItem};
+use crate::app::{App, CommitPhase, ConfirmAction, Dialog, FocusTarget, InputMode, MiniModeFocus, PendingAction, ScreenMode, SidebarItem, SavedPrompt};
 use crate::session;
 use crate::worktree;
 
+// ── Keybinding registry ─────────────────────────────────────────────
+
+/// A single keybinding entry for help display: (key_display, description).
+pub type KeyEntry = (&'static str, &'static str);
+
+/// Context categories mapping to help overlay tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyContext {
+    Global,
+    Sidebar,
+    Terminal,
+    Queue,
+    InfoPanel,
+    MiniMode,
+}
+
+pub const KEY_CONTEXT_COUNT: usize = 6;
+
+impl KeyContext {
+    pub const ALL: [KeyContext; KEY_CONTEXT_COUNT] = [
+        KeyContext::Global,
+        KeyContext::Sidebar,
+        KeyContext::Terminal,
+        KeyContext::Queue,
+        KeyContext::InfoPanel,
+        KeyContext::MiniMode,
+    ];
+
+    pub const fn label(&self) -> &'static str {
+        match self {
+            KeyContext::Global => "Global",
+            KeyContext::Sidebar => "Sidebar",
+            KeyContext::Terminal => "Terminal",
+            KeyContext::Queue => "Queue",
+            KeyContext::InfoPanel => "Info Panel",
+            KeyContext::MiniMode => "Mini Mode",
+        }
+    }
+
+    pub const fn keys(&self) -> &'static [KeyEntry] {
+        match self {
+            KeyContext::Global => GLOBAL_KEYS,
+            KeyContext::Sidebar => SIDEBAR_KEYS,
+            KeyContext::Terminal => TERMINAL_KEYS,
+            KeyContext::Queue => QUEUE_KEYS,
+            KeyContext::InfoPanel => INFO_PANEL_KEYS,
+            KeyContext::MiniMode => MINI_MODE_KEYS,
+        }
+    }
+
+    /// Returns additional platform-specific keys for this context.
+    pub fn extra_keys(&self, wt_available: bool) -> &'static [KeyEntry] {
+        match self {
+            KeyContext::Sidebar if wt_available => SIDEBAR_KEYS_WT,
+            _ => &[],
+        }
+    }
+}
+
+const GLOBAL_KEYS: &[KeyEntry] = &[
+    ("Ctrl+Q",  "Quit application"),
+    ("Ctrl+B",  "Toggle sidebar"),
+    ("Ctrl+P",  "Toggle prompt queue"),
+    ("Ctrl+G",  "Toggle mouse capture (select text / scroll)"),
+    ("F2",      "Toggle Mini Mode"),
+    ("?",       "Show/hide this help"),
+];
+
+const SIDEBAR_KEYS: &[KeyEntry] = &[
+    ("Tab",         "Focus terminal / info panel"),
+    ("j / Down",    "Navigate down"),
+    ("k / Up",      "Navigate up"),
+    ("Enter",       "Activate selected item"),
+    ("Space",       "Toggle expand/collapse"),
+    ("c",           "New Claude session"),
+    ("C",           "Claude (--dangerously-skip-permissions)"),
+    ("n",           "New worktree"),
+    ("d",           "Delete session/worktree"),
+    ("D",           "Force-delete worktree"),
+    ("m",           "Merge branch"),
+    ("s",           "Stage & commit"),
+    ("p",           "Push branch to remote"),
+    ("r",           "Rename/nickname session"),
+    ("G",           "Jump to bottom"),
+    ("Home / End",  "Jump to top / bottom"),
+    ("z / Z",       "Collapse / expand all worktrees"),
+    ("F5 / ^R",     "Refresh worktrees"),
+    ("PgUp/PgDn",   "Scroll terminal"),
+];
+
+/// Additional sidebar keys shown only when wt.exe is available.
+const SIDEBAR_KEYS_WT: &[KeyEntry] = &[
+    ("w",           "Open Windows Terminal tab"),
+    ("W",           "Windows Terminal + Claude"),
+];
+
+const TERMINAL_KEYS: &[KeyEntry] = &[
+    ("Tab",         "Back to sidebar / prompt queue"),
+    ("PgUp/PgDn",   "Scroll through history"),
+    ("(all keys)",  "Sent directly to Claude session"),
+];
+
+const QUEUE_KEYS: &[KeyEntry] = &[
+    ("Tab",         "Back to sidebar"),
+    ("Esc",         "Cancel edit / back to sidebar"),
+    ("Enter",       "Add item / save edit / load for editing"),
+    ("Up / Down",   "Navigate queue items"),
+    ("d / Delete",  "Delete selected item"),
+    ("(type)",      "Input text for new/editing prompt"),
+    ("Backspace",   "Delete character"),
+];
+
+const MINI_MODE_KEYS: &[KeyEntry] = &[
+    ("j / Down",    "Navigate agents"),
+    ("k / Up",      "Navigate agents"),
+    ("Enter",       "Drilldown into agent terminal"),
+    ("a",           "Create new agent"),
+    ("d",           "Kill selected agent"),
+    ("r",           "Rename selected agent"),
+    ("s",           "Browse saved prompts"),
+    ("Esc",         "Return to normal mode"),
+    ("Tab",         "Back to agent list (drilldown)"),
+];
+
+const INFO_PANEL_KEYS: &[KeyEntry] = &[
+    ("j / Down",    "Navigate files"),
+    ("k / Up",      "Navigate files"),
+    ("Tab",         "Switch unstaged/staged section"),
+    ("Esc",         "Back to sidebar"),
+    ("Space/Enter", "Stage/unstage selected file"),
+    ("a",           "Stage all files"),
+    ("c",           "Enter commit message mode"),
+    ("C",           "New Claude session"),
+    ("n",           "New worktree"),
+    ("d",           "Delete worktree"),
+    ("m",           "Merge branch"),
+    ("p",           "Push branch"),
+    ("F5 / ^R",     "Refresh"),
+];
+
 /// Handle a key event based on current input mode.
 pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
+    // ── Help overlay intercepts all keys when visible ──────────────
+    if app.show_help {
+        handle_help_key(app, key);
+        return;
+    }
+
     // ── Global keybindings (work in ALL modes) ─────────────────────
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q') {
         app.should_quit = true;
         return;
     }
+
+    // Ctrl+G — toggle mouse capture (off = text selection, on = scroll wheel)
+    if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('g') {
+        app.mouse_captured = !app.mouse_captured;
+        if app.mouse_captured {
+            app.set_status("Mouse capture ON — scroll wheel enabled");
+        } else {
+            app.set_status("Mouse capture OFF — text selection enabled");
+        }
+        return;
+    }
+
+    // F2 — toggle between Normal and Mini mode
+    if key.modifiers.is_empty() && key.code == KeyCode::F(2) {
+        match app.screen_mode {
+            ScreenMode::Normal => {
+                app.screen_mode = ScreenMode::Mini;
+                app.mini.focus = MiniModeFocus::AgentList;
+                app.input_mode = InputMode::Normal;
+                app.rebuild_mini_agent_list();
+            }
+            ScreenMode::Mini | ScreenMode::MiniDrilldown => {
+                app.screen_mode = ScreenMode::Normal;
+                app.input_mode = match app.focus {
+                    FocusTarget::TerminalPane if app.active_session_id.is_some() => InputMode::Terminal,
+                    _ => InputMode::Normal,
+                };
+            }
+        }
+        session::resize_all(app, terminal_size.1, terminal_size.0);
+        return;
+    }
+
+    // ── Mini mode key handling ─────────────────────────────────────
+    if app.screen_mode == ScreenMode::Mini {
+        if app.input_mode == InputMode::Dialog {
+            handle_dialog_key(app, key, terminal_size);
+        } else {
+            handle_mini_mode_key(app, key, terminal_size);
+        }
+        return;
+    }
+    if app.screen_mode == ScreenMode::MiniDrilldown {
+        handle_mini_drilldown_key(app, key, terminal_size);
+        return;
+    }
+
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('b') {
         app.sidebar_visible = !app.sidebar_visible;
+        session::resize_all(app, terminal_size.1, terminal_size.0);
         return;
     }
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
@@ -32,10 +226,61 @@ pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         return;
     }
 
+    // ? — toggle help overlay (Normal mode only, not in dialogs/terminal)
+    if key.modifiers.is_empty() && key.code == KeyCode::Char('?') && app.input_mode == InputMode::Normal {
+        // Don't open help if we're typing in prompt queue or info panel commit message
+        if !app.prompt_queue_focused() && app.info_panel_commit_msg.is_none() {
+            app.show_help = true;
+            app.help_tab = 0;
+            return;
+        }
+    }
+
     match app.input_mode {
         InputMode::Normal => handle_normal_key(app, key, terminal_size),
         InputMode::Terminal => handle_terminal_key(app, key),
         InputMode::Dialog => handle_dialog_key(app, key, terminal_size),
+    }
+}
+
+/// Handle keys while the help overlay is open.
+fn handle_help_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('?') => {
+            app.show_help = false;
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            if app.help_tab > 0 {
+                app.help_tab -= 1;
+                app.help_scroll = 0; // reset scroll on tab change
+            }
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            if app.help_tab + 1 < KEY_CONTEXT_COUNT {
+                app.help_tab += 1;
+                app.help_scroll = 0; // reset scroll on tab change
+            }
+        }
+        KeyCode::Char('1') => { app.help_tab = 0; app.help_scroll = 0; }
+        KeyCode::Char('2') => { app.help_tab = 1; app.help_scroll = 0; }
+        KeyCode::Char('3') => { app.help_tab = 2; app.help_scroll = 0; }
+        KeyCode::Char('4') => { app.help_tab = 3; app.help_scroll = 0; }
+        KeyCode::Char('5') => { app.help_tab = 4; app.help_scroll = 0; }
+        KeyCode::Char('6') => { app.help_tab = 5; app.help_scroll = 0; }
+        // Scroll within key list
+        KeyCode::Down | KeyCode::Char('j') => {
+            let ctx = KeyContext::ALL[app.help_tab];
+            let total = ctx.keys().len() + ctx.extra_keys(app.wt_available).len();
+            if app.help_scroll + 1 < total {
+                app.help_scroll += 1;
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.help_scroll > 0 {
+                app.help_scroll -= 1;
+            }
+        }
+        _ => {}
     }
 }
 
@@ -52,7 +297,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         return;
     }
 
-    // If no repo detected, only allow init
+    // If no repo detected, only allow init or convert
     if !app.repo_detected {
         match key.code {
             KeyCode::Char('i') => {
@@ -62,16 +307,32 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     focused_field: 0,
                 });
             }
+            KeyCode::Char('c') => {
+                if let Some(ref repo_path) = app.regular_repo_path {
+                    let branch = worktree::git::current_branch_name(repo_path)
+                        .unwrap_or_else(|_| "main".to_string());
+                    let source = repo_path.clone();
+                    app.open_dialog(Dialog::ConvertRepo {
+                        mode: 0,
+                        target_path_input: String::new(),
+                        branch_name: branch,
+                        focused_field: 0,
+                        source_repo_path: source,
+                    });
+                }
+            }
             _ => {}
         }
         return;
     }
 
     match (key.modifiers, key.code) {
+        // Tab — toggle focus to terminal / info panel
         (_, KeyCode::Tab) => {
             app.toggle_focus();
         }
-        (_, KeyCode::F(5)) => {
+
+        (_, KeyCode::F(5)) | (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
             if let Err(e) = worktree::refresh_worktrees(app) {
                 app.set_status(format!("Error refreshing: {}", e));
             }
@@ -89,8 +350,13 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         // Sidebar navigation
         (_, KeyCode::Char('j')) | (_, KeyCode::Down) => app.sidebar_down(),
         (_, KeyCode::Char('k')) | (_, KeyCode::Up) => app.sidebar_up(),
+        (_, KeyCode::Home) => app.sidebar_jump_top(),
+        (_, KeyCode::End) | (KeyModifiers::SHIFT, KeyCode::Char('G')) => app.sidebar_jump_bottom(),
         (_, KeyCode::Enter) => app.activate_selected(),
         (_, KeyCode::Char(' ')) => app.toggle_expand(),
+        // z — collapse all worktrees, Z — expand all
+        (_, KeyCode::Char('z')) => app.collapse_all(),
+        (KeyModifiers::SHIFT, KeyCode::Char('Z')) => app.expand_all(),
 
         // c — new Claude session
         (_, KeyCode::Char('c')) => {
@@ -152,23 +418,13 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             }
         }
 
-        // w — open new Windows Terminal tab in worktree directory
-        (_, KeyCode::Char('w')) => {
+        // w — open new Windows Terminal tab in worktree directory (WSL only)
+        (_, KeyCode::Char('w')) if app.wt_available => {
             open_wsl_window(app, false);
         }
-        // W — open new Windows Terminal tab with claude in worktree directory
-        (KeyModifiers::SHIFT, KeyCode::Char('W')) => {
+        // W — open new Windows Terminal tab with claude in worktree directory (WSL only)
+        (KeyModifiers::SHIFT, KeyCode::Char('W')) if app.wt_available => {
             open_wsl_window(app, true);
-        }
-
-        // q — toggle prompt queue panel
-        (_, KeyCode::Char('q')) => {
-            if app.active_session_id.is_some() {
-                app.prompt_queue_visible = !app.prompt_queue_visible;
-                // Trigger PTY resize since available height changed
-                let size = terminal_size;
-                session::resize_all(app, size.1, size.0);
-            }
         }
 
         _ => {}
@@ -242,8 +498,8 @@ fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)
         KeyCode::Esc => {
             app.escape_to_sidebar();
         }
-        // Space — stage/unstage selected file
-        KeyCode::Char(' ') => {
+        // Space or Enter — stage/unstage selected file
+        KeyCode::Char(' ') | KeyCode::Enter => {
             if let Some(wi) = app.active_worktree_idx {
                 if app.info_panel_section == 0 {
                     if let Some((_, path)) = unstaged.get(app.info_panel_cursor) {
@@ -268,17 +524,13 @@ fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)
                 app.queue_action("Staging all...", PendingAction::StageAll { worktree_idx: wi });
             }
         }
-        // Enter — commit staged files (enter commit message mode)
-        KeyCode::Enter => {
+        // c — enter commit message mode (matching GitCommit dialog)
+        KeyCode::Char('c') => {
             if staged.is_empty() {
                 app.set_status("No staged files to commit");
             } else {
                 app.info_panel_commit_msg = Some(String::new());
             }
-        }
-        // Pass through keys that should still work from the info panel
-        KeyCode::Char('c') => {
-            spawn_claude_for_selected(app, terminal_size, false);
         }
         KeyCode::Char('C') if key.modifiers == KeyModifiers::SHIFT => {
             spawn_claude_for_selected(app, terminal_size, true);
@@ -301,6 +553,12 @@ fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)
             handle_push(app);
         }
         KeyCode::F(5) => {
+            if let Err(e) = worktree::refresh_worktrees(app) {
+                app.set_status(format!("Error refreshing: {}", e));
+            }
+            app.queue_action("Refreshing...", PendingAction::RefreshWorktreeStatus);
+        }
+        KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
             if let Err(e) = worktree::refresh_worktrees(app) {
                 app.set_status(format!("Error refreshing: {}", e));
             }
@@ -532,21 +790,20 @@ fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u1
     };
 
     match key.code {
+        // Tab — toggle focus back to sidebar
+        KeyCode::Tab => {
+            app.toggle_focus();
+        }
         KeyCode::Esc => {
             if app.prompt_queue_editing.is_some() {
                 // Cancel editing
                 app.prompt_queue_editing = None;
                 app.prompt_queue_input.clear();
             } else {
-                // Go back to terminal pane
-                app.focus = FocusTarget::TerminalPane;
-                app.input_mode = InputMode::Terminal;
+                // Go back to sidebar
+                app.focus = FocusTarget::Sidebar;
+                app.input_mode = InputMode::Normal;
             }
-        }
-        KeyCode::Tab => {
-            // Escape to sidebar
-            app.focus = FocusTarget::Sidebar;
-            app.input_mode = InputMode::Normal;
         }
         KeyCode::Enter => {
             if let Some(edit_idx) = app.prompt_queue_editing.take() {
@@ -628,15 +885,10 @@ fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u1
 }
 
 fn handle_terminal_key(app: &mut App, key: KeyEvent) {
-    // Tab: go to PromptQueue if visible, else escape to sidebar
-    if key.code == KeyCode::Tab && key.modifiers.is_empty() {
+    // Tab — toggle focus back to sidebar (or prompt queue if visible)
+    if key.code == KeyCode::Tab {
         app.terminal_scroll = 0;
-        if app.prompt_queue_visible && app.active_session_id.is_some() {
-            app.focus = FocusTarget::PromptQueue;
-            app.input_mode = InputMode::Normal;
-        } else {
-            app.escape_to_sidebar();
-        }
+        app.toggle_focus();
         return;
     }
 
@@ -748,6 +1000,54 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             });
                         })
                         .ok();
+                }
+                Some(Dialog::ConvertRepo { mode, target_path_input, branch_name, source_repo_path, .. }) => {
+                    let tx = app.event_tx.clone();
+                    let branch = branch_name;
+                    if mode == 0 {
+                        // In-place conversion
+                        let repo_path = source_repo_path.clone();
+                        app.set_status("Converting repo in-place...");
+                        app.close_dialog();
+                        let bare_path = repo_path.clone();
+                        std::thread::Builder::new()
+                            .name("convert-repo".into())
+                            .spawn(move || {
+                                let result = worktree::git::convert_repo_in_place(&repo_path, &branch);
+                                let error = result.err().map(|e| format!("{}", e));
+                                let _ = tx.send(crate::event::AppEvent::ConvertRepoComplete {
+                                    bare_repo_path: bare_path,
+                                    error,
+                                });
+                            })
+                            .ok();
+                    } else {
+                        // Different location
+                        if target_path_input.is_empty() {
+                            app.set_status("Target path cannot be empty");
+                            app.dialog = Some(Dialog::ConvertRepo {
+                                mode, target_path_input, branch_name: branch,
+                                focused_field: 1, source_repo_path,
+                            });
+                            return;
+                        }
+                        let target = std::path::PathBuf::from(&target_path_input);
+                        let source = source_repo_path;
+                        let bare_path = target.clone();
+                        app.set_status("Converting repo to new location...");
+                        app.close_dialog();
+                        std::thread::Builder::new()
+                            .name("convert-repo".into())
+                            .spawn(move || {
+                                let result = worktree::git::convert_repo_to_location(&source, &target, &branch);
+                                let error = result.err().map(|e| format!("{}", e));
+                                let _ = tx.send(crate::event::AppEvent::ConvertRepoComplete {
+                                    bare_repo_path: bare_path,
+                                    error,
+                                });
+                            })
+                            .ok();
+                    }
                 }
                 Some(Dialog::CreateWorktree { branch_input, base_branch, .. }) => {
                     if !branch_input.is_empty() {
@@ -1161,6 +1461,15 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 Some(Dialog::InitRepo { ref mut focused_field, .. }) => {
                     *focused_field = (*focused_field + 1) % 2;
                 }
+                Some(Dialog::ConvertRepo { ref mode, ref mut focused_field, .. }) => {
+                    if *mode == 0 {
+                        // In-place: skip field 1 (target path), cycle 0→2→0
+                        *focused_field = if *focused_field == 0 { 2 } else { 0 };
+                    } else {
+                        // Different location: cycle 0→1→2→0
+                        *focused_field = (*focused_field + 1) % 3;
+                    }
+                }
                 Some(Dialog::GitCommit { ref phase, ref mut section, ref mut selected, ref unstaged, ref staged, .. }) => {
                     if *phase == CommitPhase::Staging {
                         *section = 1 - *section;
@@ -1189,6 +1498,13 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         _ => branch_input.push(c),
                     }
                 }
+                Some(Dialog::ConvertRepo { ref mut target_path_input, ref mut branch_name, focused_field, .. }) => {
+                    match *focused_field {
+                        1 => target_path_input.push(c),
+                        2 => branch_name.push(c),
+                        _ => {} // field 0 is mode selector, no char input
+                    }
+                }
                 Some(Dialog::RenameSession { ref mut input, .. }) => {
                     input.push(c);
                 }
@@ -1214,6 +1530,13 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         _ => { branch_input.pop(); }
                     }
                 }
+                Some(Dialog::ConvertRepo { ref mut target_path_input, ref mut branch_name, focused_field, .. }) => {
+                    match *focused_field {
+                        1 => { target_path_input.pop(); }
+                        2 => { branch_name.pop(); }
+                        _ => {}
+                    }
+                }
                 Some(Dialog::RenameSession { ref mut input, .. }) => {
                     input.pop();
                 }
@@ -1223,6 +1546,13 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     }
                 }
                 _ => {}
+            }
+        }
+        KeyCode::Left | KeyCode::Right => {
+            if let Some(Dialog::ConvertRepo { ref mut mode, ref mut focused_field, .. }) = app.dialog {
+                if *focused_field == 0 {
+                    *mode = if *mode == 0 { 1 } else { 0 };
+                }
             }
         }
         _ => {}
@@ -1288,6 +1618,230 @@ fn handle_git_commit_enter_message(app: &mut App) {
             *phase = CommitPhase::Message;
         }
     }
+}
+
+// ── Mini mode key handlers ─────────────────────────────────────────
+
+fn handle_mini_mode_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
+    match app.mini.focus {
+        MiniModeFocus::AgentList => handle_mini_agent_list_key(app, key, terminal_size),
+        MiniModeFocus::WorktreeSelector => handle_mini_worktree_selector_key(app, key),
+        MiniModeFocus::PromptInput => handle_mini_prompt_input_key(app, key, terminal_size),
+        MiniModeFocus::SavedPrompts => handle_mini_saved_prompts_key(app, key),
+    }
+}
+
+fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
+    // ? — help overlay
+    if key.modifiers.is_empty() && key.code == KeyCode::Char('?') {
+        app.show_help = true;
+        app.help_tab = 5; // Mini Mode tab
+        return;
+    }
+
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if !app.mini.agent_list.is_empty() && app.mini.selected + 1 < app.mini.agent_list.len() {
+                app.mini.selected += 1;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if app.mini.selected > 0 {
+                app.mini.selected -= 1;
+            }
+        }
+        KeyCode::Enter => {
+            // Drilldown into selected agent's terminal
+            if let Some(&(sid, _)) = app.mini.agent_list.get(app.mini.selected) {
+                app.mini_drilldown_session = Some(sid);
+                app.active_session_id = Some(sid);
+                app.screen_mode = ScreenMode::MiniDrilldown;
+                app.input_mode = InputMode::Terminal;
+                app.focus = FocusTarget::TerminalPane;
+                app.terminal_scroll = 0;
+                session::resize_all(app, terminal_size.1, terminal_size.0);
+            }
+        }
+        KeyCode::Char('a') => {
+            // Start creating a new agent — go to worktree selector
+            if app.worktrees.is_empty() {
+                app.set_status("No worktrees available");
+                return;
+            }
+            app.mini.target_worktree_idx = 0;
+            app.mini.focus = MiniModeFocus::WorktreeSelector;
+        }
+        KeyCode::Char('d') => {
+            // Kill selected agent
+            if let Some(&(sid, _)) = app.mini.agent_list.get(app.mini.selected) {
+                app.open_dialog(Dialog::Confirm {
+                    message: format!("Kill agent {}?", session::session_label(app, sid)),
+                    on_confirm: ConfirmAction::DeleteSession(sid),
+                });
+            }
+        }
+        KeyCode::Char('r') => {
+            // Rename selected agent
+            if let Some(&(sid, _)) = app.mini.agent_list.get(app.mini.selected) {
+                let current = app.sessions.get(&sid)
+                    .and_then(|s| s.nickname.clone())
+                    .unwrap_or_default();
+                app.open_dialog(Dialog::RenameSession {
+                    session_id: sid,
+                    input: current,
+                });
+            }
+        }
+        KeyCode::Char('s') => {
+            // Open saved prompts browser
+            app.mini.saved_prompt_selected = 0;
+            app.mini.focus = MiniModeFocus::SavedPrompts;
+        }
+        KeyCode::Esc => {
+            // Return to normal mode
+            app.screen_mode = ScreenMode::Normal;
+            app.input_mode = InputMode::Normal;
+        }
+        _ => {}
+    }
+}
+
+fn handle_mini_worktree_selector_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if !app.worktrees.is_empty() && app.mini.target_worktree_idx + 1 < app.worktrees.len() {
+                app.mini.target_worktree_idx += 1;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if app.mini.target_worktree_idx > 0 {
+                app.mini.target_worktree_idx -= 1;
+            }
+        }
+        KeyCode::Enter => {
+            // Select worktree, advance to prompt input
+            app.mini.prompt_input.clear();
+            app.mini.focus = MiniModeFocus::PromptInput;
+        }
+        KeyCode::Esc => {
+            app.mini.focus = MiniModeFocus::AgentList;
+        }
+        _ => {}
+    }
+}
+
+fn handle_mini_prompt_input_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
+    match key.code {
+        KeyCode::Enter => {
+            if app.mini.prompt_input.is_empty() {
+                app.set_status("Prompt cannot be empty");
+                return;
+            }
+            let prompt = app.mini.prompt_input.clone();
+            let wi = app.mini.target_worktree_idx;
+            app.mini.prompt_input.clear();
+            app.mini.focus = MiniModeFocus::AgentList;
+
+            // Spawn the agent
+            match session::spawn_session(app, wi, terminal_size, false, Some(&prompt)) {
+                Ok(_sid) => {
+                    app.rebuild_mini_agent_list();
+                    app.rebuild_sidebar_items();
+                    // Select the newly created agent (last in list)
+                    if !app.mini.agent_list.is_empty() {
+                        app.mini.selected = app.mini.agent_list.len() - 1;
+                    }
+                    app.set_status("Agent spawned");
+                }
+                Err(e) => {
+                    app.set_status(format!("Failed to spawn agent: {}", e));
+                }
+            }
+        }
+        KeyCode::Tab => {
+            // Switch to saved prompts picker
+            app.mini.saved_prompt_selected = 0;
+            app.mini.focus = MiniModeFocus::SavedPrompts;
+        }
+        KeyCode::Esc => {
+            app.mini.prompt_input.clear();
+            app.mini.focus = MiniModeFocus::AgentList;
+        }
+        KeyCode::Backspace => {
+            app.mini.prompt_input.pop();
+        }
+        KeyCode::Char(c) if c != '\n' && c != '\r' => {
+            app.mini.prompt_input.push(c);
+        }
+        _ => {}
+    }
+}
+
+fn handle_mini_saved_prompts_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if !app.saved_prompts.is_empty() && app.mini.saved_prompt_selected + 1 < app.saved_prompts.len() {
+                app.mini.saved_prompt_selected += 1;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if app.mini.saved_prompt_selected > 0 {
+                app.mini.saved_prompt_selected -= 1;
+            }
+        }
+        KeyCode::Enter => {
+            // Load selected prompt into input field
+            if let Some(sp) = app.saved_prompts.get(app.mini.saved_prompt_selected) {
+                app.mini.prompt_input = sp.prompt.clone();
+                app.mini.focus = MiniModeFocus::PromptInput;
+            }
+        }
+        KeyCode::Char('a') => {
+            // Save current input as new template
+            if app.mini.prompt_input.is_empty() {
+                app.set_status("Type a prompt first, then save it");
+                return;
+            }
+            let name = format!("Prompt {}", app.saved_prompts.len() + 1);
+            app.saved_prompts.push(SavedPrompt {
+                name,
+                prompt: app.mini.prompt_input.clone(),
+            });
+            app.save_saved_prompts();
+            app.set_status("Prompt saved");
+        }
+        KeyCode::Char('d') => {
+            // Delete selected template
+            if !app.saved_prompts.is_empty() && app.mini.saved_prompt_selected < app.saved_prompts.len() {
+                app.saved_prompts.remove(app.mini.saved_prompt_selected);
+                if app.mini.saved_prompt_selected >= app.saved_prompts.len() && app.mini.saved_prompt_selected > 0 {
+                    app.mini.saved_prompt_selected -= 1;
+                }
+                app.save_saved_prompts();
+                app.set_status("Prompt deleted");
+            }
+        }
+        KeyCode::Esc => {
+            app.mini.focus = MiniModeFocus::PromptInput;
+        }
+        _ => {}
+    }
+}
+
+fn handle_mini_drilldown_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
+    // Tab — return to mini mode agent list
+    if key.code == KeyCode::Tab {
+        app.screen_mode = ScreenMode::Mini;
+        app.input_mode = InputMode::Normal;
+        app.mini.focus = MiniModeFocus::AgentList;
+        app.terminal_scroll = 0;
+        app.rebuild_mini_agent_list();
+        session::resize_all(app, terminal_size.1, terminal_size.0);
+        return;
+    }
+
+    // All other keys forwarded to terminal
+    handle_terminal_key(app, key);
 }
 
 /// Convert a KeyEvent into raw bytes suitable for writing to a PTY.

@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-use crate::app::App;
+use crate::app::{AgentStatus, App};
 
 /// A Claude Code session running in a PTY.
 pub struct Session {
@@ -22,6 +22,10 @@ pub struct Session {
     pub tmux_session_name: Option<String>,
     /// User-assigned nickname, displayed instead of terminal title when set.
     pub nickname: Option<String>,
+    /// The prompt used to create this agent (None for reconnected sessions).
+    pub initial_prompt: Option<String>,
+    /// Whether the agent was active on the previous tick (for transition detection).
+    pub was_active: bool,
 }
 
 impl Session {
@@ -114,6 +118,38 @@ impl Session {
         matches!(s.chars().next(), Some('❯') | Some('>') | Some('›'))
     }
 
+    /// Compute the agent status for mini mode display.
+    pub fn agent_status(&self) -> AgentStatus {
+        if self.exited.load(Ordering::Relaxed) {
+            return AgentStatus::Exited;
+        }
+        if self.is_active() {
+            return AgentStatus::Working;
+        }
+        if self.is_at_input_prompt() {
+            return AgentStatus::NeedsInput;
+        }
+        AgentStatus::Idle
+    }
+
+    /// Get the visible terminal content (via tmux capture-pane or vt100 parser).
+    pub fn get_visible_content(&self) -> String {
+        if let Some(ref tmux_name) = self.tmux_session_name {
+            if let Ok(output) = std::process::Command::new("tmux")
+                .args(["capture-pane", "-t", tmux_name, "-p"])
+                .output()
+            {
+                if output.status.success() {
+                    return String::from_utf8_lossy(&output.stdout).to_string();
+                }
+            }
+        }
+        match self.parser.try_read() {
+            Ok(guard) => guard.screen().contents(),
+            Err(_) => String::new(),
+        }
+    }
+
     /// Returns true if Claude is actively working, detected by the braille
     /// dot spinner characters (⠂ U+2802 / ⠐ U+2810) that Claude Code sets
     /// in the terminal title while processing.
@@ -131,6 +167,64 @@ impl Session {
     }
 }
 
+/// Extract a summary from the session's visible terminal output.
+/// Captures the last non-empty output block above the prompt (up to 5 lines),
+/// stripping box-drawing characters.
+pub fn extract_summary(session: &Session) -> Option<String> {
+    let content = session.get_visible_content();
+    if content.is_empty() {
+        return None;
+    }
+
+    let lines: Vec<&str> = content.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    // Find the last non-empty lines, skipping prompt lines and box-drawing borders
+    let mut summary_lines: Vec<String> = Vec::new();
+    for line in lines.iter().rev() {
+        // Skip prompt lines
+        let stripped = line
+            .trim_start_matches(|c: char| c == '│' || c == '┃' || c == '|')
+            .trim_end_matches(|c: char| c == '│' || c == '┃' || c == '|')
+            .trim();
+        if stripped.is_empty() {
+            continue;
+        }
+        if Session::starts_with_prompt(stripped) {
+            continue;
+        }
+        // Skip pure box-drawing lines (borders)
+        if stripped.chars().all(|c| "─━┌┐└┘├┤┬┴┼╭╮╰╯".contains(c) || c == ' ') {
+            continue;
+        }
+        // Clean box-drawing chars from the line
+        let clean: String = stripped
+            .trim_start_matches(|c: char| "│┃|─━ ".contains(c))
+            .trim_end_matches(|c: char| "│┃|─━ ".contains(c))
+            .trim()
+            .to_string();
+        if !clean.is_empty() {
+            summary_lines.push(clean);
+        }
+        if summary_lines.len() >= 5 {
+            break;
+        }
+    }
+
+    summary_lines.reverse();
+    if summary_lines.is_empty() {
+        None
+    } else {
+        Some(summary_lines.join("\n"))
+    }
+}
+
 /// Spawn a new Claude session in the given worktree.
 /// If `initial_prompt` is Some, it is passed as a CLI argument so Claude starts working on it immediately.
 pub fn spawn_session(app: &mut App, worktree_idx: usize, terminal_size: (u16, u16), skip_permissions: bool, initial_prompt: Option<&str>) -> anyhow::Result<u64> {
@@ -140,10 +234,7 @@ pub fn spawn_session(app: &mut App, worktree_idx: usize, terminal_size: (u16, u1
     let session_id = app.next_session_id;
     app.next_session_id += 1;
 
-    let pane_pct = if app.sidebar_visible { 0.7 } else { 1.0 };
-    let cols = (terminal_size.0 as f32 * pane_pct) as u16 - 2;
-    let queue_height = if app.prompt_queue_visible { app.queue_panel_height() } else { 0 };
-    let rows = terminal_size.1.saturating_sub(3).saturating_sub(queue_height);
+    let (rows, cols) = calculate_pane_size(app, terminal_size.1, terminal_size.0);
 
     let handle = if app.tmux_available {
         let tmux_name = pty::tmux_session_name(&wt.branch, session_id);
@@ -182,6 +273,8 @@ pub fn spawn_session(app: &mut App, worktree_idx: usize, terminal_size: (u16, u1
         last_output: handle.last_output,
         tmux_session_name: handle.tmux_session_name,
         nickname: None,
+        initial_prompt: initial_prompt.map(|s| s.to_string()),
+        was_active: false,
     };
 
     app.sessions.insert(session_id, session);
@@ -207,6 +300,7 @@ pub fn kill_session(app: &mut App, session_id: u64) {
 
     app.sessions.remove(&session_id);
     app.prompt_queues.remove(&session_id);
+    app.agent_summaries.remove(&session_id);
 
     for wt in &mut app.worktrees {
         wt.session_ids.retain(|&id| id != session_id);
@@ -327,29 +421,73 @@ pub fn spawn_tmux_title_poller(
         .ok();
 }
 
+/// Calculate PTY pane dimensions to match the ratatui layout exactly.
+/// Uses integer arithmetic matching ratatui's Percentage constraint.
+fn calculate_pane_size(app: &App, terminal_rows: u16, terminal_cols: u16) -> (u16, u16) {
+    use crate::app::ScreenMode;
+
+    match app.screen_mode {
+        ScreenMode::MiniDrilldown => {
+            // Drilldown layout: 1-row header + terminal pane (with borders) + 1-row status bar
+            let pane_cols = terminal_cols.saturating_sub(2);
+            let pane_rows = terminal_rows.saturating_sub(4); // 1 header + 1 status + 2 border
+            (pane_rows, pane_cols)
+        }
+        _ => {
+            let sidebar_width = if app.sidebar_visible && app.screen_mode == ScreenMode::Normal {
+                (terminal_cols as u32 * 30 / 100) as u16
+            } else {
+                0
+            };
+            let pane_cols = terminal_cols.saturating_sub(sidebar_width).saturating_sub(2);
+
+            let queue_height = if app.prompt_queue_visible && app.active_session_id.is_some() {
+                app.queue_panel_height()
+            } else {
+                0
+            };
+            let pane_rows = terminal_rows.saturating_sub(3).saturating_sub(queue_height);
+
+            (pane_rows, pane_cols)
+        }
+    }
+}
+
 /// Resize all active sessions to match new terminal dimensions.
 pub fn resize_all(app: &App, rows: u16, cols: u16) {
-    let pane_pct = if app.sidebar_visible { 0.7 } else { 1.0 };
-    let pane_cols = (cols as f32 * pane_pct) as u16 - 2;
-    let queue_height = if app.prompt_queue_visible && app.active_session_id.is_some() {
-        app.queue_panel_height()
-    } else {
-        0
-    };
-    let pane_rows = rows.saturating_sub(3).saturating_sub(queue_height);
+    let (pane_rows, pane_cols) = calculate_pane_size(app, rows, cols);
 
     for session in app.sessions.values() {
         if !session.exited.load(Ordering::SeqCst) {
+            // Skip resize if parser already has the target dimensions.
+            // Unnecessary resize sends SIGWINCH to Claude (via tmux) even
+            // when the size hasn't changed, causing Claude to redraw and
+            // push content into scrollback — the cumulative "extra newline" bug.
+            let already_correct = session.parser.try_read()
+                .map(|p| p.screen().size() == (pane_rows, pane_cols))
+                .unwrap_or(false);
+
+            if already_correct {
+                continue;
+            }
+
+            tracing::info!(
+                "RESIZE-ALL session {} resizing to {}x{}",
+                session.id, pane_cols, pane_rows
+            );
+
+            // Resize parser first so it's ready for new-size output before
+            // the PTY resize triggers tmux to re-render
+            if let Ok(mut p) = session.parser.write() {
+                p.screen_mut().set_size(pane_rows, pane_cols);
+            }
+
             let _ = session.master_pty.resize(portable_pty::PtySize {
                 rows: pane_rows,
                 cols: pane_cols,
                 pixel_width: 0,
                 pixel_height: 0,
             });
-
-            if let Ok(mut p) = session.parser.write() {
-                p.screen_mut().set_size(pane_rows, pane_cols);
-            }
         }
     }
 }
@@ -366,9 +504,7 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
         return 0;
     }
 
-    let pane_pct = if app.sidebar_visible { 0.7 } else { 1.0 };
-    let cols = (terminal_size.0 as f32 * pane_pct) as u16 - 2;
-    let rows = terminal_size.1 - 3;
+    let (rows, cols) = calculate_pane_size(app, terminal_size.1, terminal_size.0);
 
     let mut count = 0;
 
@@ -417,6 +553,8 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
             last_output: handle.last_output,
             tmux_session_name: handle.tmux_session_name,
             nickname: None,
+            initial_prompt: None,
+            was_active: false,
         };
 
         app.sessions.insert(session_id, session);

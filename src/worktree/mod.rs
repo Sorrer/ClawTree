@@ -2,8 +2,13 @@ pub mod git;
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use tokio::sync::mpsc;
 
 use crate::app::App;
+use crate::event::AppEvent;
 
 /// Cached git status info for display in the worktree info panel.
 #[derive(Debug, Clone)]
@@ -129,6 +134,77 @@ pub fn fetch_worktree_status(app: &App, worktree_idx: usize) -> Result<WorktreeS
     let recent_commits = git::log_oneline(&wt.path, 10).unwrap_or_default();
     let head_subject = git::head_subject(&wt.path).unwrap_or_default();
     Ok(WorktreeStatus { files, recent_commits, head_subject })
+}
+
+/// Fetch worktree status by path (no App reference needed).
+/// Used by the background status poller thread.
+pub fn fetch_worktree_status_by_path(path: &Path) -> Result<WorktreeStatus> {
+    let files = git::status_porcelain(path)?;
+    let recent_commits = git::log_oneline(path, 10).unwrap_or_default();
+    let head_subject = git::head_subject(path).unwrap_or_default();
+    Ok(WorktreeStatus { files, recent_commits, head_subject })
+}
+
+/// Background refresh interval for worktree status polling.
+pub const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Delay between fetching each individual worktree's status (stagger to avoid lag).
+const STATUS_STAGGER_DELAY: Duration = Duration::from_millis(300);
+
+/// Spawn a background thread that periodically fetches git status for all worktrees.
+/// Each worktree is fetched with a small stagger delay to avoid system lag.
+/// Results are sent back via AppEvent::WorktreeStatusReady.
+pub fn spawn_status_poller(
+    event_tx: mpsc::UnboundedSender<AppEvent>,
+    worktree_paths: Arc<Mutex<Vec<PathBuf>>>,
+) {
+    std::thread::Builder::new()
+        .name("status-poller".into())
+        .spawn(move || {
+            loop {
+                let paths: Vec<PathBuf> = worktree_paths
+                    .lock()
+                    .map(|p| p.clone())
+                    .unwrap_or_default();
+
+                if paths.is_empty() {
+                    std::thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
+
+                let cycle_start = Instant::now();
+                let next_refresh_at = cycle_start + STATUS_REFRESH_INTERVAL;
+
+                for path in &paths {
+                    if let Ok(status) = fetch_worktree_status_by_path(path) {
+                        if event_tx
+                            .send(AppEvent::WorktreeStatusReady {
+                                worktree_path: path.clone(),
+                                status,
+                                next_refresh_at,
+                            })
+                            .is_err()
+                        {
+                            return; // channel closed, app shutting down
+                        }
+                    }
+                    // Stagger between worktrees to avoid I/O burst
+                    std::thread::sleep(STATUS_STAGGER_DELAY);
+                }
+
+                // Sleep until next cycle
+                let elapsed = cycle_start.elapsed();
+                if elapsed < STATUS_REFRESH_INTERVAL {
+                    std::thread::sleep(STATUS_REFRESH_INTERVAL - elapsed);
+                }
+            }
+        })
+        .ok();
+}
+
+/// Collect worktree paths for the status poller's shared state.
+pub fn collect_worktree_paths(app: &App) -> Vec<PathBuf> {
+    app.worktrees.iter().map(|wt| wt.path.clone()).collect()
 }
 
 /// List branches available for merging.

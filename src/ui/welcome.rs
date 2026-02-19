@@ -7,6 +7,8 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::app::App;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
+    let has_regular_repo = app.regular_repo_path.is_some();
+
     let block = Block::default()
         .title(" Worktree Claude TUI ")
         .borders(Borders::ALL)
@@ -16,7 +18,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     // Center the content vertically
-    let content_height = 12u16;
+    let content_height = if has_regular_repo { 14u16 } else { 12u16 };
     let v_pad = inner.height.saturating_sub(content_height) / 2;
 
     let chunks = Layout::default()
@@ -32,9 +34,15 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     let dir_display = app.bare_repo_path.display().to_string();
 
-    let lines = vec![
+    let header = if has_regular_repo {
+        "Regular git repo detected"
+    } else {
+        "No git bare repo detected"
+    };
+
+    let mut lines = vec![
         Line::from(Span::styled(
-            "No git bare repo detected",
+            header,
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -71,6 +79,15 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(" to initialize a new bare repo workflow", Style::default().fg(Color::Gray)),
         ]),
     ];
+
+    if has_regular_repo {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("Press ", Style::default().fg(Color::Gray)),
+            Span::styled("c", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(" to convert existing repo to bare worktree layout", Style::default().fg(Color::Gray)),
+        ]));
+    }
 
     let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
     f.render_widget(paragraph, lines_area);

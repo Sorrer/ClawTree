@@ -2,16 +2,19 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::app::App;
+use super::theme;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let focused = app.prompt_queue_focused();
     let queue = app.active_prompt_queue();
     let queue_len = queue.len();
 
-    let border_color = if focused { Color::Cyan } else { Color::DarkGray };
+    let border_color = if focused { theme::BORDER_FOCUSED } else { theme::BORDER_UNFOCUSED };
+    let border_mod = if focused { Modifier::BOLD } else { Modifier::empty() };
+    let border_type = if focused { BorderType::Thick } else { BorderType::Plain };
     let title = if focused {
         format!(" ▸ Prompt Queue ({}) ", queue_len)
     } else {
@@ -20,7 +23,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
+        .border_type(border_type)
+        .border_style(Style::default().fg(border_color).add_modifier(border_mod));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -64,7 +68,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         let style = if is_editing {
             Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC)
         } else if is_selected && focused {
-            Style::default().fg(Color::White).bg(Color::Rgb(50, 50, 60))
+            Style::default().fg(Color::White).bg(theme::SIDEBAR_SEL_BG)
         } else {
             Style::default().fg(Color::Gray)
         };
@@ -88,7 +92,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         let cursor_span = Span::styled(cursor_char, Style::default().fg(Color::Cyan));
         lines.push(Line::from(vec![prefix_span, input_span, cursor_span]));
     } else {
-        let hint = "q:toggle  Tab:focus";
+        let hint = "^p:toggle/focus";
         lines.push(Line::from(Span::styled(
             format!("  {}", hint),
             Style::default().fg(Color::DarkGray),

@@ -1,8 +1,11 @@
 pub mod dialogs;
+pub mod help;
+pub mod mini_mode;
 pub mod prompt_queue;
 pub mod sidebar;
 pub mod status_bar;
 pub mod terminal_pane;
+pub mod theme;
 pub mod welcome;
 
 use ratatui::Frame;
@@ -11,10 +14,19 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::App;
+use crate::app::{App, ScreenMode};
 
-/// Draw the full UI.
+/// Draw the full UI, dispatching by screen mode.
 pub fn draw(f: &mut Frame, app: &App) {
+    match app.screen_mode {
+        ScreenMode::Normal => draw_normal(f, app),
+        ScreenMode::Mini => mini_mode::draw(f, app),
+        ScreenMode::MiniDrilldown => mini_mode::draw_drilldown(f, app),
+    }
+}
+
+/// Draw the normal (full sidebar + terminal) mode.
+fn draw_normal(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -80,9 +92,14 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Some(ref msg) = app.loading_message {
         draw_loading_overlay(f, msg);
     }
+
+    // Draw help overlay on top of everything
+    if app.show_help {
+        help::draw(f, app);
+    }
 }
 
-fn draw_loading_overlay(f: &mut Frame, message: &str) {
+pub(crate) fn draw_loading_overlay(f: &mut Frame, message: &str) {
     let width = (message.len() as u16 + 6).max(20).min(f.area().width);
     let area = centered_rect(width, 3, f.area());
     f.render_widget(Clear, area);
@@ -101,7 +118,7 @@ fn draw_loading_overlay(f: &mut Frame, message: &str) {
     f.render_widget(Paragraph::new(line), inner);
 }
 
-fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+pub(crate) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     Rect::new(x, y, width.min(area.width), height.min(area.height))

@@ -4,19 +4,18 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::app::{App, FocusTarget, InputMode};
+use crate::app::{App, InputMode, ScreenMode, StatusSeverity};
+use super::theme;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
-    let mode_text = match app.input_mode {
-        InputMode::Normal => "NORMAL",
-        InputMode::Terminal => "TERMINAL",
-        InputMode::Dialog => "DIALOG",
-    };
-
-    let focus_text = match app.focus {
-        FocusTarget::Sidebar => "Sidebar",
-        FocusTarget::TerminalPane => "Terminal",
-        FocusTarget::PromptQueue => "Queue",
+    let mode_text = match app.screen_mode {
+        ScreenMode::Mini => "MINI",
+        ScreenMode::MiniDrilldown => "MINI/DRILL",
+        ScreenMode::Normal => match app.input_mode {
+            InputMode::Normal => "NORMAL",
+            InputMode::Terminal => "TERMINAL",
+            InputMode::Dialog => "DIALOG",
+        },
     };
 
     let session_text = match app.active_session_id {
@@ -28,40 +27,98 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         None => "no session".to_string(),
     };
 
-    let help_text = if !app.repo_detected && app.input_mode != InputMode::Dialog {
-        "i:init-repo ^q:quit"
+    let wide = area.width > 120;
+    let help_text: &str = if app.screen_mode == ScreenMode::Mini {
+        if wide {
+            "j/k:navigate  Enter:open  a:new agent  d:kill  r:rename  s:prompts  F2:normal  ?:help"
+        } else {
+            "j/k:nav Enter:open a:new d:kill F2:normal ?:help"
+        }
+    } else if app.screen_mode == ScreenMode::MiniDrilldown {
+        if wide {
+            "Tab:back to agents  F2:normal mode  ^q:quit  (keys forwarded to terminal)"
+        } else {
+            "Tab:back F2:normal ^q:quit"
+        }
+    } else if !app.repo_detected && app.input_mode != InputMode::Dialog {
+        if app.regular_repo_path.is_some() {
+            if wide { "i:init repo  c:convert  ?:help  ^q:quit" } else { "i:init c:convert ?:help ^q:quit" }
+        } else {
+            if wide { "i:init repo  ?:help  ^q:quit" } else { "i:init-repo ?:help ^q:quit" }
+        }
     } else if app.prompt_queue_focused() {
-        "Enter:add/edit d:del \u{2191}\u{2193}:nav Tab:sidebar Esc:back ^p:hide"
+        if wide {
+            "Enter:add/edit  d:delete  \u{2191}\u{2193}:navigate  Esc:back  ^p:hide queue"
+        } else {
+            "Enter:add/edit d:del \u{2191}\u{2193}:nav Esc:back ^p:hide"
+        }
     } else {
         match app.input_mode {
             InputMode::Normal => {
                 match app.selected_sidebar_item() {
                     Some(crate::app::SidebarItem::Session(_, _)) => {
-                        "Enter:switch c:claude d:del ^p:queue j/k:nav ^q:quit"
+                        if wide {
+                            "Enter:switch session  c:new claude  d:delete  ^p:prompt queue  ?:help  ^q:quit"
+                        } else {
+                            "Enter:switch c:claude d:del ^p:queue ?:help ^q:quit"
+                        }
                     }
                     Some(crate::app::SidebarItem::Worktree(_)) => {
-                        "c:claude C:yolo n:new-wt d:del m:merge ^p:queue ^q:quit"
+                        if wide {
+                            "c:new session  C:yolo  n:new worktree  d:delete  m:merge branch  ?:help  ^q:quit"
+                        } else {
+                            "c:claude C:yolo n:new-wt d:del m:merge ?:help ^q:quit"
+                        }
                     }
                     None => {
-                        "n:new-wt ^b:sidebar ^q:quit"
+                        if wide { "n:new worktree  ^b:sidebar  ?:help  ^q:quit" } else { "n:new-wt ^b:sidebar ?:help ^q:quit" }
                     }
                 }
             }
             InputMode::Terminal => {
-                if app.prompt_queue_visible {
-                    "Tab:queue ^p:queue ^b:sidebar ^q:quit"
+                if wide {
+                    "Tab:escape to sidebar  ^p:prompt queue  ^b:toggle sidebar  ^q:quit"
                 } else {
-                    "Tab:sidebar ^p:queue ^b:sidebar ^q:quit"
+                    "Tab:sidebar ^p:queue ^b:toggle-sidebar ^q:quit"
                 }
             }
-            InputMode::Dialog => "Enter:confirm Esc:cancel Tab:next-field",
+            InputMode::Dialog => {
+                if wide { "Enter:confirm  Esc:cancel  Tab:next field" } else { "Enter:confirm Esc:cancel Tab:next-field" }
+            }
         }
     };
 
-    let status = if let Some(ref msg) = app.status_message {
-        msg.as_str()
-    } else {
-        ""
+    // Status message with severity coloring + auto-fade (dim after 10s, hidden after 30s)
+    let severity_style = |sev: StatusSeverity| -> Style {
+        match sev {
+            StatusSeverity::Info => Style::default().fg(theme::STATUS_INFO),
+            StatusSeverity::Success => Style::default().fg(theme::STATUS_SUCCESS),
+            StatusSeverity::Warning => Style::default().fg(theme::STATUS_WARNING).add_modifier(Modifier::BOLD),
+            StatusSeverity::Error => Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
+        }
+    };
+    let (status, status_style) = match (&app.status_message, app.status_message_time) {
+        (Some(msg), Some(t)) => {
+            let elapsed = t.elapsed().as_secs();
+            if elapsed >= 30 {
+                ("", Style::default())
+            } else if elapsed >= 10 {
+                (msg.as_str(), Style::default().fg(theme::STATUS_FADED))
+            } else {
+                (msg.as_str(), severity_style(app.status_severity))
+            }
+        }
+        (Some(msg), None) => (msg.as_str(), severity_style(app.status_severity)),
+        _ => ("", Style::default()),
+    };
+
+    let mode_bg = match app.screen_mode {
+        ScreenMode::Mini | ScreenMode::MiniDrilldown => theme::MODE_MINI_BG,
+        ScreenMode::Normal => match app.input_mode {
+            InputMode::Normal => theme::MODE_NORMAL_BG,
+            InputMode::Terminal => theme::MODE_TERMINAL_BG,
+            InputMode::Dialog => theme::MODE_DIALOG_BG,
+        },
     };
 
     let line = Line::from(vec![
@@ -69,26 +126,21 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             format!(" {} ", mode_text),
             Style::default()
                 .fg(Color::Black)
-                .bg(Color::Cyan)
+                .bg(mode_bg)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled(focus_text, Style::default().fg(Color::White)),
-        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
         Span::styled(&session_text, Style::default().fg(Color::Green)),
         Span::styled(" | ", Style::default().fg(Color::DarkGray)),
         Span::styled(help_text, Style::default().fg(Color::DarkGray)),
         if !status.is_empty() {
-            Span::styled(
-                format!(" | {}", status),
-                Style::default().fg(Color::Yellow),
-            )
+            Span::styled(format!(" | {}", status), status_style)
         } else {
             Span::raw("")
         },
     ]);
 
     let paragraph = Paragraph::new(line)
-        .style(Style::default().bg(Color::Rgb(30, 30, 30)));
+        .style(Style::default().bg(theme::STATUS_BAR_BG));
     f.render_widget(paragraph, area);
 }

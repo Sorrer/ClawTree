@@ -5,7 +5,73 @@ use tokio::sync::mpsc;
 
 use crate::event::AppEvent;
 use crate::session::Session;
-use crate::worktree::{Worktree, WorktreeStatus};
+use crate::worktree::{self, Worktree, WorktreeStatus};
+
+/// Which screen is currently displayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenMode {
+    Normal,
+    Mini,
+    MiniDrilldown,
+}
+
+/// Computed agent status for mini mode display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentStatus {
+    Working,
+    Idle,
+    NeedsInput,
+    Exited,
+}
+
+/// Which element has focus within mini mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MiniModeFocus {
+    AgentList,
+    PromptInput,
+    SavedPrompts,
+    WorktreeSelector,
+}
+
+/// State for the mini mode view.
+pub struct MiniModeState {
+    pub selected: usize,
+    /// Flat list of (session_id, worktree_idx) across all worktrees.
+    pub agent_list: Vec<(u64, usize)>,
+    pub focus: MiniModeFocus,
+    pub prompt_input: String,
+    pub saved_prompt_selected: usize,
+    pub target_worktree_idx: usize,
+}
+
+impl Default for MiniModeState {
+    fn default() -> Self {
+        Self {
+            selected: 0,
+            agent_list: Vec::new(),
+            focus: MiniModeFocus::AgentList,
+            prompt_input: String::new(),
+            saved_prompt_selected: 0,
+            target_worktree_idx: 0,
+        }
+    }
+}
+
+/// A saved prompt template for quick agent creation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SavedPrompt {
+    pub name: String,
+    pub prompt: String,
+}
+
+/// Status message severity for color coding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusSeverity {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
 
 /// Which pane has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +139,19 @@ pub enum Dialog {
         files: Vec<(String, String)>, // (status_display, path) for read-only display
         selected: usize,              // 0=Commit, 1=Claude, 2=Cancel
     },
+    /// Convert an existing regular repo to bare worktree layout.
+    ConvertRepo {
+        /// 0 = in-place, 1 = different location
+        mode: usize,
+        /// Target path (only used when mode == 1)
+        target_path_input: String,
+        /// Branch name (auto-detected from current branch)
+        branch_name: String,
+        /// 0=mode, 1=target_path (skipped if mode==0), 2=branch
+        focused_field: usize,
+        /// Detected regular repo path
+        source_repo_path: PathBuf,
+    },
     /// Interactive staging and commit UI.
     GitCommit {
         worktree_idx: usize,
@@ -107,6 +186,7 @@ pub enum ConfirmAction {
 /// A blocking git action queued for execution by the main loop.
 /// The main loop draws a loading overlay first, then runs the action.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum PendingAction {
     StageFile { worktree_idx: usize, file: String },
     UnstageFile { worktree_idx: usize, file: String },
@@ -154,11 +234,17 @@ pub struct App {
     pub sidebar_items: Vec<SidebarItem>,
     pub event_tx: mpsc::UnboundedSender<AppEvent>,
     pub status_message: Option<String>,
+    pub status_message_time: Option<Instant>,
+    pub status_severity: StatusSeverity,
     pub sidebar_visible: bool,
     /// Whether a valid bare repo was detected at startup.
     pub repo_detected: bool,
+    /// Path to a regular (non-bare) git repo detected at startup, if any.
+    pub regular_repo_path: Option<PathBuf>,
     /// Whether tmux is available for session persistence.
     pub tmux_available: bool,
+    /// Whether wt.exe (Windows Terminal) is available.
+    pub wt_available: bool,
     /// Scrollback offset for the active terminal (0 = live view, >0 = scrolled up).
     pub terminal_scroll: usize,
     /// Merge to retry after a commit completes (set when target worktree was dirty).
@@ -177,10 +263,36 @@ pub struct App {
     pub prompt_queue_last_send: Option<Instant>,
     /// Timestamp of last auto-send check (throttle tmux queries to ~1/sec).
     pub prompt_queue_last_check: Option<Instant>,
+    /// Whether the hotkey help overlay is visible.
+    pub show_help: bool,
+    /// Currently selected tab in the help overlay (0=Global, 1=Sidebar, etc.).
+    pub help_tab: usize,
+    /// Scroll offset within the help key list.
+    pub help_scroll: usize,
+    /// Spinner animation frame counter (incremented on tick).
+    pub spinner_frame: usize,
+    /// Per-worktree cached git status from the background poller, keyed by path.
+    pub worktree_statuses: HashMap<PathBuf, WorktreeStatus>,
+    /// When the next background status refresh cycle will start.
+    pub next_status_refresh: Option<Instant>,
+    /// Path of a worktree that needs an immediate background status fetch.
+    pub request_status_fetch: Option<PathBuf>,
+    /// Current screen mode (Normal, Mini, MiniDrilldown).
+    pub screen_mode: ScreenMode,
+    /// State for mini mode view.
+    pub mini: MiniModeState,
+    /// Saved prompt templates for quick agent creation.
+    pub saved_prompts: Vec<SavedPrompt>,
+    /// Auto-captured summaries keyed by session id.
+    pub agent_summaries: HashMap<u64, String>,
+    /// Session id of the agent being drilled down into.
+    pub mini_drilldown_session: Option<u64>,
+    /// Whether mouse capture is active (enables scroll wheel, disables text selection).
+    pub mouse_captured: bool,
 }
 
 impl App {
-    pub fn new(bare_repo_path: PathBuf, event_tx: mpsc::UnboundedSender<AppEvent>, repo_detected: bool, tmux_available: bool) -> Self {
+    pub fn new(bare_repo_path: PathBuf, event_tx: mpsc::UnboundedSender<AppEvent>, repo_detected: bool, tmux_available: bool, wt_available: bool) -> Self {
         Self {
             bare_repo_path,
             worktrees: Vec::new(),
@@ -202,9 +314,13 @@ impl App {
             sidebar_items: Vec::new(),
             event_tx,
             status_message: None,
+            status_message_time: None,
+            status_severity: StatusSeverity::Info,
             sidebar_visible: true,
             repo_detected,
+            regular_repo_path: None,
             tmux_available,
+            wt_available,
             terminal_scroll: 0,
             pending_merge: None,
             prompt_queue_visible: false,
@@ -214,6 +330,19 @@ impl App {
             prompt_queue_editing: None,
             prompt_queue_last_send: None,
             prompt_queue_last_check: None,
+            show_help: false,
+            help_tab: 0,
+            help_scroll: 0,
+            spinner_frame: 0,
+            worktree_statuses: HashMap::new(),
+            next_status_refresh: None,
+            request_status_fetch: None,
+            screen_mode: ScreenMode::Normal,
+            mini: MiniModeState::default(),
+            saved_prompts: Vec::new(),
+            agent_summaries: HashMap::new(),
+            mini_drilldown_session: None,
+            mouse_captured: true,
         }
     }
 
@@ -284,6 +413,30 @@ impl App {
         }
     }
 
+    pub fn sidebar_jump_top(&mut self) {
+        self.sidebar_selected = 0;
+    }
+
+    pub fn sidebar_jump_bottom(&mut self) {
+        if !self.sidebar_items.is_empty() {
+            self.sidebar_selected = self.sidebar_items.len() - 1;
+        }
+    }
+
+    pub fn collapse_all(&mut self) {
+        for wt in &mut self.worktrees {
+            wt.expanded = false;
+        }
+        self.rebuild_sidebar_items();
+    }
+
+    pub fn expand_all(&mut self) {
+        for wt in &mut self.worktrees {
+            wt.expanded = true;
+        }
+        self.rebuild_sidebar_items();
+    }
+
     pub fn toggle_expand(&mut self) {
         if let Some(SidebarItem::Worktree(wi)) = self.selected_sidebar_item() {
             if let Some(wt) = self.worktrees.get_mut(wi) {
@@ -308,16 +461,20 @@ impl App {
                 }
             }
             Some(SidebarItem::Worktree(wi)) => {
-                if self.worktrees.get(wi).is_some() {
+                if let Some(wt) = self.worktrees.get(wi) {
+                    let wt_path = wt.path.clone();
                     // Show worktree info panel
                     self.active_session_id = None;
                     self.active_worktree_idx = Some(wi);
-                    self.worktree_status = None;
                     self.info_panel_section = 0;
                     self.info_panel_cursor = 0;
                     self.info_panel_commit_msg = None;
                     self.terminal_scroll = 0;
-                    self.queue_action("Loading...", PendingAction::FetchWorktreeStatus { worktree_idx: wi });
+                    // Use cached status immediately if available (no blocking)
+                    self.worktree_status = self.worktree_statuses.get(&wt_path).cloned();
+                    // Request a background fetch for fresh data
+                    self.request_status_fetch = Some(wt_path);
+                    self.clamp_info_panel_cursor();
                     // Expand if collapsed
                     if let Some(wt) = self.worktrees.get_mut(wi) {
                         if !wt.expanded {
@@ -332,10 +489,17 @@ impl App {
     }
 
     /// Refresh the cached worktree status if one is being viewed.
+    /// Updates both the active display and the background cache.
     /// Clamps the info panel cursor to valid bounds.
     pub fn refresh_worktree_status(&mut self) {
         if let Some(wi) = self.active_worktree_idx {
-            self.worktree_status = crate::worktree::fetch_worktree_status(self, wi).ok();
+            if let Ok(status) = worktree::fetch_worktree_status(self, wi) {
+                // Update the per-worktree cache
+                if let Some(wt) = self.worktrees.get(wi) {
+                    self.worktree_statuses.insert(wt.path.clone(), status.clone());
+                }
+                self.worktree_status = Some(status);
+            }
             self.clamp_info_panel_cursor();
         }
     }
@@ -411,6 +575,14 @@ impl App {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
+        self.status_message_time = Some(Instant::now());
+        self.status_severity = StatusSeverity::Info;
+    }
+
+    pub fn set_status_with(&mut self, severity: StatusSeverity, msg: impl Into<String>) {
+        self.status_message = Some(msg.into());
+        self.status_message_time = Some(Instant::now());
+        self.status_severity = severity;
     }
 
     /// Get the prompt queue for the active session (immutable).
@@ -468,6 +640,54 @@ impl App {
             Err(e) => {
                 tracing::warn!("Failed to serialize prompt queues: {}", e);
             }
+        }
+    }
+
+    /// Rebuild the flat agent list for mini mode from all worktrees' sessions.
+    pub fn rebuild_mini_agent_list(&mut self) {
+        self.mini.agent_list.clear();
+        for (wi, wt) in self.worktrees.iter().enumerate() {
+            for &sid in &wt.session_ids {
+                self.mini.agent_list.push((sid, wi));
+            }
+        }
+        if !self.mini.agent_list.is_empty() && self.mini.selected >= self.mini.agent_list.len() {
+            self.mini.selected = self.mini.agent_list.len() - 1;
+        }
+    }
+
+    /// Path to the saved prompts persistence file.
+    fn saved_prompts_path(&self) -> PathBuf {
+        self.bare_repo_path.join(".agent_prompts.json")
+    }
+
+    /// Load saved prompt templates from disk.
+    pub fn load_saved_prompts(&mut self) {
+        let path = self.saved_prompts_path();
+        let json = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        match serde_json::from_str(&json) {
+            Ok(prompts) => self.saved_prompts = prompts,
+            Err(e) => tracing::warn!("Failed to parse saved prompts: {}", e),
+        }
+    }
+
+    /// Save prompt templates to disk.
+    pub fn save_saved_prompts(&self) {
+        let path = self.saved_prompts_path();
+        if self.saved_prompts.is_empty() {
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        match serde_json::to_string_pretty(&self.saved_prompts) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    tracing::warn!("Failed to save prompts: {}", e);
+                }
+            }
+            Err(e) => tracing::warn!("Failed to serialize prompts: {}", e),
         }
     }
 

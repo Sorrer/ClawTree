@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0). Leave empty for nightly.'
+        required: false
+        default: ''
+  schedule:
+    - cron: '0 4 * * *' # 4 AM UTC daily
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: clawtree
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            use_cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_cross: false
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build (cargo)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          ARCHIVE="${BINARY_NAME}-${{ matrix.target }}.tar.gz"
+          cd target/${{ matrix.target }}/release
+          tar czf "../../../${ARCHIVE}" "${BINARY_NAME}"
+          cd ../../..
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ -z "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=nightly" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "title=Nightly Build ($(date -u +%Y-%m-%d))" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "title=Release ${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lhR artifacts/
+
+      - name: Delete existing nightly release
+        if: steps.tag.outputs.tag == 'nightly'
+        run: gh release delete nightly --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+
+      - name: Create release
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            artifacts/*.tar.gz \
+            --repo "${{ github.repository }}" \
+            --title "${{ steps.tag.outputs.title }}" \
+            --generate-notes \
+            ${{ steps.tag.outputs.prerelease == 'true' && '--prerelease' || '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
