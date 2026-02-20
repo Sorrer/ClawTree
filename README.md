@@ -18,6 +18,15 @@
 
 Built for the **bare repository** workflow where a project uses a `.bare/` directory with multiple worktree directories for different branches.
 
+
+>Behind the Project:
+>
+>As I have been embracing AI assisted programming, I found myself pushing parallel AI development to the extreme.
+>With this, I am stuck cloning repositories for different feature paths, and context swapping between multiple terminal tabs. All in the goal to utilize multiple claude instances and contexts to their fullest extent.
+>This has been a rough process that I've been trying to optimize, and I think this has solved the issue for me.
+>You should now be granted with the power of multi-clauding with this toolset!
+
+
 ## Table of Contents
 
 - [Install](#install)
@@ -185,3 +194,10 @@ cargo build --release
 # or manually:
 ./target/release/clawtree [optional-directory]
 ```
+
+
+## Future Goals
+
+- Enahnce UI/UX to support **Everyone's** usages
+- Incorporate more AI-enhanced flows (commit message generation)
+- Support other agentic CLIs like Codex and gemini CLI
