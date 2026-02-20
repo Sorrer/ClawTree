@@ -187,6 +187,28 @@ pub fn is_worktree_clean(worktree_path: &Path) -> Result<bool> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().is_empty())
 }
 
+/// Check if a worktree has an in-progress merge. Returns the source branch
+/// name (best-effort via `name-rev`) if a merge is in progress, or `None`.
+pub fn merge_in_progress(worktree_path: &Path) -> Option<String> {
+    let check = Command::new("git")
+        .args(["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+        .current_dir(worktree_path)
+        .output()
+        .ok()?;
+    if !check.status.success() {
+        return None;
+    }
+    // Try to resolve MERGE_HEAD to a human-readable branch name
+    let name = Command::new("git")
+        .args(["name-rev", "--name-only", "--no-undefined", "MERGE_HEAD"])
+        .current_dir(worktree_path)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    Some(if name.is_empty() { "unknown".to_string() } else { name })
+}
+
 /// Merge a branch into the current branch of a worktree.
 pub fn merge_branch(worktree_path: &Path, source_branch: &str) -> Result<MergeResult> {
     let output = Command::new("git")

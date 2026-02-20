@@ -129,6 +129,12 @@ pub fn merge_into_worktree(app: &App, worktree_idx: usize, source_branch: &str) 
     git::merge_branch(&wt.path, source_branch)
 }
 
+/// Check if a worktree has an in-progress merge. Returns the source branch name if so.
+pub fn merge_in_progress(app: &App, worktree_idx: usize) -> Option<String> {
+    let wt = app.worktrees.get(worktree_idx)?;
+    git::merge_in_progress(&wt.path)
+}
+
 /// Abort a merge in progress on the given worktree.
 pub fn merge_abort(app: &App, worktree_idx: usize) -> Result<()> {
     let wt = app.worktrees.get(worktree_idx)

@@ -324,7 +324,11 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
         if let Some(action) = app.pending_action.take() {
             let wt_count_before = app.worktrees.len();
             execute_pending_action(&mut app, action);
-            app.loading_message = None;
+            // Only clear loading if the action didn't chain another action
+            // (e.g. Commit → MergeExecute sets a new loading_message via queue_action)
+            if app.pending_action.is_none() {
+                app.loading_message = None;
+            }
             // Update status poller if worktrees changed during action
             if repo_detected && app.worktrees.len() != wt_count_before {
                 if let Ok(mut paths) = status_poller_paths.lock() {
@@ -906,6 +910,20 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                     }
                 }
             };
+
+            // Check target worktree for an existing in-progress merge
+            if let Some(conflict_branch) = worktree::merge_in_progress(app, target_wt_idx) {
+                app.set_status(format!(
+                    "'{}' has an unresolved merge — resolve or abort first",
+                    target_branch
+                ));
+                app.open_dialog(Dialog::MergeConflict {
+                    worktree_idx: target_wt_idx,
+                    source_branch: conflict_branch,
+                    selected: 0,
+                });
+                return;
+            }
 
             // Check target worktree is clean before merging
             match worktree::is_worktree_clean(app, target_wt_idx) {

@@ -875,6 +875,16 @@ fn handle_pull(app: &mut App) {
 
 fn handle_merge(app: &mut App) {
     if let Some(wi) = selected_worktree_idx(app) {
+        // If this worktree already has an unresolved merge, show the conflict dialog
+        if let Some(source_branch) = worktree::merge_in_progress(app, wi) {
+            app.set_status("Worktree has an unresolved merge — resolve or abort first");
+            app.open_dialog(Dialog::MergeConflict {
+                worktree_idx: wi,
+                source_branch,
+                selected: 0,
+            });
+            return;
+        }
         match worktree::available_branches(app) {
             Ok(branches) => {
                 if branches.is_empty() {
@@ -1332,6 +1342,20 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             .map(|w| w.branch.clone())
                             .unwrap_or_default();
 
+                        // Guard: source worktree must not have an in-progress merge
+                        if let Some(conflict_branch) = worktree::merge_in_progress(app, source_worktree_idx) {
+                            app.set_status(format!(
+                                "'{}' has an unresolved merge — resolve or abort first",
+                                source_name
+                            ));
+                            app.dialog = Some(Dialog::MergeConflict {
+                                worktree_idx: source_worktree_idx,
+                                source_branch: conflict_branch,
+                                selected: 0,
+                            });
+                            return;
+                        }
+
                         // Quick check: source worktree clean?
                         match worktree::is_worktree_clean(app, source_worktree_idx) {
                             Ok(false) => {
@@ -1645,14 +1669,13 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     }
                     app.close_dialog();
                 }
-                Some(Dialog::ConfirmDangerous { input, on_confirm, .. }) => {
+                Some(Dialog::ConfirmDangerous { input, on_confirm, message }) => {
                     if input.trim().eq_ignore_ascii_case("yes") {
                         match on_confirm {
                             ConfirmAction::DeleteWorktree(path) => {
                                 match worktree::remove_worktree(app, &path) {
                                     Ok(_) => {
                                         app.set_status("Worktree removed");
-                                        let _ = worktree::refresh_worktrees(app);
                                     }
                                     Err(e) => {
                                         let msg = format!("{}", e);
@@ -1667,23 +1690,26 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                                         app.set_status(format!("Error: {}", e));
                                     }
                                 }
+                                let _ = worktree::refresh_worktrees(app);
                             }
                             ConfirmAction::ForceDeleteWorktree(path) => {
                                 match worktree::force_remove_worktree(app, &path) {
                                     Ok(_) => {
                                         app.set_status("Worktree force-removed");
-                                        let _ = worktree::refresh_worktrees(app);
                                     }
                                     Err(e) => {
                                         app.set_status(format!("Error: {}", e));
                                     }
                                 }
+                                let _ = worktree::refresh_worktrees(app);
                             }
                             _ => {}
                         }
                         app.close_dialog();
+                    } else {
+                        // Put the dialog back — user hasn't typed "yes" yet
+                        app.dialog = Some(Dialog::ConfirmDangerous { input, on_confirm, message });
                     }
-                    // If input != "yes", Enter does nothing
                 }
                 None => {
                     app.close_dialog();
