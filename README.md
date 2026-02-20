@@ -82,7 +82,7 @@ From here you can:
 - Press **`i`** to **initialize** a new bare repo workflow — creates the `.bare/` directory structure and your first worktree
 - Press **`c`** to **convert** an existing regular git repo into the bare worktree layout (only shown when a `.git` directory is detected)
 
-Once initialized, clawtree opens the main interface where you can browse your worktrees in the sidebar and start spawning Claude Code sessions.
+Once initialized, clawtree opens the main interface where you can browse your worktrees in the sidebar. Press **`n`** to create additional worktrees for new branches. To start a Claude Code session, press **`c`** for regular mode or **`C`** (Shift+C) for yolo mode (`--dangerously-skip-permissions`).
 
 <p align="center">
   <img src="docs/screenshots/main.png" alt="Main interface" width="800">
