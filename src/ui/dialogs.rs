@@ -34,6 +34,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             draw_merge(f, source_name, branches, *selected);
         }
         Dialog::Confirm { message, .. } => draw_confirm(f, message),
+        Dialog::ConfirmDangerous { message, input, .. } => draw_confirm_dangerous(f, message, input),
         Dialog::InitRepo {
             url_input,
             branch_input,
@@ -306,6 +307,56 @@ fn draw_confirm(f: &mut Frame, message: &str) {
         Paragraph::new("Enter: yes  Esc: no")
             .style(Style::default().fg(Color::DarkGray)),
         chunks[2],
+    );
+}
+
+fn draw_confirm_dangerous(f: &mut Frame, message: &str, input: &str) {
+    let area = centered_rect(55, 8, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" ⚠ WARNING ⚠ ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::DIALOG_DESTRUCTIVE).add_modifier(Modifier::BOLD));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // message
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // "Type 'yes' to confirm:"
+            Constraint::Length(1), // input field
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // help text
+        ])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(message)
+            .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        chunks[0],
+    );
+
+    f.render_widget(
+        Paragraph::new("Type 'yes' to confirm:")
+            .style(Style::default().fg(Color::Yellow)),
+        chunks[2],
+    );
+
+    let input_display = format!("> {}_", input);
+    f.render_widget(
+        Paragraph::new(input_display)
+            .style(Style::default().fg(Color::White)),
+        chunks[3],
+    );
+
+    f.render_widget(
+        Paragraph::new("Esc: cancel")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[5],
     );
 }
 

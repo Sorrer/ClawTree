@@ -243,6 +243,9 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
         let size = terminal.size()?;
         let reconnected = session::reconnect_tmux_sessions(&mut app, (size.width, size.height));
         if reconnected > 0 {
+            // Sync tmux window sizes to the current terminal dimensions —
+            // the sessions may have been created on a different-sized monitor.
+            session::resize_all(&app, size.height, size.width);
             app.set_status(format!("Reconnected {} tmux session(s)", reconnected));
             // Restore persisted prompt queues for reconnected sessions
             app.load_prompt_queues();
@@ -490,6 +493,10 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                         app.global_usage = Some(usage);
                         needs_redraw = true;
                     }
+                    AppEvent::SummaryReady { session_id, summary } => {
+                        app.agent_summaries.insert(session_id, summary);
+                        needs_redraw = true;
+                    }
                     AppEvent::WorktreeStatusReady { worktree_path, status, next_refresh_at } => {
                         // Update the per-worktree cache
                         app.worktree_statuses.insert(worktree_path.clone(), status.clone());
@@ -527,6 +534,13 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                                     if was_active && !currently_active && !exited {
                                         if let Some(summary) = session::extract_summary(session) {
                                             app.agent_summaries.insert(*sid, summary);
+                                        } else if let Some(ref tmux_name) = session.tmux_session_name {
+                                            // No XML tags found — fall back to one-shot summary
+                                            session::generate_oneshot_summary(
+                                                *sid,
+                                                tmux_name,
+                                                app.event_tx.clone(),
+                                            );
                                         }
                                     }
                                 }

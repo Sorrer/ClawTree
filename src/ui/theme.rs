@@ -7,6 +7,9 @@ pub const BORDER_FOCUSED_PROMPT_QUEUE: Color = Color::Green;
 pub const BORDER_UNFOCUSED: Color = Color::DarkGray;
 
 // ── Sidebar ──────────────────────────────────────────────────────────
+/// Maximum sidebar width in columns (sized to fit usage panel content).
+/// Usage line: " 7d: 100% ██████ Feb 19 16:00 EST" ≈ 34 inner + 2 border + 2 pad = 38 + extra pad.
+pub const SIDEBAR_MAX_WIDTH: u16 = 42;
 /// Cursor/selection highlight (blue-tint).
 pub const SIDEBAR_SEL_BG: Color = Color::Rgb(50, 50, 60);
 /// Active session highlight (green-tint).
@@ -47,11 +50,9 @@ pub const SCROLLBAR_THUMB: Color = Color::DarkGray;
 pub const SCROLLBAR_TRACK: Color = Color::Rgb(40, 40, 40);
 
 // ── Spinner ──────────────────────────────────────────────────────────
-pub const SPINNER_COLOR: Color = Color::Yellow;
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 // ── Mini mode ───────────────────────────────────────────────────
-pub const MINI_SELECTED_BG: Color = Color::Rgb(50, 50, 60);
 pub const MINI_DRILLDOWN_HEADER_BG: Color = Color::Rgb(60, 30, 60);
 pub const MODE_MINI_BG: Color = Color::Magenta;
 pub const AGENT_WORKING: Color = Color::Yellow;
@@ -60,8 +61,8 @@ pub const AGENT_NEEDS_INPUT: Color = Color::Cyan;
 pub const AGENT_EXITED: Color = Color::DarkGray;
 
 // ── Brand ───────────────────────────────────────────────────────
-pub const BRAND_CLAW: Color = Color::Rgb(90, 195, 90);
-pub const BRAND_NAME: Color = Color::Rgb(65, 150, 65);
+pub const BRAND_CLAW: Color = Color::Rgb(187, 134, 252);
+pub const BRAND_NAME: Color = Color::Rgb(149, 117, 205);
 
 // ── Brand logo (big) ────────────────────────────────────────────
 //  Three claw marks + box-drawing "CLAWTREE"

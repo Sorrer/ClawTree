@@ -81,6 +81,7 @@ const SIDEBAR_KEYS: &[KeyEntry] = &[
     ("Space",       "Toggle expand/collapse"),
     ("c",           "New Claude session"),
     ("C",           "Claude (--dangerously-skip-permissions)"),
+    ("t",           "New terminal session"),
     ("n",           "New worktree"),
     ("d",           "Delete session/worktree"),
     ("D",           "Force-delete worktree"),
@@ -359,6 +360,11 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         // C — new Claude session with --dangerously-skip-permissions
         (KeyModifiers::SHIFT, KeyCode::Char('C')) => {
             spawn_claude_for_selected(app, terminal_size, true);
+        }
+
+        // t — new terminal session
+        (_, KeyCode::Char('t')) => {
+            spawn_terminal_for_selected(app, terminal_size);
         }
 
         // n — new worktree
@@ -651,6 +657,27 @@ fn spawn_claude_for_selected(app: &mut App, terminal_size: (u16, u16), skip_perm
     }
 }
 
+fn spawn_terminal_for_selected(app: &mut App, terminal_size: (u16, u16)) {
+    let wt_idx = match app.selected_sidebar_item() {
+        Some(SidebarItem::Worktree(wi)) => Some(wi),
+        Some(SidebarItem::Session(wi, _)) => Some(wi),
+        None => None,
+    };
+    if let Some(wi) = wt_idx {
+        match session::spawn_terminal_session(app, wi, terminal_size) {
+            Ok(sid) => {
+                app.active_session_id = Some(sid);
+                app.focus = FocusTarget::TerminalPane;
+                app.input_mode = InputMode::Terminal;
+                app.rebuild_sidebar_items();
+            }
+            Err(e) => {
+                app.set_status(format!("Failed to spawn terminal: {}", e));
+            }
+        }
+    }
+}
+
 fn handle_delete(app: &mut App) {
     match app.selected_sidebar_item() {
         Some(SidebarItem::Session(wi, si)) => {
@@ -669,15 +696,16 @@ fn handle_delete(app: &mut App) {
                 let has_sessions = !wt.session_ids.is_empty();
                 let msg = if has_sessions {
                     format!(
-                        "Remove worktree '{}' and kill {} session(s)?",
+                        "DELETE worktree '{}' and kill {} session(s)",
                         wt.branch,
                         wt.session_ids.len()
                     )
                 } else {
-                    format!("Remove worktree '{}'?", wt.branch)
+                    format!("DELETE worktree '{}'", wt.branch)
                 };
-                app.open_dialog(Dialog::Confirm {
+                app.open_dialog(Dialog::ConfirmDangerous {
                     message: msg,
+                    input: String::new(),
                     on_confirm: ConfirmAction::DeleteWorktree(path),
                 });
             }
@@ -692,11 +720,12 @@ fn handle_force_delete(app: &mut App) {
     {
         if let Some(wt) = app.worktrees.get(wi) {
             let path = wt.path.clone();
-            app.open_dialog(Dialog::Confirm {
+            app.open_dialog(Dialog::ConfirmDangerous {
                 message: format!(
-                    "FORCE remove worktree '{}' (even if dirty)?",
+                    "FORCE DELETE worktree '{}' (even if dirty)",
                     wt.branch
                 ),
+                input: String::new(),
                 on_confirm: ConfirmAction::ForceDeleteWorktree(path),
             });
         }
@@ -793,6 +822,7 @@ fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u1
                 // Cancel editing
                 app.prompt_queue_editing = None;
                 app.prompt_queue_input.clear();
+                app.prompt_queue_cursor = 0;
             } else {
                 // Go back to sidebar
                 app.focus = FocusTarget::Sidebar;
@@ -811,20 +841,49 @@ fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u1
                     }
                     app.save_prompt_queues();
                 }
+                app.prompt_queue_cursor = 0;
             } else if !app.prompt_queue_input.is_empty() {
                 // Add new item to queue
                 let input = app.prompt_queue_input.drain(..).collect::<String>();
                 app.prompt_queues.entry(sid).or_default().push(input);
                 app.save_prompt_queues();
+                app.prompt_queue_cursor = 0;
             } else {
                 // Input empty + item selected → load for editing
                 let queue_len = app.active_prompt_queue().len();
                 if queue_len > 0 && app.prompt_queue_selected < queue_len {
                     let text = app.active_prompt_queue()[app.prompt_queue_selected].clone();
+                    app.prompt_queue_cursor = text.len();
                     app.prompt_queue_input = text;
                     app.prompt_queue_editing = Some(app.prompt_queue_selected);
                 }
             }
+        }
+        KeyCode::Left => {
+            if app.prompt_queue_cursor > 0 {
+                // Walk back to previous char boundary
+                let mut pos = app.prompt_queue_cursor - 1;
+                while pos > 0 && !app.prompt_queue_input.is_char_boundary(pos) {
+                    pos -= 1;
+                }
+                app.prompt_queue_cursor = pos;
+            }
+        }
+        KeyCode::Right => {
+            if app.prompt_queue_cursor < app.prompt_queue_input.len() {
+                // Walk forward to next char boundary
+                let mut pos = app.prompt_queue_cursor + 1;
+                while pos < app.prompt_queue_input.len() && !app.prompt_queue_input.is_char_boundary(pos) {
+                    pos += 1;
+                }
+                app.prompt_queue_cursor = pos;
+            }
+        }
+        KeyCode::Home => {
+            app.prompt_queue_cursor = 0;
+        }
+        KeyCode::End => {
+            app.prompt_queue_cursor = app.prompt_queue_input.len();
         }
         KeyCode::Up => {
             if app.prompt_queue_input.is_empty() && app.prompt_queue_editing.is_none() {
@@ -866,10 +925,19 @@ fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u1
             }
         }
         KeyCode::Backspace => {
-            app.prompt_queue_input.pop();
+            if app.prompt_queue_cursor > 0 {
+                // Find the previous char boundary
+                let mut prev = app.prompt_queue_cursor - 1;
+                while prev > 0 && !app.prompt_queue_input.is_char_boundary(prev) {
+                    prev -= 1;
+                }
+                app.prompt_queue_input.drain(prev..app.prompt_queue_cursor);
+                app.prompt_queue_cursor = prev;
+            }
         }
         KeyCode::Char(c) if c != '\n' && c != '\r' => {
-            app.prompt_queue_input.push(c);
+            app.prompt_queue_input.insert(app.prompt_queue_cursor, c);
+            app.prompt_queue_cursor += c.len_utf8();
         }
         _ => {}
     }
@@ -1410,39 +1478,51 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         ConfirmAction::DeleteSession(sid) => {
                             session::kill_session(app, sid);
                         }
-                        ConfirmAction::DeleteWorktree(path) => {
-                            match worktree::remove_worktree(app, &path) {
-                                Ok(_) => {
-                                    app.set_status("Worktree removed");
-                                    let _ = worktree::refresh_worktrees(app);
-                                }
-                                Err(e) => {
-                                    let msg = format!("{}", e);
-                                    if msg.contains("dirty") || msg.contains("untracked") || msg.contains("changes") {
-                                        // Offer force-delete
-                                        app.open_dialog(Dialog::Confirm {
-                                            message: format!("Worktree is dirty. Force remove?"),
-                                            on_confirm: ConfirmAction::ForceDeleteWorktree(path),
-                                        });
-                                        return;
-                                    }
-                                    app.set_status(format!("Error: {}", e));
-                                }
-                            }
-                        }
-                        ConfirmAction::ForceDeleteWorktree(path) => {
-                            match worktree::force_remove_worktree(app, &path) {
-                                Ok(_) => {
-                                    app.set_status("Worktree force-removed");
-                                    let _ = worktree::refresh_worktrees(app);
-                                }
-                                Err(e) => {
-                                    app.set_status(format!("Error: {}", e));
-                                }
-                            }
+                        ConfirmAction::DeleteWorktree(_) | ConfirmAction::ForceDeleteWorktree(_) => {
+                            // Should not happen — worktree deletion uses ConfirmDangerous now
                         }
                     }
                     app.close_dialog();
+                }
+                Some(Dialog::ConfirmDangerous { input, on_confirm, .. }) => {
+                    if input.trim().eq_ignore_ascii_case("yes") {
+                        match on_confirm {
+                            ConfirmAction::DeleteWorktree(path) => {
+                                match worktree::remove_worktree(app, &path) {
+                                    Ok(_) => {
+                                        app.set_status("Worktree removed");
+                                        let _ = worktree::refresh_worktrees(app);
+                                    }
+                                    Err(e) => {
+                                        let msg = format!("{}", e);
+                                        if msg.contains("dirty") || msg.contains("untracked") || msg.contains("changes") {
+                                            app.open_dialog(Dialog::ConfirmDangerous {
+                                                message: "Worktree is dirty. FORCE DELETE?".to_string(),
+                                                input: String::new(),
+                                                on_confirm: ConfirmAction::ForceDeleteWorktree(path),
+                                            });
+                                            return;
+                                        }
+                                        app.set_status(format!("Error: {}", e));
+                                    }
+                                }
+                            }
+                            ConfirmAction::ForceDeleteWorktree(path) => {
+                                match worktree::force_remove_worktree(app, &path) {
+                                    Ok(_) => {
+                                        app.set_status("Worktree force-removed");
+                                        let _ = worktree::refresh_worktrees(app);
+                                    }
+                                    Err(e) => {
+                                        app.set_status(format!("Error: {}", e));
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                        app.close_dialog();
+                    }
+                    // If input != "yes", Enter does nothing
                 }
                 None => {
                     app.close_dialog();
@@ -1566,6 +1646,9 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 Some(Dialog::RenameSession { ref mut input, .. }) => {
                     input.push(c);
                 }
+                Some(Dialog::ConfirmDangerous { ref mut input, .. }) => {
+                    input.push(c);
+                }
                 Some(Dialog::GitCommit { ref phase, ref mut commit_message, .. }) => {
                     if *phase == CommitPhase::Message {
                         commit_message.push(c);
@@ -1596,6 +1679,9 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     }
                 }
                 Some(Dialog::RenameSession { ref mut input, .. }) => {
+                    input.pop();
+                }
+                Some(Dialog::ConfirmDangerous { ref mut input, .. }) => {
                     input.pop();
                 }
                 Some(Dialog::GitCommit { ref phase, ref mut commit_message, .. }) => {
@@ -1797,12 +1883,13 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
                         let path = wt.path.clone();
                         let has_sessions = !wt.session_ids.is_empty();
                         let msg = if has_sessions {
-                            format!("Remove worktree '{}' and kill {} session(s)?", wt.branch, wt.session_ids.len())
+                            format!("DELETE worktree '{}' and kill {} session(s)", wt.branch, wt.session_ids.len())
                         } else {
-                            format!("Remove worktree '{}'?", wt.branch)
+                            format!("DELETE worktree '{}'", wt.branch)
                         };
-                        app.open_dialog(Dialog::Confirm {
+                        app.open_dialog(Dialog::ConfirmDangerous {
                             message: msg,
+                            input: String::new(),
                             on_confirm: ConfirmAction::DeleteWorktree(path),
                         });
                     }
@@ -1856,10 +1943,10 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
     }
 }
 
-/// Instruction appended to every message sent from mini mode's detail input.
-/// Tells Claude to wrap important summary output in XML tags so extract_summary() can parse it.
-const CLAWTREE_INSTRUCTION: &str =
-    "\n\nIMPORTANT: Wrap any important summary information I need to know in <IMPORTANT_CLAWTREE_OUTPUT></IMPORTANT_CLAWTREE_OUTPUT> xml tags.";
+/// Instruction appended to every message sent from mini mode (both initial prompts
+/// and follow-up messages). Tells Claude to wrap important summary output in XML
+/// tags so extract_summary() can parse it reliably.
+const CLAWTREE_INSTRUCTION: &str = "\n\nCRITICAL SYSTEM INSTRUCTION: You MUST end your response with a summary wrapped in XML tags like this:\n<IMPORTANT_CLAWTREE_OUTPUT>\n[your 1-2 sentence summary of what you did and the result]\n</IMPORTANT_CLAWTREE_OUTPUT>\nThis is required for every response. Do not skip this.";
 
 fn handle_mini_detail_input_key(app: &mut App, key: KeyEvent, _terminal_size: (u16, u16)) {
     // Alt+Enter or Shift+Enter → insert newline
@@ -1968,7 +2055,7 @@ fn handle_mini_prompt_input_key(app: &mut App, key: KeyEvent, terminal_size: (u1
                 app.set_status("Prompt cannot be empty");
                 return;
             }
-            let prompt = app.mini.prompt_input.clone();
+            let prompt = format!("{}{}", app.mini.prompt_input, CLAWTREE_INSTRUCTION);
             let wi = app.mini.target_worktree_idx;
             app.mini.prompt_input.clear();
             app.mini.focus = MiniModeFocus::AgentList;

@@ -13,10 +13,32 @@ use crate::app::{AgentStatus, App};
 pub struct ClaudeUsage {
     pub tokens_used: usize,
     pub effective_window: usize,
-    pub threshold: usize,
+    pub _threshold: usize,
 }
 
-/// A Claude Code session running in a PTY.
+impl ClaudeUsage {
+    /// Full model context window size. The `effectiveWindow` from autocompact
+    /// is ~90% of the full context (the rest is the autocompact buffer).
+    /// This matches the denominator shown by Claude's `/context` command.
+    pub fn full_context(&self) -> usize {
+        // Round to nearest 1000 to avoid floating-point oddities
+        let raw = (self.effective_window as f64 / 0.9) as usize;
+        ((raw + 500) / 1000) * 1000
+    }
+
+    /// Context usage percentage relative to the full model context window.
+    pub fn usage_pct(&self) -> usize {
+        let full = self.full_context();
+        if full > 0 {
+            (self.tokens_used as f64 / full as f64 * 100.0) as usize
+        } else {
+            0
+        }
+    }
+}
+
+/// A session running in a PTY — either Claude Code or a plain terminal shell.
+#[allow(dead_code)]
 pub struct Session {
     pub id: u64,
     pub worktree_path: PathBuf,
@@ -31,9 +53,12 @@ pub struct Session {
     /// User-assigned nickname, displayed instead of terminal title when set.
     pub nickname: Option<String>,
     /// The prompt used to create this agent (None for reconnected sessions).
+    #[allow(dead_code)]
     pub initial_prompt: Option<String>,
     /// Whether the agent was active on the previous tick (for transition detection).
     pub was_active: bool,
+    /// True if this is a plain terminal session (not Claude Code).
+    pub is_terminal: bool,
 }
 
 impl Session {
@@ -150,8 +175,10 @@ impl Session {
         }
 
         // ❯ followed by text → could be user input in the prompt area, or a
-        // selection menu option. Check for a horizontal separator (├───┤) above
-        // it which marks the boundary between output and input areas.
+        // selection menu option. Check for a horizontal separator above it
+        // which marks the boundary between output and input areas.
+        // Claude Code uses either `├───┤` (box-drawing) or a solid line of
+        // `─` characters as the input area separator.
         for j in (idx + 1)..bottom_lines.len() {
             let above = bottom_lines[j].trim();
             if above.is_empty() { continue; }
@@ -165,8 +192,13 @@ impl Session {
                 .trim();
             if inner.is_empty() { continue; }
 
-            // Horizontal separator: line containing ├ or ┣
+            // Horizontal separator: box-drawing T-junctions
             if above.contains('├') || above.contains('┣') {
+                return true;
+            }
+
+            // Horizontal separator: solid line of ─ (Claude Code input boundary)
+            if Self::is_horizontal_rule(inner) {
                 return true;
             }
 
@@ -184,6 +216,18 @@ impl Session {
         matches!(s.chars().next(), Some('❯') | Some('›'))
     }
 
+    /// Returns true if the string is a horizontal rule made of box-drawing
+    /// horizontal characters (─, ━, ╌, ═). Requires at least 10 such chars
+    /// and that they make up the majority of the line.
+    fn is_horizontal_rule(s: &str) -> bool {
+        let total = s.chars().count();
+        if total < 10 {
+            return false;
+        }
+        let horiz = s.chars().filter(|&c| c == '─' || c == '━' || c == '╌' || c == '═').count();
+        horiz > total / 2
+    }
+
     /// Compute the agent status for mini mode display.
     /// - Working: spinner chars in title (actively processing)
     /// - Idle: at the input prompt (Claude finished, waiting for next command)
@@ -193,6 +237,11 @@ impl Session {
     pub fn agent_status(&self) -> AgentStatus {
         if self.exited.load(Ordering::Relaxed) {
             return AgentStatus::Exited;
+        }
+        // Plain terminal sessions are either alive or exited — they don't
+        // have Claude's spinner/prompt detection, so skip those checks.
+        if self.is_terminal {
+            return AgentStatus::Idle;
         }
         if self.is_active() {
             return AgentStatus::Working;
@@ -339,6 +388,77 @@ fn extract_clawtree_tagged_output(content: &str) -> Option<String> {
     }
 }
 
+/// Spawn a one-shot `claude -p` process to summarize terminal output.
+///
+/// Captures the tmux scrollback for the given session and sends it to
+/// a haiku model with a summarization system prompt. The result is sent
+/// back via the event channel as `SummaryReady`.
+pub fn generate_oneshot_summary(
+    session_id: u64,
+    tmux_session_name: &str,
+    event_tx: mpsc::UnboundedSender<crate::event::AppEvent>,
+) {
+    let tmux_name = tmux_session_name.to_string();
+    std::thread::spawn(move || {
+        // Capture last 200 lines of tmux scrollback (visible + history)
+        let capture = std::process::Command::new("tmux")
+            .args(["capture-pane", "-t", &tmux_name, "-p", "-S", "-200"])
+            .output();
+        let content = match capture {
+            Ok(out) if out.status.success() => {
+                String::from_utf8_lossy(&out.stdout).to_string()
+            }
+            _ => return,
+        };
+
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        // Pipe the terminal content to claude -p with a summarization prompt
+        use std::io::Write;
+        let mut child = match std::process::Command::new("claude")
+            .args([
+                "-p",
+                "--model", "haiku",
+                "--no-session-persistence",
+                "--system-prompt",
+                "You are a concise summarizer. You will receive terminal output from a Claude Code coding session. Extract a 1-3 sentence summary of what the agent accomplished, what it changed, or what it is requesting. Output ONLY the summary text, nothing else. Do not ask questions or continue the conversation.",
+            ])
+            .env("CLAUDECODE", "")
+            .env("CLAUDE_CODE_ENTRYPOINT", "")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(_) => return,
+        };
+
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(trimmed.as_bytes());
+            // stdin is dropped here, closing the pipe
+        }
+
+        let output = match child.wait_with_output() {
+            Ok(out) => out,
+            Err(_) => return,
+        };
+
+        if output.status.success() {
+            let summary = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !summary.is_empty() {
+                let _ = event_tx.send(crate::event::AppEvent::SummaryReady {
+                    session_id,
+                    summary,
+                });
+            }
+        }
+    });
+}
+
 /// Spawn a new Claude session in the given worktree.
 /// If `initial_prompt` is Some, it is passed as a CLI argument so Claude starts working on it immediately.
 pub fn spawn_session(app: &mut App, worktree_idx: usize, terminal_size: (u16, u16), skip_permissions: bool, initial_prompt: Option<&str>) -> anyhow::Result<u64> {
@@ -389,6 +509,61 @@ pub fn spawn_session(app: &mut App, worktree_idx: usize, terminal_size: (u16, u1
         nickname: None,
         initial_prompt: initial_prompt.map(|s| s.to_string()),
         was_active: false,
+        is_terminal: false,
+    };
+
+    app.sessions.insert(session_id, session);
+
+    if let Some(wt) = app.worktrees.get_mut(worktree_idx) {
+        wt.session_ids.push(session_id);
+        wt.expanded = true;
+    }
+
+    Ok(session_id)
+}
+
+/// Spawn a plain terminal shell session in the given worktree (tmux only).
+pub fn spawn_terminal_session(app: &mut App, worktree_idx: usize, terminal_size: (u16, u16)) -> anyhow::Result<u64> {
+    if !app.tmux_available {
+        anyhow::bail!("tmux is required for terminal sessions");
+    }
+
+    let wt = app.worktrees.get(worktree_idx)
+        .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
+
+    let session_id = app.next_session_id;
+    app.next_session_id += 1;
+
+    let (rows, cols) = calculate_pane_size(app, terminal_size.1, terminal_size.0);
+
+    let tmux_name = pty::tmux_terminal_session_name(&wt.branch, session_id);
+    let handle = pty::spawn_terminal_pty_tmux(
+        &wt.path,
+        session_id,
+        app.event_tx.clone(),
+        rows,
+        cols,
+        &tmux_name,
+    )?;
+
+    let label = wt.path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "terminal".to_string());
+
+    let session = Session {
+        id: session_id,
+        worktree_path: wt.path.clone(),
+        label,
+        parser: handle.parser,
+        write_tx: handle.write_tx,
+        master_pty: handle.master_pty,
+        exited: handle.exited,
+        last_output: handle.last_output,
+        tmux_session_name: handle.tmux_session_name,
+        nickname: None,
+        initial_prompt: None,
+        was_active: false,
+        is_terminal: true,
     };
 
     app.sessions.insert(session_id, session);
@@ -466,7 +641,6 @@ pub struct TmuxSessionInfo {
     pub tmux_name: String,
     pub current_title: String,
     pub exited: bool,
-    pub worktree_path: String,
 }
 
 /// Collect tmux session info from the app for the background poller.
@@ -483,7 +657,6 @@ pub fn collect_tmux_session_info(app: &App) -> Vec<TmuxSessionInfo> {
                     .map(|p| p.callbacks().title.clone())
                     .unwrap_or_default(),
                 exited: s.exited.load(Ordering::SeqCst),
-                worktree_path: s.worktree_path.to_string_lossy().to_string(),
             })
         })
         .collect()
@@ -551,7 +724,7 @@ fn calculate_pane_size(app: &App, terminal_rows: u16, terminal_cols: u16) -> (u1
         }
         _ => {
             let sidebar_width = if app.sidebar_visible && app.screen_mode == ScreenMode::Normal {
-                (terminal_cols as u32 * 30 / 100) as u16
+                crate::ui::theme::SIDEBAR_MAX_WIDTH.min(terminal_cols)
             } else {
                 0
             };
@@ -575,41 +748,40 @@ pub fn resize_all(app: &App, rows: u16, cols: u16) {
 
     for session in app.sessions.values() {
         if !session.exited.load(Ordering::SeqCst) {
-            // Skip resize if parser already has the target dimensions.
-            // Unnecessary resize sends SIGWINCH to Claude (via tmux) even
+            // Skip parser + PTY resize if already at the target dimensions.
+            // Unnecessary PTY resize sends SIGWINCH to Claude (via tmux) even
             // when the size hasn't changed, causing Claude to redraw and
             // push content into scrollback — the cumulative "extra newline" bug.
             let already_correct = session.parser.try_read()
                 .map(|p| p.screen().size() == (pane_rows, pane_cols))
                 .unwrap_or(false);
 
-            if already_correct {
-                continue;
+            if !already_correct {
+                tracing::info!(
+                    "RESIZE-ALL session {} resizing to {}x{}",
+                    session.id, pane_cols, pane_rows
+                );
+
+                // Resize parser first so it's ready for new-size output before
+                // the PTY resize triggers tmux to re-render
+                if let Ok(mut p) = session.parser.write() {
+                    p.screen_mut().set_size(pane_rows, pane_cols);
+                }
+
+                let _ = session.master_pty.resize(portable_pty::PtySize {
+                    rows: pane_rows,
+                    cols: pane_cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                });
             }
 
-            tracing::info!(
-                "RESIZE-ALL session {} resizing to {}x{}",
-                session.id, pane_cols, pane_rows
-            );
-
-            // Resize parser first so it's ready for new-size output before
-            // the PTY resize triggers tmux to re-render
-            if let Ok(mut p) = session.parser.write() {
-                p.screen_mut().set_size(pane_rows, pane_cols);
-            }
-
-            let _ = session.master_pty.resize(portable_pty::PtySize {
-                rows: pane_rows,
-                cols: pane_cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            });
-
-            // Explicitly resize the tmux window so the inner pane matches.
-            // Relying solely on the PTY resize propagating through the
-            // `tmux attach` client is unreliable — tmux may ignore the
-            // client size change depending on window-size policy or when
-            // multiple clients are attached.
+            // Always sync the tmux window size — the tmux session may have
+            // been detached and reattached on a different-sized terminal
+            // (e.g. moved to a larger monitor). The parser was recreated at
+            // the correct size on attach, so the `already_correct` check
+            // above would skip the PTY resize, but the tmux window itself
+            // is still at the old dimensions.
             if let Some(ref tmux_name) = session.tmux_session_name {
                 let _ = std::process::Command::new("tmux")
                     .args([
@@ -674,6 +846,9 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
         // Use the pane title Claude set, fall back to tmux session name
         let label = pane_title.unwrap_or_else(|| tmux_name.clone());
 
+        // Detect whether this is a terminal session by checking for the -term- infix
+        let is_terminal = tmux_name.contains("-term-");
+
         let session = Session {
             id: session_id,
             worktree_path: wt_path,
@@ -687,6 +862,7 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
             nickname: None,
             initial_prompt: None,
             was_active: false,
+            is_terminal,
         };
 
         app.sessions.insert(session_id, session);
@@ -752,78 +928,21 @@ pub fn spawn_claude_usage_poller(
                     .filter(|s| !s.exited && !path_cache.contains_key(&s.session_id))
                     .collect();
 
-                // Discovery: scan /proc for Claude task UUIDs, match by worktree path
+                // Discovery: for each unclaimed session, get the tmux pane PID,
+                // then match by /proc FD lookup or process start timestamp.
+                // One tmux call per unclaimed session (transient, typically 0).
                 if !unclaimed.is_empty() {
-                    let task_map = discover_claude_tasks();
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    let mut claimed_paths: std::collections::HashSet<String> =
+                        path_cache.values().cloned().collect();
                     for info in &unclaimed {
-                        for (cwd, debug_path) in &task_map {
-                            if cwd == &info.worktree_path
-                                || cwd.starts_with(&format!("{}/", info.worktree_path))
-                            {
-                                if parse_last_autocompact(debug_path).is_some() {
-                                    path_cache.insert(info.session_id, debug_path.clone());
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    // Fallback for any still-unclaimed: mtime-based scan of ~/.claude/debug/
-                    let still_unclaimed: Vec<u64> = unclaimed
-                        .iter()
-                        .filter(|s| !path_cache.contains_key(&s.session_id))
-                        .map(|s| s.session_id)
-                        .collect();
-
-                    if !still_unclaimed.is_empty() {
-                        let claimed_paths: std::collections::HashSet<String> =
-                            path_cache.values().cloned().collect();
-                        if let Ok(home) = std::env::var("HOME") {
-                            let debug_dir = format!("{}/.claude/debug", home);
-                            if let Ok(entries) = std::fs::read_dir(&debug_dir) {
-                                let now = std::time::SystemTime::now();
-                                let max_age = Duration::from_secs(600);
-
-                                let mut candidates: Vec<(std::time::SystemTime, String)> = entries
-                                    .filter_map(|e| e.ok())
-                                    .filter(|e| {
-                                        e.path()
-                                            .extension()
-                                            .map(|ext| ext == "txt")
-                                            .unwrap_or(false)
-                                    })
-                                    .filter_map(|e| {
-                                        let path = e.path().to_string_lossy().to_string();
-                                        if claimed_paths.contains(&path) {
-                                            return None;
-                                        }
-                                        let modified = e.metadata().ok()?.modified().ok()?;
-                                        if now.duration_since(modified).unwrap_or(max_age) < max_age
-                                        {
-                                            Some((modified, path))
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect();
-
-                                candidates.sort_by(|a, b| b.0.cmp(&a.0));
-
-                                let mut candidate_iter = candidates.into_iter();
-                                for sid in &still_unclaimed {
-                                    loop {
-                                        match candidate_iter.next() {
-                                            Some((_, path)) => {
-                                                if parse_last_autocompact(&path).is_some() {
-                                                    path_cache.insert(*sid, path);
-                                                    break;
-                                                }
-                                            }
-                                            None => break,
-                                        }
-                                    }
-                                }
-                            }
+                        if let Some(debug_path) = discover_debug_file_for_session(
+                            &info.tmux_name,
+                            &home,
+                            &claimed_paths,
+                        ) {
+                            claimed_paths.insert(debug_path.clone());
+                            path_cache.insert(info.session_id, debug_path);
                         }
                     }
                 }
@@ -851,61 +970,165 @@ pub fn spawn_claude_usage_poller(
         .ok();
 }
 
-/// Discover active Claude task UUIDs by scanning /proc for processes with
-/// .claude/tasks/<uuid> file descriptors. Returns a map of CWD → debug_file_path.
-/// Pure file I/O — no subprocess calls. Typically completes in ~5-10ms.
-fn discover_claude_tasks() -> std::collections::HashMap<String, String> {
-    let mut results = std::collections::HashMap::new();
+/// Discover the debug file for a specific tmux session by matching its process
+/// start time to the first-line timestamp in debug log files.
+/// One tmux subprocess call + file I/O. Only called for unclaimed sessions.
+fn discover_debug_file_for_session(
+    tmux_name: &str,
+    home: &str,
+    claimed_paths: &std::collections::HashSet<String>,
+) -> Option<String> {
+    // Get the pane PID from tmux (one lightweight subprocess call)
+    let output = std::process::Command::new("tmux")
+        .args(["display-message", "-t", tmux_name, "-p", "#{pane_pid}"])
+        .output()
+        .ok()?;
 
-    let home = match std::env::var("HOME") {
-        Ok(h) => h,
-        Err(_) => return results,
-    };
+    if !output.status.success() {
+        return None;
+    }
 
-    let proc_dir = match std::fs::read_dir("/proc") {
-        Ok(d) => d,
-        Err(_) => return results,
-    };
+    let pane_pid: u32 = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .ok()?;
 
-    for entry in proc_dir.flatten() {
-        let name = entry.file_name();
-        let pid_str = name.to_string_lossy();
-        if !pid_str.chars().all(|c| c.is_ascii_digit()) {
+    // First try: direct /proc FD lookup (works for actively processing sessions)
+    if let Some(path) = find_task_uuid_in_proc(pane_pid, home) {
+        if !claimed_paths.contains(&path) {
+            return Some(path);
+        }
+    }
+
+    // Second try: match process start time to debug file first-line timestamp.
+    // Each Claude process creates its debug file within ~1 second of starting.
+    let proc_start_epoch = get_process_start_epoch(pane_pid)?;
+    match_debug_file_by_timestamp(home, proc_start_epoch, claimed_paths)
+}
+
+/// Get a process's start time as epoch seconds from /proc/<pid>.
+fn get_process_start_epoch(pid: u32) -> Option<i64> {
+    let proc_path = format!("/proc/{}", pid);
+    let metadata = std::fs::metadata(&proc_path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let epoch = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    Some(epoch)
+}
+
+/// Find a debug file whose first-line timestamp matches the given epoch (within 5 seconds).
+/// Reads only the first 256 bytes of each candidate file for efficiency.
+fn match_debug_file_by_timestamp(
+    home: &str,
+    target_epoch: i64,
+    claimed_paths: &std::collections::HashSet<String>,
+) -> Option<String> {
+    let debug_dir = format!("{}/.claude/debug", home);
+    let entries = std::fs::read_dir(&debug_dir).ok()?;
+
+    let mut best: Option<(i64, String)> = None; // (diff, path)
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map(|e| e != "txt").unwrap_or(true) {
             continue;
         }
 
-        let fd_dir = format!("/proc/{}/fd", pid_str);
-        let fds = match std::fs::read_dir(&fd_dir) {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
+        let path_str = path.to_string_lossy().to_string();
+        if claimed_paths.contains(&path_str) {
+            continue;
+        }
 
-        for fd_entry in fds.flatten() {
-            if let Ok(target) = std::fs::read_link(fd_entry.path()) {
-                let target_str = target.to_string_lossy();
-                if let Some(pos) = target_str.find(".claude/tasks/") {
-                    let after = &target_str[pos + ".claude/tasks/".len()..];
-                    let uuid = after.split('/').next().unwrap_or("");
-                    if !uuid.is_empty() && uuid.len() >= 32 {
-                        let cwd_path = format!("/proc/{}/cwd", pid_str);
-                        if let Ok(cwd) = std::fs::read_link(&cwd_path) {
-                            let debug_path =
-                                format!("{}/.claude/debug/{}.txt", home, uuid);
-                            if std::path::Path::new(&debug_path).exists() {
-                                results.insert(
-                                    cwd.to_string_lossy().to_string(),
-                                    debug_path,
-                                );
-                            }
-                        }
-                        break; // found UUID for this PID, move on
-                    }
+        // Quick filter: skip files last modified more than 24 hours before the target
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(mtime) = meta.modified() {
+                let file_mtime = mtime
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                if file_mtime < target_epoch - 86400 {
+                    continue;
+                }
+            }
+        }
+
+        // Read first 256 bytes to parse the timestamp
+        if let Some(file_epoch) = read_first_line_epoch(&path_str) {
+            let diff = file_epoch - target_epoch;
+            // Must be within 0-5 seconds after process start
+            if diff >= 0 && diff <= 5 {
+                if best.as_ref().map(|(d, _)| diff < *d).unwrap_or(true) {
+                    best = Some((diff, path_str));
                 }
             }
         }
     }
 
-    results
+    best.map(|(_, path)| path)
+}
+
+/// Read the first line of a debug log and parse the ISO 8601 timestamp to epoch seconds.
+fn read_first_line_epoch(path: &str) -> Option<i64> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = [0u8; 256];
+    let n = file.read(&mut buf).ok()?;
+    let content = std::str::from_utf8(&buf[..n]).ok()?;
+    let first_line = content.lines().next()?;
+
+    // Parse: "2026-02-19T22:28:25.843Z [DEBUG] ..."
+    if first_line.len() < 19 {
+        return None;
+    }
+    let ts_str = &first_line[..19]; // "2026-02-19T22:28:25"
+
+    let year: i32 = ts_str.get(0..4)?.parse().ok()?;
+    let month: u32 = ts_str.get(5..7)?.parse().ok()?;
+    let day: u32 = ts_str.get(8..10)?.parse().ok()?;
+    let hour: u32 = ts_str.get(11..13)?.parse().ok()?;
+    let min: u32 = ts_str.get(14..16)?.parse().ok()?;
+    let sec: u32 = ts_str.get(17..19)?.parse().ok()?;
+
+    let days = days_from_civil(year, month, day);
+    Some(days as i64 * 86400 + hour as i64 * 3600 + min as i64 * 60 + sec as i64)
+}
+
+/// Convert a civil date to days since Unix epoch.
+/// Algorithm from http://howardhinnant.github.io/date_algorithms.html
+fn days_from_civil(y: i32, m: u32, d: u32) -> i32 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u32;
+    let m_adj = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * m_adj + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe as i32 - 719468
+}
+
+/// Check a specific PID's /proc/<pid>/fd for .claude/tasks/<uuid> and
+/// return the corresponding debug file path.
+fn find_task_uuid_in_proc(pid: u32, home: &str) -> Option<String> {
+    let fd_dir = format!("/proc/{}/fd", pid);
+    let fds = std::fs::read_dir(&fd_dir).ok()?;
+
+    for fd_entry in fds.flatten() {
+        if let Ok(target) = std::fs::read_link(fd_entry.path()) {
+            let target_str = target.to_string_lossy();
+            if let Some(pos) = target_str.find(".claude/tasks/") {
+                let after = &target_str[pos + ".claude/tasks/".len()..];
+                let uuid = after.split('/').next().unwrap_or("");
+                if !uuid.is_empty() && uuid.len() >= 32 {
+                    let debug_path = format!("{}/.claude/debug/{}.txt", home, uuid);
+                    if std::path::Path::new(&debug_path).exists() {
+                        return Some(debug_path);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Global account-level usage data from the Anthropic API.
@@ -1040,6 +1263,6 @@ fn parse_autocompact_line(line: &str) -> Option<ClaudeUsage> {
     Some(ClaudeUsage {
         tokens_used: tokens?,
         effective_window: effective_window?,
-        threshold: threshold?,
+        _threshold: threshold?,
     })
 }
