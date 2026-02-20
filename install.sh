@@ -59,16 +59,46 @@ download_and_install() {
     local platform="$1"
     local tag="$2"
     local archive="${BINARY_NAME}-${platform}.tar.gz"
-    local url="https://github.com/${REPO}/releases/download/${tag}/${archive}"
 
     local tmpdir
     tmpdir="$(mktemp -d)"
     trap 'rm -rf "$tmpdir"' EXIT
 
     info "Downloading ${BINARY_NAME} ${tag} for ${platform}..."
-    if ! curl -fSL "${auth_header[@]}" -H "Accept: application/octet-stream" --progress-bar -o "${tmpdir}/${archive}" "$url"; then
-        error "Download failed. Check that a release exists for tag '${tag}' and platform '${platform}'.
+
+    if [ -n "$AUTH_TOKEN" ]; then
+        # Private repo: must use the API to download release assets.
+        # The direct github.com download URL returns 404 for private repos
+        # even with a token, because it expects browser session auth.
+        local release_json asset_url
+        release_json="$(curl -fsSL "${auth_header[@]}" \
+            "https://api.github.com/repos/${REPO}/releases/tags/${tag}")" \
+            || error "Failed to fetch release info for tag '${tag}'."
+
+        # Extract the API asset URL whose neighbouring "name" matches our archive.
+        # In the GitHub JSON each asset has "url" immediately before "name".
+        asset_url="$(printf '%s' "$release_json" \
+            | grep -E '"(url|name)"' \
+            | grep -B1 "\"${archive}\"" \
+            | grep '"url"' \
+            | head -1 \
+            | sed 's/.*"url": *"//;s/".*//')"
+
+        if [ -z "$asset_url" ]; then
+            error "Could not find asset '${archive}' in release '${tag}'.
+  Check that a release artifact exists for platform '${platform}'."
+        fi
+
+        if ! curl -fSL "${auth_header[@]}" -H "Accept: application/octet-stream" --progress-bar -o "${tmpdir}/${archive}" "$asset_url"; then
+            error "Download failed for asset '${archive}' from release '${tag}'."
+        fi
+    else
+        # Public repo: download directly from the release URL
+        local url="https://github.com/${REPO}/releases/download/${tag}/${archive}"
+        if ! curl -fSL --progress-bar -o "${tmpdir}/${archive}" "$url"; then
+            error "Download failed. Check that a release exists for tag '${tag}' and platform '${platform}'.
   URL: ${url}"
+        fi
     fi
 
     info "Extracting..."
