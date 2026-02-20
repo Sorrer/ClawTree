@@ -193,3 +193,10 @@ cargo build --release
 # or manually:
 ./target/release/clawtree [optional-directory]
 ```
+
+
+## Future Goals
+
+- Enahnce UI/UX to support **Everyone's** usages
+- Incorporate more AI-enhanced flows (commit message generation)
+- Support other agentic CLIs like Codex and gemini CLI
