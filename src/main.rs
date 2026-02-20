@@ -435,6 +435,40 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                         }
                         needs_redraw = true;
                     }
+                    AppEvent::PullComplete { branch, worktree_idx, error, has_conflicts } => {
+                        match (error, has_conflicts) {
+                            (None, _) => {
+                                app.set_status_with(StatusSeverity::Success, format!("Pulled '{}'", branch));
+                                let _ = worktree::refresh_worktrees(&mut app);
+                                app.refresh_worktree_status();
+                            }
+                            (Some(_msg), true) => {
+                                // Merge conflict from pull — open conflict resolution dialog
+                                app.set_status_with(
+                                    StatusSeverity::Error,
+                                    format!("Pull '{}' has merge conflicts", branch),
+                                );
+                                app.open_dialog(Dialog::MergeConflict {
+                                    worktree_idx,
+                                    source_branch: format!("origin/{}", branch),
+                                    selected: 0,
+                                });
+                            }
+                            (Some(msg), false) => {
+                                // Non-conflict error — open error dialog
+                                app.set_status_with(
+                                    StatusSeverity::Error,
+                                    format!("Pull '{}' failed", branch),
+                                );
+                                app.open_dialog(Dialog::PullError {
+                                    worktree_idx,
+                                    error_message: msg,
+                                    selected: 0,
+                                });
+                            }
+                        }
+                        needs_redraw = true;
+                    }
                     AppEvent::InitRepoComplete { error, .. } => {
                         match error {
                             Some(e) => app.set_status_with(StatusSeverity::Error, format!("Init error: {}", e)),

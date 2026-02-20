@@ -35,6 +35,15 @@ pub enum AppEvent {
         branch: String,
         error: Option<String>,
     },
+    /// Background git pull completed.
+    PullComplete {
+        branch: String,
+        worktree_idx: usize,
+        /// None = success, Some = error message.
+        error: Option<String>,
+        /// True if the error is a merge conflict (vs other errors).
+        has_conflicts: bool,
+    },
     /// Tmux title(s) changed — maps session_id to new title.
     TmuxTitlesChanged {
         updates: Vec<(u64, String)>,

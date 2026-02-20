@@ -304,6 +304,8 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
             Span::styled(": claude  ", Style::default().fg(Color::DarkGray)),
             Span::styled("p", Style::default().fg(Color::Cyan)),
             Span::styled(": push  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("P", Style::default().fg(Color::Cyan)),
+            Span::styled(": pull  ", Style::default().fg(Color::DarkGray)),
             Span::styled("s", Style::default().fg(Color::Cyan)),
             Span::styled(": stage/commit  ", Style::default().fg(Color::DarkGray)),
             Span::styled("m", Style::default().fg(Color::Cyan)),

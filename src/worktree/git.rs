@@ -467,6 +467,47 @@ pub fn branch_head_oneline(repo_path: &Path, branch: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Result of a pull operation.
+#[allow(dead_code)]
+pub enum PullResult {
+    /// Pull completed successfully (fast-forward or clean merge).
+    Success(String),
+    /// Pull resulted in merge conflicts.
+    Conflict(String),
+}
+
+/// Pull the current branch from the remote.
+/// Runs `git pull` and detects merge conflicts vs other errors.
+pub fn pull_branch(worktree_path: &Path) -> Result<PullResult> {
+    let output = Command::new("git")
+        .args(["pull"])
+        .current_dir(worktree_path)
+        .output()
+        .context("Failed to run git pull")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let combined = format!("{}{}", stdout, stderr);
+
+    if output.status.success() {
+        let msg = if combined.trim().is_empty() {
+            "Already up to date.".to_string()
+        } else {
+            combined
+        };
+        return Ok(PullResult::Success(msg));
+    }
+
+    // Detect merge conflicts
+    if stderr.contains("CONFLICT") || stdout.contains("CONFLICT")
+        || stderr.contains("Automatic merge failed") || stdout.contains("Automatic merge failed")
+    {
+        return Ok(PullResult::Conflict(combined));
+    }
+
+    anyhow::bail!("{}", combined.trim())
+}
+
 /// Push a branch to the remote.
 /// Tries `git push`, falls back to `git push -u origin <branch>` if no upstream.
 pub fn push_branch(worktree_path: &Path, branch: &str) -> Result<String> {

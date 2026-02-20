@@ -88,6 +88,7 @@ const SIDEBAR_KEYS: &[KeyEntry] = &[
     ("m",           "Merge branch"),
     ("s",           "Stage & commit"),
     ("p",           "Push branch to remote"),
+    ("P",           "Pull branch from remote"),
     ("r",           "Rename/nickname session"),
     ("G",           "Jump to bottom"),
     ("Home / End",  "Jump to top / bottom"),
@@ -147,6 +148,7 @@ const INFO_PANEL_KEYS: &[KeyEntry] = &[
     ("d",           "Delete worktree"),
     ("m",           "Merge branch"),
     ("p",           "Push branch"),
+    ("P",           "Pull branch"),
     ("F5 / ^R",     "Refresh"),
 ];
 
@@ -401,6 +403,11 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             handle_push(app);
         }
 
+        // P — pull branch from remote
+        (KeyModifiers::SHIFT, KeyCode::Char('P')) => {
+            handle_pull(app);
+        }
+
         // r — rename/nickname a session
         (_, KeyCode::Char('r')) => {
             if let Some(SidebarItem::Session(wi, si)) = app.selected_sidebar_item() {
@@ -551,6 +558,9 @@ fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)
         }
         KeyCode::Char('p') => {
             handle_push(app);
+        }
+        KeyCode::Char('P') if key.modifiers == KeyModifiers::SHIFT => {
+            handle_pull(app);
         }
         KeyCode::F(5) => {
             if let Err(e) = worktree::refresh_worktrees(app) {
@@ -762,6 +772,54 @@ fn handle_push(app: &mut App) {
                     let result = worktree::git::push_branch(&path, &branch);
                     let error = result.err().map(|e| format!("{}", e));
                     let _ = tx.send(crate::event::AppEvent::PushComplete { branch, error });
+                })
+                .ok();
+        }
+    }
+}
+
+fn handle_pull(app: &mut App) {
+    let wt_idx = match app.selected_sidebar_item() {
+        Some(SidebarItem::Worktree(wi)) => Some(wi),
+        Some(SidebarItem::Session(wi, _)) => Some(wi),
+        None => None,
+    };
+    if let Some(wi) = wt_idx {
+        if let Some(wt) = app.worktrees.get(wi) {
+            let path = wt.path.clone();
+            let branch = wt.branch.clone();
+            let tx = app.event_tx.clone();
+            app.set_status(format!("Pulling '{}'...", branch));
+
+            std::thread::Builder::new()
+                .name("git-pull".into())
+                .spawn(move || {
+                    match worktree::git::pull_branch(&path) {
+                        Ok(worktree::git::PullResult::Success(_)) => {
+                            let _ = tx.send(crate::event::AppEvent::PullComplete {
+                                branch,
+                                worktree_idx: wi,
+                                error: None,
+                                has_conflicts: false,
+                            });
+                        }
+                        Ok(worktree::git::PullResult::Conflict(msg)) => {
+                            let _ = tx.send(crate::event::AppEvent::PullComplete {
+                                branch,
+                                worktree_idx: wi,
+                                error: Some(msg),
+                                has_conflicts: true,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(crate::event::AppEvent::PullComplete {
+                                branch,
+                                worktree_idx: wi,
+                                error: Some(format!("{}", e)),
+                                has_conflicts: false,
+                            });
+                        }
+                    }
                 })
                 .ok();
         }
@@ -1429,6 +1487,45 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         }
                     }
                 }
+                Some(Dialog::PullError {
+                    worktree_idx,
+                    error_message,
+                    selected,
+                }) => {
+                    match selected {
+                        0 | 1 => {
+                            // Claude (0 = normal, 1 = skip perms)
+                            let skip_perms = selected == 1;
+                            let branch = app.worktrees.get(worktree_idx)
+                                .map(|w| w.branch.clone())
+                                .unwrap_or_default();
+                            let prompt = format!(
+                                "A git pull on branch '{}' failed with the following error:\n\n{}\n\nPlease investigate and fix the issue so the pull can succeed.",
+                                branch, error_message
+                            );
+                            let wi = worktree_idx;
+                            app.close_dialog();
+                            if app.worktrees.get(wi).is_some() {
+                                match session::spawn_session(app, wi, terminal_size, skip_perms, Some(&prompt)) {
+                                    Ok(sid) => {
+                                        app.active_session_id = Some(sid);
+                                        app.focus = FocusTarget::TerminalPane;
+                                        app.input_mode = InputMode::Terminal;
+                                        app.rebuild_sidebar_items();
+                                        app.set_status("Claude session opened — fix pull error");
+                                    }
+                                    Err(e) => {
+                                        app.set_status(format!("Failed to spawn Claude: {}", e));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            // Dismiss
+                            app.close_dialog();
+                        }
+                    }
+                }
                 Some(Dialog::GitCommit {
                     worktree_idx,
                     unstaged,
@@ -1548,6 +1645,11 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         *selected -= 1;
                     }
                 }
+                Some(Dialog::PullError { ref mut selected, .. }) => {
+                    if *selected > 0 {
+                        *selected -= 1;
+                    }
+                }
                 Some(Dialog::GitCommit { ref phase, ref mut selected, ref unstaged, ref staged, ref section, .. }) => {
                     if *phase == CommitPhase::Staging {
                         if *selected > 0 {
@@ -1576,6 +1678,11 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 }
                 Some(Dialog::DirtyWorktree { ref mut selected, .. }) => {
                     if *selected + 1 < crate::app::DIRTY_WORKTREE_OPTION_COUNT {
+                        *selected += 1;
+                    }
+                }
+                Some(Dialog::PullError { ref mut selected, .. }) => {
+                    if *selected + 1 < crate::app::PULL_ERROR_OPTION_COUNT {
                         *selected += 1;
                     }
                 }

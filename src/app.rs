@@ -163,6 +163,12 @@ pub enum Dialog {
         /// Detected regular repo path
         source_repo_path: PathBuf,
     },
+    /// Git pull failed with a non-conflict error — show error and offer resolution.
+    PullError {
+        worktree_idx: usize,
+        error_message: String,
+        selected: usize,   // 0=Claude, 1=Claude (skip perms), 2=Dismiss
+    },
     /// Interactive staging and commit UI.
     GitCommit {
         worktree_idx: usize,
@@ -180,6 +186,9 @@ pub const CONFLICT_RESOLVER_COUNT: usize = 5;
 
 /// Number of options in DirtyWorktree dialog.
 pub const DIRTY_WORKTREE_OPTION_COUNT: usize = 3;
+
+/// Number of options in PullError dialog.
+pub const PULL_ERROR_OPTION_COUNT: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitPhase {

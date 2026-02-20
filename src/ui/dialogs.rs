@@ -81,6 +81,18 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .unwrap_or("???");
             draw_git_commit(f, branch_name, unstaged, staged, *section, *selected, *phase, commit_message);
         }
+        Dialog::PullError {
+            worktree_idx,
+            error_message,
+            selected,
+        } => {
+            let branch_name = app
+                .worktrees
+                .get(*worktree_idx)
+                .map(|w| w.branch.as_str())
+                .unwrap_or("???");
+            draw_pull_error(f, branch_name, error_message, *selected);
+        }
         Dialog::ConvertRepo {
             mode,
             target_path_input,
@@ -521,6 +533,109 @@ fn draw_merge_conflict(f: &mut Frame, branch: &str, selected: usize) {
         Paragraph::new("j/k: select  Enter: open  Esc: close")
             .style(Style::default().fg(Color::DarkGray)),
         chunks[3],
+    );
+}
+
+fn draw_pull_error(f: &mut Frame, branch: &str, error_message: &str, selected: usize) {
+    let options = ["Claude", "Claude (skip perms)", "Dismiss"];
+    // Calculate error display lines (wrap at ~56 chars to fit in dialog)
+    let wrap_width = 56usize;
+    let error_lines: Vec<&str> = error_message.lines().collect();
+    let mut wrapped_count = 0usize;
+    for line in &error_lines {
+        if line.is_empty() {
+            wrapped_count += 1;
+        } else {
+            wrapped_count += (line.len() + wrap_width - 1) / wrap_width;
+        }
+    }
+    let error_display_lines = wrapped_count.min(8); // cap error display at 8 lines
+    let height = (options.len() as u16) + (error_display_lines as u16) + 7;
+    let area = centered_rect(60, height, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Pull Error ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::DIALOG_DESTRUCTIVE));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),                           // header
+            Constraint::Length(1),                           // separator
+            Constraint::Length(error_display_lines as u16),  // error message
+            Constraint::Length(1),                           // separator
+            Constraint::Min(1),                              // option list
+            Constraint::Length(1),                            // help
+        ])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Pull failed on ", Style::default().fg(Color::Red)),
+            Span::styled(
+                branch,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        chunks[0],
+    );
+
+    // Render error message (truncated to fit)
+    let display_text: String = error_lines
+        .iter()
+        .take(8)
+        .map(|l| if l.len() > wrap_width { &l[..wrap_width] } else { l })
+        .collect::<Vec<&str>>()
+        .join("\n");
+    f.render_widget(
+        Paragraph::new(display_text)
+            .style(Style::default().fg(Color::Yellow)),
+        chunks[2],
+    );
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(idx, label)| {
+            let is_sel = idx == selected;
+            let marker = if is_sel { ">" } else { " " };
+            let style = if idx == options.len() - 1 {
+                // Dismiss option in gray
+                if is_sel {
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                }
+            } else if is_sel {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(
+                format!(" {} {}", marker, label),
+                style,
+            )))
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, chunks[4]);
+
+    f.render_widget(
+        Paragraph::new("j/k: select  Enter: confirm  Esc: dismiss")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[5],
     );
 }
 
