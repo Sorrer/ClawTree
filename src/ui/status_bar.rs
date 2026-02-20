@@ -59,19 +59,19 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 match app.selected_sidebar_item() {
                     Some(crate::app::SidebarItem::Session(_, _)) => {
                         if wide {
-                            "Enter:switch session  c:new claude  d:delete  ^p:prompt queue  ?:help  ^q:quit"
+                            "c:claude  Shift+c:claude (YOLO)  n:new worktree  Ctrl+P:prompt queue  d:delete  ?:help  Ctrl+Q:quit"
                         } else {
-                            "Enter:switch c:claude d:del ^p:queue ?:help ^q:quit"
+                            "c:claude Shift+c:claude (YOLO) n:new-wt Ctrl+P:queue d:del ?:help"
                         }
                     }
                     Some(crate::app::SidebarItem::Worktree(_)) => {
                         if wide {
-                            "c:new session  C:yolo  n:new worktree  d:delete  m:merge branch  ?:help  ^q:quit"
+                            "c:claude  Shift+c:claude (YOLO)  n:new worktree  m:merge branch  d:delete  ?:help  Ctrl+Q:quit"
                         } else {
-                            "c:claude C:yolo n:new-wt d:del m:merge ?:help ^q:quit"
+                            "c:claude Shift+c:claude (YOLO) n:new-wt m:merge d:del ?:help"
                         }
                     }
-                    None => {
+                    Some(crate::app::SidebarItem::Terminal(_)) | None => {
                         if wide { "n:new worktree  ^b:sidebar  ?:help  ^q:quit" } else { "n:new-wt ^b:sidebar ?:help ^q:quit" }
                     }
                 }
@@ -121,7 +121,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 theme::MODE_NORMAL_BG
             },
-            InputMode::Terminal => theme::MODE_TERMINAL_BG,
+            InputMode::Terminal => theme::get().mode_terminal_bg,
             InputMode::Dialog => theme::MODE_DIALOG_BG,
         },
     };
@@ -132,15 +132,15 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(
             format!(" {} ", theme::LOGO_SMALL),
             Style::default()
-                .fg(theme::BRAND_CLAW)
-                .bg(theme::STATUS_BAR_BG)
+                .fg(theme::get().brand_claw)
+                .bg(theme::get().status_bar_bg)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" {} ", version),
+            format!("{} ", version),
             Style::default()
                 .fg(Color::DarkGray)
-                .bg(theme::STATUS_BAR_BG),
+                .bg(theme::get().status_bar_bg),
         ),
         Span::styled(
             format!(" {} ", mode_text),
@@ -159,6 +159,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     ]);
 
     let paragraph = Paragraph::new(line)
-        .style(Style::default().bg(theme::STATUS_BAR_BG));
+        .style(Style::default().bg(theme::get().status_bar_bg));
     f.render_widget(paragraph, area);
 }

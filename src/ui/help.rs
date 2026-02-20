@@ -16,12 +16,13 @@ pub fn draw(f: &mut Frame, app: &App) {
     let ctx = KeyContext::ALL[app.help_tab];
     let keys = ctx.keys();
     let extra = ctx.extra_keys(app.wt_available);
-    let total_keys = keys.len() + extra.len();
-    // tabs(1) + separator(1) + keys + separator(1) + help(1) + borders(2)
-    let content_height = (total_keys as u16) + 6;
+    let display_rows = ctx.display_row_count(app.wt_available);
+    // tabs(1) + separator(1) + display_rows + separator(1) + help(1) + borders(2)
+    let content_height = (display_rows as u16) + 6;
     let height = content_height.min(max_height).max(10);
 
     let popup = centered_rect(width, height, area);
+    app.areas.help_overlay.set(popup);
     f.render_widget(Clear, popup);
 
     let block = Block::default()
@@ -84,25 +85,52 @@ pub fn draw(f: &mut Frame, app: &App) {
     let visible_rows = list_area.height as usize;
 
     let all_keys: Vec<&KeyEntry> = keys.iter().chain(extra.iter()).collect();
-    let key_col_width = all_keys.iter().map(|(k, _)| k.len()).max().unwrap_or(12) + 2;
-
-    let scroll = app.help_scroll;
-    let items: Vec<ListItem> = all_keys
+    // key_col_width: skip section headers (empty key string)
+    let key_col_width = all_keys
         .iter()
-        .skip(scroll)
-        .take(visible_rows)
-        .map(|(key, desc)| {
-            ListItem::new(Line::from(vec![
+        .filter(|(k, _)| !k.is_empty())
+        .map(|(k, _)| k.len())
+        .max()
+        .unwrap_or(12)
+        + 2;
+
+    // Build display rows: section headers get a blank line before them
+    // (except the very first entry).
+    let mut display_items: Vec<ListItem> = Vec::new();
+    let mut first_section = true;
+    for (key, desc) in &all_keys {
+        if key.is_empty() {
+            // Section header
+            if first_section {
+                first_section = false;
+            } else {
+                display_items.push(ListItem::new(Line::from("")));
+            }
+            display_items.push(ListItem::new(Line::from(Span::styled(
+                format!("  {}", desc),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            ))));
+        } else {
+            display_items.push(ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("  {:width$}", key, width = key_col_width),
                     Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(*desc, Style::default().fg(Color::White)),
-            ]))
-        })
+            ])));
+        }
+    }
+
+    let scroll = app.help_scroll;
+    let visible: Vec<ListItem> = display_items
+        .into_iter()
+        .skip(scroll)
+        .take(visible_rows)
         .collect();
 
-    f.render_widget(List::new(items), list_area);
+    f.render_widget(List::new(visible), list_area);
 
     // Separator
     let sep2 = Paragraph::new(Line::from(Span::styled(

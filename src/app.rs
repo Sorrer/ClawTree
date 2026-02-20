@@ -1,11 +1,72 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
+use ratatui::layout::Rect;
+
 use crate::event::AppEvent;
 use crate::session::{ClaudeUsage, GlobalUsage, Session};
 use crate::worktree::{self, Worktree, WorktreeStatus};
+
+/// Stores the screen regions of interactive UI elements, updated each frame.
+/// Uses `Cell<Rect>` for interior mutability since `draw()` takes `&App`.
+pub struct LayoutAreas {
+    // Panel-level regions (for focus switching)
+    pub sidebar: Cell<Rect>,
+    pub terminal_pane: Cell<Rect>,
+    pub prompt_queue: Cell<Rect>,
+    pub status_bar: Cell<Rect>,
+    // Inner areas (inside borders, for item hit-testing)
+    pub sidebar_inner: Cell<Rect>,
+    pub terminal_pane_inner: Cell<Rect>,
+    pub prompt_queue_inner: Cell<Rect>,
+    // Overlays
+    pub help_overlay: Cell<Rect>,
+    pub dialog: Cell<Rect>,
+    // Mini mode
+    pub mini_tree: Cell<Rect>,
+    pub mini_tree_inner: Cell<Rect>,
+    pub mini_detail: Cell<Rect>,
+}
+
+impl Default for LayoutAreas {
+    fn default() -> Self {
+        Self {
+            sidebar: Cell::new(Rect::default()),
+            terminal_pane: Cell::new(Rect::default()),
+            prompt_queue: Cell::new(Rect::default()),
+            status_bar: Cell::new(Rect::default()),
+            sidebar_inner: Cell::new(Rect::default()),
+            terminal_pane_inner: Cell::new(Rect::default()),
+            prompt_queue_inner: Cell::new(Rect::default()),
+            help_overlay: Cell::new(Rect::default()),
+            dialog: Cell::new(Rect::default()),
+            mini_tree: Cell::new(Rect::default()),
+            mini_tree_inner: Cell::new(Rect::default()),
+            mini_detail: Cell::new(Rect::default()),
+        }
+    }
+}
+
+impl LayoutAreas {
+    /// Reset all areas to default (zero-sized). Call at the start of each frame.
+    pub fn reset(&self) {
+        self.sidebar.set(Rect::default());
+        self.terminal_pane.set(Rect::default());
+        self.prompt_queue.set(Rect::default());
+        self.status_bar.set(Rect::default());
+        self.sidebar_inner.set(Rect::default());
+        self.terminal_pane_inner.set(Rect::default());
+        self.prompt_queue_inner.set(Rect::default());
+        self.help_overlay.set(Rect::default());
+        self.dialog.set(Rect::default());
+        self.mini_tree.set(Rect::default());
+        self.mini_tree_inner.set(Rect::default());
+        self.mini_detail.set(Rect::default());
+    }
+}
 
 /// Which screen is currently displayed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +230,12 @@ pub enum Dialog {
         error_message: String,
         selected: usize,   // 0=Claude, 1=Claude (skip perms), 2=Dismiss
     },
+    /// Git authentication failed — show friendly instructions.
+    AuthError {
+        operation: String,  // "push", "pull", "clone"
+        message: String,    // the raw git error
+        selected: usize,    // 0 = Dismiss
+    },
     /// Interactive staging and commit UI.
     GitCommit {
         worktree_idx: usize,
@@ -189,6 +256,9 @@ pub const DIRTY_WORKTREE_OPTION_COUNT: usize = 3;
 
 /// Number of options in PullError dialog.
 pub const PULL_ERROR_OPTION_COUNT: usize = 3;
+
+/// Number of options in AuthError dialog.
+pub const AUTH_ERROR_OPTION_COUNT: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitPhase {
@@ -226,6 +296,14 @@ pub enum PendingAction {
 pub enum SidebarItem {
     Worktree(usize),
     Session(usize, usize), // (worktree_index, session_index within worktree)
+    Terminal(usize),        // index into app.terminal_ids
+}
+
+/// Which sidebar panel has focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarPanel {
+    Worktrees,
+    Terminals,
 }
 
 /// Main application state.
@@ -311,10 +389,22 @@ pub struct App {
     pub mini_drilldown_session: Option<u64>,
     /// Whether mouse capture is active (enables scroll wheel, disables text selection).
     pub mouse_captured: bool,
+    /// When mouse capture was last disabled (for auto-re-enable timer).
+    pub mouse_capture_disabled_at: Option<Instant>,
     /// Claude Code context window usage per session, from debug logs.
     pub claude_usage: HashMap<u64, ClaudeUsage>,
     /// Global account-level usage from the Anthropic API.
     pub global_usage: Option<GlobalUsage>,
+    /// Session IDs for terminal sessions (separate from worktree session_ids).
+    pub terminal_ids: Vec<u64>,
+    /// Selected index within the terminal panel.
+    pub terminal_panel_selected: usize,
+    /// Which sidebar panel currently has focus.
+    pub sidebar_panel: SidebarPanel,
+    /// Flat list of terminal panel items for rendering/navigation.
+    pub terminal_panel_items: Vec<SidebarItem>,
+    /// Screen regions of interactive UI elements, updated each frame for mouse hit-testing.
+    pub areas: LayoutAreas,
 }
 
 impl App {
@@ -370,8 +460,14 @@ impl App {
             agent_summaries: HashMap::new(),
             mini_drilldown_session: None,
             mouse_captured: true,
+            mouse_capture_disabled_at: None,
             claude_usage: HashMap::new(),
             global_usage: None,
+            terminal_ids: Vec::new(),
+            terminal_panel_selected: 0,
+            sidebar_panel: SidebarPanel::Worktrees,
+            terminal_panel_items: Vec::new(),
+            areas: LayoutAreas::default(),
         }
     }
 
@@ -424,30 +520,84 @@ impl App {
         if !self.sidebar_items.is_empty() && self.sidebar_selected >= self.sidebar_items.len() {
             self.sidebar_selected = self.sidebar_items.len() - 1;
         }
+        self.rebuild_terminal_panel_items();
+    }
+
+    /// Rebuild the terminal panel items list from terminal_ids.
+    pub fn rebuild_terminal_panel_items(&mut self) {
+        self.terminal_panel_items.clear();
+        for (ti, _sid) in self.terminal_ids.iter().enumerate() {
+            self.terminal_panel_items.push(SidebarItem::Terminal(ti));
+        }
+        if self.terminal_panel_items.is_empty() {
+            // Fall back to Worktrees panel if no terminals
+            if self.sidebar_panel == SidebarPanel::Terminals {
+                self.sidebar_panel = SidebarPanel::Worktrees;
+            }
+        }
+        if !self.terminal_panel_items.is_empty() && self.terminal_panel_selected >= self.terminal_panel_items.len() {
+            self.terminal_panel_selected = self.terminal_panel_items.len() - 1;
+        }
     }
 
     pub fn selected_sidebar_item(&self) -> Option<SidebarItem> {
-        self.sidebar_items.get(self.sidebar_selected).copied()
+        match self.sidebar_panel {
+            SidebarPanel::Worktrees => self.sidebar_items.get(self.sidebar_selected).copied(),
+            SidebarPanel::Terminals => self.terminal_panel_items.get(self.terminal_panel_selected).copied(),
+        }
     }
 
     pub fn sidebar_up(&mut self) {
-        if self.sidebar_selected > 0 {
-            self.sidebar_selected -= 1;
+        match self.sidebar_panel {
+            SidebarPanel::Worktrees => {
+                if self.sidebar_selected > 0 {
+                    self.sidebar_selected -= 1;
+                }
+            }
+            SidebarPanel::Terminals => {
+                if self.terminal_panel_selected > 0 {
+                    self.terminal_panel_selected -= 1;
+                } else {
+                    // At top of Terminals panel, move to bottom of Worktrees panel
+                    self.sidebar_panel = SidebarPanel::Worktrees;
+                    if !self.sidebar_items.is_empty() {
+                        self.sidebar_selected = self.sidebar_items.len() - 1;
+                    }
+                }
+            }
         }
     }
 
     pub fn sidebar_down(&mut self) {
-        if self.sidebar_selected + 1 < self.sidebar_items.len() {
-            self.sidebar_selected += 1;
+        match self.sidebar_panel {
+            SidebarPanel::Worktrees => {
+                if self.sidebar_selected + 1 < self.sidebar_items.len() {
+                    self.sidebar_selected += 1;
+                } else if !self.terminal_panel_items.is_empty() {
+                    // At bottom of Worktrees panel, move to top of Terminals panel
+                    self.sidebar_panel = SidebarPanel::Terminals;
+                    self.terminal_panel_selected = 0;
+                }
+            }
+            SidebarPanel::Terminals => {
+                if self.terminal_panel_selected + 1 < self.terminal_panel_items.len() {
+                    self.terminal_panel_selected += 1;
+                }
+            }
         }
     }
 
     pub fn sidebar_jump_top(&mut self) {
+        self.sidebar_panel = SidebarPanel::Worktrees;
         self.sidebar_selected = 0;
     }
 
     pub fn sidebar_jump_bottom(&mut self) {
-        if !self.sidebar_items.is_empty() {
+        if !self.terminal_panel_items.is_empty() {
+            self.sidebar_panel = SidebarPanel::Terminals;
+            self.terminal_panel_selected = self.terminal_panel_items.len() - 1;
+        } else if !self.sidebar_items.is_empty() {
+            self.sidebar_panel = SidebarPanel::Worktrees;
             self.sidebar_selected = self.sidebar_items.len() - 1;
         }
     }
@@ -511,6 +661,16 @@ impl App {
                             self.rebuild_sidebar_items();
                         }
                     }
+                }
+            }
+            Some(SidebarItem::Terminal(ti)) => {
+                if let Some(&sid) = self.terminal_ids.get(ti) {
+                    self.active_session_id = Some(sid);
+                    self.active_worktree_idx = None;
+                    self.worktree_status = None;
+                    self.terminal_scroll = 0;
+                    self.focus = FocusTarget::TerminalPane;
+                    self.input_mode = InputMode::Terminal;
                 }
             }
             None => {}

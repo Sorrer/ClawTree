@@ -568,10 +568,8 @@ pub fn spawn_terminal_session(app: &mut App, worktree_idx: usize, terminal_size:
 
     app.sessions.insert(session_id, session);
 
-    if let Some(wt) = app.worktrees.get_mut(worktree_idx) {
-        wt.session_ids.push(session_id);
-        wt.expanded = true;
-    }
+    // Terminals go into the dedicated terminal panel, not under worktrees
+    app.terminal_ids.push(session_id);
 
     Ok(session_id)
 }
@@ -594,6 +592,7 @@ pub fn kill_session(app: &mut App, session_id: u64) {
     for wt in &mut app.worktrees {
         wt.session_ids.retain(|&id| id != session_id);
     }
+    app.terminal_ids.retain(|&id| id != session_id);
 
     if app.active_session_id == Some(session_id) {
         app.active_session_id = None;
@@ -867,7 +866,10 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
 
         app.sessions.insert(session_id, session);
 
-        if let Some(wt) = app.worktrees.get_mut(wt_idx) {
+        if is_terminal {
+            // Terminals go into the dedicated terminal panel
+            app.terminal_ids.push(session_id);
+        } else if let Some(wt) = app.worktrees.get_mut(wt_idx) {
             wt.session_ids.push(session_id);
             wt.expanded = true;
         }

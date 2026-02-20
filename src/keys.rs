@@ -8,7 +8,14 @@ use crate::worktree;
 // ── Keybinding registry ─────────────────────────────────────────────
 
 /// A single keybinding entry for help display: (key_display, description).
+/// When `key_display` is empty (`""`), the entry is a section header and
+/// `description` holds the group title.
 pub type KeyEntry = (&'static str, &'static str);
+
+/// Create a section-header sentinel entry for the help overlay.
+pub const fn section(label: &'static str) -> KeyEntry {
+    ("", label)
+}
 
 /// Context categories mapping to help overlay tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,94 +69,136 @@ impl KeyContext {
             _ => &[],
         }
     }
+
+    /// Count display rows including section headers and blank separator lines.
+    /// Each section header adds a blank line before it (except the first) plus
+    /// the header line itself.
+    pub fn display_row_count(&self, wt_available: bool) -> usize {
+        let mut rows: usize = 0;
+        let mut first_section = true;
+        for entry in self.keys().iter().chain(self.extra_keys(wt_available).iter()) {
+            if entry.0.is_empty() {
+                // section header: blank line before (except first) + header line
+                if first_section {
+                    rows += 1;
+                    first_section = false;
+                } else {
+                    rows += 2;
+                }
+            } else {
+                rows += 1;
+            }
+        }
+        rows
+    }
 }
 
 const GLOBAL_KEYS: &[KeyEntry] = &[
-    ("Ctrl+Q",  "Quit application"),
-    ("Ctrl+B",  "Toggle sidebar"),
-    ("Ctrl+P",  "Toggle prompt queue"),
-    ("F2",      "Toggle Mini Mode"),
-    ("?",       "Show/hide this help"),
-    ("Click",   "Enable text selection (any key restores scroll)"),
+    section("Application"),
+    ("Ctrl + Q",    "Quit application"),
+    ("?",           "Show/hide this help"),
+    section("Panels"),
+    ("Ctrl + B",    "Toggle sidebar"),
+    ("Ctrl + P",    "Toggle prompt queue"),
+    ("F2",          "Toggle Mini Mode"),
+    section("Mouse"),
+    ("Click",       "Enable text selection (any key restores scroll)"),
 ];
 
 const SIDEBAR_KEYS: &[KeyEntry] = &[
-    ("Tab",         "Focus terminal / info panel"),
-    ("j / Down",    "Navigate down"),
-    ("k / Up",      "Navigate up"),
-    ("Enter",       "Activate selected item"),
-    ("Space",       "Toggle expand/collapse"),
-    ("c",           "New Claude session"),
-    ("C",           "Claude (--dangerously-skip-permissions)"),
-    ("t",           "New terminal session"),
-    ("n",           "New worktree"),
-    ("d",           "Delete session/worktree"),
-    ("D",           "Force-delete worktree"),
-    ("m",           "Merge branch"),
-    ("s",           "Stage & commit"),
-    ("p",           "Push branch to remote"),
-    ("P",           "Pull branch from remote"),
-    ("r",           "Rename/nickname session"),
-    ("G",           "Jump to bottom"),
-    ("Home / End",  "Jump to top / bottom"),
-    ("z / Z",       "Collapse / expand all worktrees"),
-    ("F5 / ^R",     "Refresh worktrees"),
-    ("PgUp/PgDn",   "Scroll terminal"),
+    section("Navigation"),
+    ("Tab",                     "Focus terminal / info panel"),
+    ("j / Down",                "Navigate down"),
+    ("k / Up",                  "Navigate up"),
+    ("Shift + G",               "Jump to bottom"),
+    ("Home / End",              "Jump to top / bottom"),
+    ("PgUp / PgDn",             "Scroll terminal"),
+    section("Selection"),
+    ("Enter",                   "Activate selected item"),
+    ("Space",                   "Toggle expand/collapse"),
+    ("z / Shift + Z",           "Collapse / expand all worktrees"),
+    section("Sessions & Agents"),
+    ("c",                       "claude"),
+    ("Shift + c",               "claude (YOLO)"),
+    ("t",                       "New terminal session"),
+    ("r",                       "Rename/nickname session"),
+    section("Worktree Management"),
+    ("n",                       "New worktree"),
+    ("d",                       "Delete session/worktree"),
+    ("Shift + D",               "Force-delete worktree"),
+    ("F5 / Ctrl + R",           "Refresh worktrees"),
+    section("Git Operations"),
+    ("m",                       "Merge branch"),
+    ("s",                       "Stage & commit"),
+    ("p",                       "Push branch to remote"),
+    ("Shift + p",               "Pull branch from remote"),
 ];
 
 /// Additional sidebar keys shown only when wt.exe is available.
 const SIDEBAR_KEYS_WT: &[KeyEntry] = &[
-    ("w",           "Open Windows Terminal tab"),
-    ("W",           "Windows Terminal + Claude"),
+    section("Windows Terminal"),
+    ("w",                       "Open Windows Terminal tab"),
+    ("Shift + W",               "Windows Terminal + Claude"),
 ];
 
 const TERMINAL_KEYS: &[KeyEntry] = &[
-    ("Tab",         "Back to sidebar / prompt queue"),
-    ("PgUp/PgDn",   "Scroll through history"),
-    ("(all keys)",  "Sent directly to Claude session"),
+    section("Navigation"),
+    ("Tab",                     "Back to sidebar / prompt queue"),
+    ("PgUp / PgDn",             "Scroll through history"),
+    section("Input"),
+    ("(all keys)",              "Sent directly to Claude session"),
 ];
 
 const QUEUE_KEYS: &[KeyEntry] = &[
+    section("Navigation"),
     ("Tab",         "Back to sidebar"),
     ("Esc",         "Cancel edit / back to sidebar"),
-    ("Enter",       "Add item / save edit / load for editing"),
     ("Up / Down",   "Navigate queue items"),
+    section("Editing"),
+    ("Enter",       "Add item / save edit / load for editing"),
     ("d / Delete",  "Delete selected item"),
     ("(type)",      "Input text for new/editing prompt"),
     ("Backspace",   "Delete character"),
 ];
 
 const MINI_MODE_KEYS: &[KeyEntry] = &[
-    ("j / Down",    "Navigate tree"),
-    ("k / Up",      "Navigate tree"),
-    ("Tab/Enter",   "Focus detail input (on agent)"),
-    ("Enter",       "Toggle expand (on worktree)"),
-    ("Space",       "Toggle expand/collapse worktree"),
-    ("o",           "Open full terminal (drilldown)"),
-    ("a",           "Create new agent"),
-    ("d",           "Kill agent / remove worktree"),
-    ("r",           "Rename agent"),
-    ("s",           "Browse saved prompts"),
-    ("z / Z",       "Collapse / expand all"),
-    ("Esc",         "Return to normal mode"),
-    ("(detail)",    "Type + Enter: send to agent"),
+    section("Navigation"),
+    ("j / Down",                "Navigate tree"),
+    ("k / Up",                  "Navigate tree"),
+    ("Esc",                     "Return to normal mode"),
+    section("Selection & Expand"),
+    ("Tab / Enter",             "Focus detail input (on agent)"),
+    ("Enter",                   "Toggle expand (on worktree)"),
+    ("Space",                   "Toggle expand/collapse worktree"),
+    ("z / Shift + Z",           "Collapse / expand all"),
+    section("Actions"),
+    ("o",                       "Open full terminal (drilldown)"),
+    ("a",                       "Create new agent"),
+    ("d",                       "Kill agent / remove worktree"),
+    ("r",                       "Rename agent"),
+    ("s",                       "Browse saved prompts"),
+    section("Detail Pane"),
+    ("(detail)",                "Type + Enter: send to agent"),
 ];
 
 const INFO_PANEL_KEYS: &[KeyEntry] = &[
-    ("j / Down",    "Navigate files"),
-    ("k / Up",      "Navigate files"),
-    ("Tab",         "Switch unstaged/staged section"),
-    ("Esc",         "Back to sidebar"),
-    ("Space/Enter", "Stage/unstage selected file"),
-    ("a",           "Stage all files"),
-    ("c",           "Enter commit message mode"),
-    ("C",           "New Claude session"),
-    ("n",           "New worktree"),
-    ("d",           "Delete worktree"),
-    ("m",           "Merge branch"),
-    ("p",           "Push branch"),
-    ("P",           "Pull branch"),
-    ("F5 / ^R",     "Refresh"),
+    section("Navigation"),
+    ("j / Down",                "Navigate files"),
+    ("k / Up",                  "Navigate files"),
+    ("Tab",                     "Switch unstaged/staged section"),
+    ("Esc",                     "Back to sidebar"),
+    section("Staging"),
+    ("Space / Enter",           "Stage/unstage selected file"),
+    ("a",                       "Stage all files"),
+    ("c",                       "Enter commit message mode"),
+    section("Git Operations"),
+    ("Shift + c",               "claude"),
+    ("n",                       "New worktree"),
+    ("d",                       "Delete worktree"),
+    ("m",                       "Merge branch"),
+    ("p",                       "Push branch"),
+    ("Shift + p",               "Pull branch"),
+    ("F5 / Ctrl + R",           "Refresh"),
 ];
 
 /// Handle a key event based on current input mode.
@@ -267,7 +316,7 @@ fn handle_help_key(app: &mut App, key: KeyEvent) {
         // Scroll within key list
         KeyCode::Down | KeyCode::Char('j') => {
             let ctx = KeyContext::ALL[app.help_tab];
-            let total = ctx.keys().len() + ctx.extra_keys(app.wt_available).len();
+            let total = ctx.display_row_count(app.wt_available);
             if app.help_scroll + 1 < total {
                 app.help_scroll += 1;
             }
@@ -410,18 +459,23 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
 
         // r — rename/nickname a session
         (_, KeyCode::Char('r')) => {
-            if let Some(SidebarItem::Session(wi, si)) = app.selected_sidebar_item() {
-                if let Some(wt) = app.worktrees.get(wi) {
-                    if let Some(&sid) = wt.session_ids.get(si) {
-                        let current = app.sessions.get(&sid)
-                            .and_then(|s| s.nickname.clone())
-                            .unwrap_or_default();
-                        app.open_dialog(Dialog::RenameSession {
-                            session_id: sid,
-                            input: current,
-                        });
-                    }
+            let sid = match app.selected_sidebar_item() {
+                Some(SidebarItem::Session(wi, si)) => {
+                    app.worktrees.get(wi).and_then(|wt| wt.session_ids.get(si).copied())
                 }
+                Some(SidebarItem::Terminal(ti)) => {
+                    app.terminal_ids.get(ti).copied()
+                }
+                _ => None,
+            };
+            if let Some(sid) = sid {
+                let current = app.sessions.get(&sid)
+                    .and_then(|s| s.nickname.clone())
+                    .unwrap_or_default();
+                app.open_dialog(Dialog::RenameSession {
+                    session_id: sid,
+                    input: current,
+                });
             }
         }
 
@@ -578,25 +632,31 @@ fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)
     }
 }
 
-/// Get the branch name of the currently selected worktree (or "main" as default).
-fn selected_worktree_branch(app: &App) -> String {
-    let wi = match app.selected_sidebar_item() {
+/// Get the worktree index for the currently selected sidebar item.
+/// For Terminal items, resolves via the session's worktree_path.
+fn selected_worktree_idx(app: &App) -> Option<usize> {
+    match app.selected_sidebar_item() {
         Some(SidebarItem::Worktree(wi)) => Some(wi),
         Some(SidebarItem::Session(wi, _)) => Some(wi),
+        Some(SidebarItem::Terminal(ti)) => {
+            let sid = app.terminal_ids.get(ti)?;
+            let session = app.sessions.get(sid)?;
+            app.worktrees.iter().position(|wt| wt.path == session.worktree_path)
+        }
         None => None,
-    };
-    wi.and_then(|i| app.worktrees.get(i))
+    }
+}
+
+/// Get the branch name of the currently selected worktree (or "main" as default).
+fn selected_worktree_branch(app: &App) -> String {
+    selected_worktree_idx(app)
+        .and_then(|i| app.worktrees.get(i))
         .map(|wt| wt.branch.clone())
         .unwrap_or_else(|| "main".to_string())
 }
 
 fn open_wsl_window(app: &mut App, with_claude: bool) {
-    let wt_idx = match app.selected_sidebar_item() {
-        Some(SidebarItem::Worktree(wi)) => Some(wi),
-        Some(SidebarItem::Session(wi, _)) => Some(wi),
-        None => None,
-    };
-    if let Some(wi) = wt_idx {
+    if let Some(wi) = selected_worktree_idx(app) {
         if let Some(wt) = app.worktrees.get(wi) {
             let path = wt.path.clone();
             let branch = wt.branch.clone();
@@ -647,12 +707,7 @@ fn open_wsl_window(app: &mut App, with_claude: bool) {
 }
 
 fn spawn_claude_for_selected(app: &mut App, terminal_size: (u16, u16), skip_permissions: bool) {
-    let wt_idx = match app.selected_sidebar_item() {
-        Some(SidebarItem::Worktree(wi)) => Some(wi),
-        Some(SidebarItem::Session(wi, _)) => Some(wi),
-        None => None,
-    };
-    if let Some(wi) = wt_idx {
+    if let Some(wi) = selected_worktree_idx(app) {
         match session::spawn_session(app, wi, terminal_size, skip_permissions, None) {
             Ok(sid) => {
                 app.active_session_id = Some(sid);
@@ -668,12 +723,7 @@ fn spawn_claude_for_selected(app: &mut App, terminal_size: (u16, u16), skip_perm
 }
 
 fn spawn_terminal_for_selected(app: &mut App, terminal_size: (u16, u16)) {
-    let wt_idx = match app.selected_sidebar_item() {
-        Some(SidebarItem::Worktree(wi)) => Some(wi),
-        Some(SidebarItem::Session(wi, _)) => Some(wi),
-        None => None,
-    };
-    if let Some(wi) = wt_idx {
+    if let Some(wi) = selected_worktree_idx(app) {
         match session::spawn_terminal_session(app, wi, terminal_size) {
             Ok(sid) => {
                 app.active_session_id = Some(sid);
@@ -700,15 +750,29 @@ fn handle_delete(app: &mut App) {
                 }
             }
         }
+        Some(SidebarItem::Terminal(ti)) => {
+            if let Some(&sid) = app.terminal_ids.get(ti) {
+                app.open_dialog(Dialog::Confirm {
+                    message: format!("Kill terminal {}?", session::session_label(app, sid)),
+                    on_confirm: ConfirmAction::DeleteSession(sid),
+                });
+            }
+        }
         Some(SidebarItem::Worktree(wi)) => {
             if let Some(wt) = app.worktrees.get(wi) {
                 let path = wt.path.clone();
-                let has_sessions = !wt.session_ids.is_empty();
-                let msg = if has_sessions {
+                let session_count = wt.session_ids.len();
+                let terminal_count = app.terminal_ids.iter().filter(|&&tid| {
+                    app.sessions.get(&tid)
+                        .map(|s| s.worktree_path == wt.path)
+                        .unwrap_or(false)
+                }).count();
+                let total = session_count + terminal_count;
+                let msg = if total > 0 {
                     format!(
                         "DELETE worktree '{}' and kill {} session(s)",
                         wt.branch,
-                        wt.session_ids.len()
+                        total
                     )
                 } else {
                     format!("DELETE worktree '{}'", wt.branch)
@@ -725,9 +789,7 @@ fn handle_delete(app: &mut App) {
 }
 
 fn handle_force_delete(app: &mut App) {
-    if let Some(SidebarItem::Worktree(wi)) | Some(SidebarItem::Session(wi, _)) =
-        app.selected_sidebar_item()
-    {
+    if let Some(wi) = selected_worktree_idx(app) {
         if let Some(wt) = app.worktrees.get(wi) {
             let path = wt.path.clone();
             app.open_dialog(Dialog::ConfirmDangerous {
@@ -743,23 +805,13 @@ fn handle_force_delete(app: &mut App) {
 }
 
 fn handle_stage_commit(app: &mut App) {
-    let wt_idx = match app.selected_sidebar_item() {
-        Some(SidebarItem::Worktree(wi)) => Some(wi),
-        Some(SidebarItem::Session(wi, _)) => Some(wi),
-        None => None,
-    };
-    if let Some(wi) = wt_idx {
+    if let Some(wi) = selected_worktree_idx(app) {
         app.queue_action("Loading status...", PendingAction::OpenStageCommit { worktree_idx: wi });
     }
 }
 
 fn handle_push(app: &mut App) {
-    let wt_idx = match app.selected_sidebar_item() {
-        Some(SidebarItem::Worktree(wi)) => Some(wi),
-        Some(SidebarItem::Session(wi, _)) => Some(wi),
-        None => None,
-    };
-    if let Some(wi) = wt_idx {
+    if let Some(wi) = selected_worktree_idx(app) {
         if let Some(wt) = app.worktrees.get(wi) {
             let path = wt.path.clone();
             let branch = wt.branch.clone();
@@ -779,12 +831,7 @@ fn handle_push(app: &mut App) {
 }
 
 fn handle_pull(app: &mut App) {
-    let wt_idx = match app.selected_sidebar_item() {
-        Some(SidebarItem::Worktree(wi)) => Some(wi),
-        Some(SidebarItem::Session(wi, _)) => Some(wi),
-        None => None,
-    };
-    if let Some(wi) = wt_idx {
+    if let Some(wi) = selected_worktree_idx(app) {
         if let Some(wt) = app.worktrees.get(wi) {
             let path = wt.path.clone();
             let branch = wt.branch.clone();
@@ -827,12 +874,7 @@ fn handle_pull(app: &mut App) {
 }
 
 fn handle_merge(app: &mut App) {
-    let wt_idx = match app.selected_sidebar_item() {
-        Some(SidebarItem::Worktree(wi)) => Some(wi),
-        Some(SidebarItem::Session(wi, _)) => Some(wi),
-        None => None,
-    };
-    if let Some(wi) = wt_idx {
+    if let Some(wi) = selected_worktree_idx(app) {
         match worktree::available_branches(app) {
             Ok(branches) => {
                 if branches.is_empty() {
@@ -1086,10 +1128,11 @@ pub fn handle_paste(app: &mut App, data: String) {
     }
 }
 
-const SCROLL_LINES: usize = 3;
+pub(crate) const SCROLL_LINES: usize = 3;
 const SCROLL_PAGE: usize = 20;
 
 /// Handle mouse wheel scroll events. Works regardless of focus.
+#[allow(dead_code)]
 pub fn handle_scroll(app: &mut App, up: bool) {
     if app.active_session_id.is_none() {
         return;
@@ -1138,6 +1181,23 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 _ => {} // fall through to general handler
             }
         }
+    }
+
+    // ── Text input priority ──────────────────────────────────────────
+    // Dialogs with text input fields must receive all character keys
+    // (including j/k) before navigation handlers can intercept them.
+    match key.code {
+        KeyCode::Char(c) => {
+            if dialog_insert_char(app, c) {
+                return;
+            }
+        }
+        KeyCode::Backspace => {
+            if dialog_backspace(app) {
+                return;
+            }
+        }
+        _ => {}
     }
 
     match key.code {
@@ -1526,6 +1586,10 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         }
                     }
                 }
+                Some(Dialog::AuthError { .. }) => {
+                    // Only option is Dismiss
+                    app.close_dialog();
+                }
                 Some(Dialog::GitCommit {
                     worktree_idx,
                     unstaged,
@@ -1650,6 +1714,11 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         *selected -= 1;
                     }
                 }
+                Some(Dialog::AuthError { ref mut selected, .. }) => {
+                    if *selected > 0 {
+                        *selected -= 1;
+                    }
+                }
                 Some(Dialog::GitCommit { ref phase, ref mut selected, ref unstaged, ref staged, ref section, .. }) => {
                     if *phase == CommitPhase::Staging {
                         if *selected > 0 {
@@ -1683,6 +1752,11 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 }
                 Some(Dialog::PullError { ref mut selected, .. }) => {
                     if *selected + 1 < crate::app::PULL_ERROR_OPTION_COUNT {
+                        *selected += 1;
+                    }
+                }
+                Some(Dialog::AuthError { ref mut selected, .. }) => {
+                    if *selected + 1 < crate::app::AUTH_ERROR_OPTION_COUNT {
                         *selected += 1;
                     }
                 }
@@ -1807,6 +1881,96 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             }
         }
         _ => {}
+    }
+}
+
+/// Try to insert a character into the current dialog's text input field.
+/// Returns true if the character was consumed (dialog has active text input).
+fn dialog_insert_char(app: &mut App, c: char) -> bool {
+    match &mut app.dialog {
+        Some(Dialog::CreateWorktree { ref mut branch_input, ref mut base_branch, focused_field, .. }) => {
+            match *focused_field {
+                0 => branch_input.push(c),
+                _ => base_branch.push(c),
+            }
+            true
+        }
+        Some(Dialog::InitRepo { ref mut url_input, ref mut branch_input, focused_field, .. }) => {
+            match *focused_field {
+                0 => url_input.push(c),
+                _ => branch_input.push(c),
+            }
+            true
+        }
+        Some(Dialog::ConvertRepo { ref mut target_path_input, ref mut branch_name, focused_field, .. }) => {
+            match *focused_field {
+                1 => { target_path_input.push(c); true }
+                2 => { branch_name.push(c); true }
+                _ => false // field 0 is mode selector, no char input
+            }
+        }
+        Some(Dialog::RenameSession { ref mut input, .. }) => {
+            input.push(c);
+            true
+        }
+        Some(Dialog::ConfirmDangerous { ref mut input, .. }) => {
+            input.push(c);
+            true
+        }
+        Some(Dialog::GitCommit { ref phase, ref mut commit_message, .. }) => {
+            if *phase == CommitPhase::Message {
+                commit_message.push(c);
+                true
+            } else {
+                false
+            }
+        }
+        _ => false
+    }
+}
+
+/// Try to delete a character from the current dialog's text input field.
+/// Returns true if the backspace was consumed (dialog has active text input).
+fn dialog_backspace(app: &mut App) -> bool {
+    match &mut app.dialog {
+        Some(Dialog::CreateWorktree { ref mut branch_input, ref mut base_branch, focused_field, .. }) => {
+            match *focused_field {
+                0 => { branch_input.pop(); }
+                _ => { base_branch.pop(); }
+            }
+            true
+        }
+        Some(Dialog::InitRepo { ref mut url_input, ref mut branch_input, focused_field, .. }) => {
+            match *focused_field {
+                0 => { url_input.pop(); }
+                _ => { branch_input.pop(); }
+            }
+            true
+        }
+        Some(Dialog::ConvertRepo { ref mut target_path_input, ref mut branch_name, focused_field, .. }) => {
+            match *focused_field {
+                1 => { target_path_input.pop(); true }
+                2 => { branch_name.pop(); true }
+                _ => false
+            }
+        }
+        Some(Dialog::RenameSession { ref mut input, .. }) => {
+            input.pop();
+            true
+        }
+        Some(Dialog::ConfirmDangerous { ref mut input, .. }) => {
+            input.pop();
+            true
+        }
+        Some(Dialog::GitCommit { ref phase, ref mut commit_message, .. }) => {
+            if *phase == CommitPhase::Message {
+                commit_message.pop();
+                true
+            } else {
+                false
+            }
+        }
+        _ => false
     }
 }
 
@@ -1961,7 +2125,7 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
             let target_wi = match app.mini.items.get(app.mini.selected).copied() {
                 Some(SidebarItem::Worktree(wi)) => wi,
                 Some(SidebarItem::Session(wi, _)) => wi,
-                None => 0,
+                Some(SidebarItem::Terminal(_)) | None => 0,
             };
             app.mini.target_worktree_idx = target_wi;
             // If only one worktree, skip selection and go straight to prompt
@@ -2001,7 +2165,7 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
                         });
                     }
                 }
-                None => {}
+                Some(SidebarItem::Terminal(_)) | None => {}
             }
         }
         KeyCode::Char('r') => {
@@ -2273,6 +2437,16 @@ fn handle_mini_drilldown_key(app: &mut App, key: KeyEvent, terminal_size: (u16, 
 fn key_to_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    // xterm modifier parameter: 1 + (shift?1:0) + (alt?2:0) + (ctrl?4:0)
+    // Used for modified arrow keys, Home/End, etc.  0 means no modifiers.
+    let modifier: u8 = {
+        let m = if shift { 1u8 } else { 0 }
+              + if alt   { 2 }   else { 0 }
+              + if ctrl  { 4 }   else { 0 };
+        if m > 0 { m + 1 } else { 0 }
+    };
 
     match key.code {
         KeyCode::Char(c) => {
@@ -2298,43 +2472,73 @@ fn key_to_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
         KeyCode::Tab => vec![b'\t'],
         KeyCode::BackTab => vec![0x1b, b'[', b'Z'],
         KeyCode::Esc => vec![0x1b],
-        KeyCode::Up => {
-            if app_cursor { vec![0x1b, b'O', b'A'] } else { vec![0x1b, b'[', b'A'] }
-        }
-        KeyCode::Down => {
-            if app_cursor { vec![0x1b, b'O', b'B'] } else { vec![0x1b, b'[', b'B'] }
-        }
-        KeyCode::Right => {
-            if app_cursor { vec![0x1b, b'O', b'C'] } else { vec![0x1b, b'[', b'C'] }
-        }
-        KeyCode::Left => {
-            if app_cursor { vec![0x1b, b'O', b'D'] } else { vec![0x1b, b'[', b'D'] }
-        }
-        KeyCode::Home => vec![0x1b, b'[', b'H'],
-        KeyCode::End => vec![0x1b, b'[', b'F'],
-        KeyCode::PageUp => vec![0x1b, b'[', b'5', b'~'],
-        KeyCode::PageDown => vec![0x1b, b'[', b'6', b'~'],
-        KeyCode::Insert => vec![0x1b, b'[', b'2', b'~'],
-        KeyCode::Delete => vec![0x1b, b'[', b'3', b'~'],
-        KeyCode::F(n) => f_key_bytes(n),
+        KeyCode::Up    => modified_csi_key(b'A', modifier, app_cursor),
+        KeyCode::Down  => modified_csi_key(b'B', modifier, app_cursor),
+        KeyCode::Right => modified_csi_key(b'C', modifier, app_cursor),
+        KeyCode::Left  => modified_csi_key(b'D', modifier, app_cursor),
+        KeyCode::Home  => modified_csi_key(b'H', modifier, false),
+        KeyCode::End   => modified_csi_key(b'F', modifier, false),
+        KeyCode::PageUp   => modified_tilde_key(5, modifier),
+        KeyCode::PageDown => modified_tilde_key(6, modifier),
+        KeyCode::Insert   => modified_tilde_key(2, modifier),
+        KeyCode::Delete   => modified_tilde_key(3, modifier),
+        KeyCode::F(n) => f_key_bytes(n, modifier),
         _ => vec![],
     }
 }
 
-fn f_key_bytes(n: u8) -> Vec<u8> {
+/// Generate a CSI-style key sequence with optional modifier.
+///   No modifier:           \x1b[{final}  or  \x1bO{final} (app cursor mode)
+///   With modifier (2..=8): \x1b[1;{mod}{final}
+fn modified_csi_key(final_byte: u8, modifier: u8, app_cursor: bool) -> Vec<u8> {
+    if modifier > 0 {
+        vec![0x1b, b'[', b'1', b';', modifier + b'0', final_byte]
+    } else if app_cursor {
+        vec![0x1b, b'O', final_byte]
+    } else {
+        vec![0x1b, b'[', final_byte]
+    }
+}
+
+/// Generate a tilde-style key sequence with optional modifier.
+///   No modifier:           \x1b[{n}~
+///   With modifier (2..=8): \x1b[{n};{mod}~
+fn modified_tilde_key(n: u8, modifier: u8) -> Vec<u8> {
+    if modifier > 0 {
+        if n >= 10 {
+            vec![0x1b, b'[', (n / 10) + b'0', (n % 10) + b'0', b';', modifier + b'0', b'~']
+        } else {
+            vec![0x1b, b'[', n + b'0', b';', modifier + b'0', b'~']
+        }
+    } else {
+        if n >= 10 {
+            vec![0x1b, b'[', (n / 10) + b'0', (n % 10) + b'0', b'~']
+        } else {
+            vec![0x1b, b'[', n + b'0', b'~']
+        }
+    }
+}
+
+fn f_key_bytes(n: u8, modifier: u8) -> Vec<u8> {
+    // F1-F4 use SS3 (unmodified) or CSI 1;mod P/Q/R/S (modified)
     match n {
-        1 => vec![0x1b, b'O', b'P'],
-        2 => vec![0x1b, b'O', b'Q'],
-        3 => vec![0x1b, b'O', b'R'],
-        4 => vec![0x1b, b'O', b'S'],
-        5 => vec![0x1b, b'[', b'1', b'5', b'~'],
-        6 => vec![0x1b, b'[', b'1', b'7', b'~'],
-        7 => vec![0x1b, b'[', b'1', b'8', b'~'],
-        8 => vec![0x1b, b'[', b'1', b'9', b'~'],
-        9 => vec![0x1b, b'[', b'2', b'0', b'~'],
-        10 => vec![0x1b, b'[', b'2', b'1', b'~'],
-        11 => vec![0x1b, b'[', b'2', b'3', b'~'],
-        12 => vec![0x1b, b'[', b'2', b'4', b'~'],
+        1..=4 => {
+            let final_byte = b'P' + n - 1;
+            if modifier > 0 {
+                vec![0x1b, b'[', b'1', b';', modifier + b'0', final_byte]
+            } else {
+                vec![0x1b, b'O', final_byte]
+            }
+        }
+        // F5-F12 use tilde encoding
+        5  => modified_tilde_key(15, modifier),
+        6  => modified_tilde_key(17, modifier),
+        7  => modified_tilde_key(18, modifier),
+        8  => modified_tilde_key(19, modifier),
+        9  => modified_tilde_key(20, modifier),
+        10 => modified_tilde_key(21, modifier),
+        11 => modified_tilde_key(23, modifier),
+        12 => modified_tilde_key(24, modifier),
         _ => vec![],
     }
 }

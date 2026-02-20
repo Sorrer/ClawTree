@@ -15,7 +15,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == FocusTarget::TerminalPane;
 
     let border_style = if is_focused {
-        Style::default().fg(theme::BORDER_FOCUSED_TERMINAL).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme::get().border_focused_terminal).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::BORDER_UNFOCUSED)
     };
@@ -45,6 +45,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_type(border_type)
         .border_style(border_style);
+
+    // Record inner area for mouse hit-testing
+    app.areas.terminal_pane_inner.set(block.inner(area));
 
     if let Some(sid) = app.active_session_id {
         if let Some(session) = app.sessions.get(&sid) {
@@ -419,7 +422,7 @@ fn draw_scrollbar(f: &mut Frame, area: Rect, total_lines: usize, scroll_offset: 
                 cell.set_fg(theme::SCROLLBAR_THUMB);
             } else {
                 cell.set_char('│');
-                cell.set_fg(theme::SCROLLBAR_TRACK);
+                cell.set_fg(theme::get().scrollbar_track);
             }
         }
     }

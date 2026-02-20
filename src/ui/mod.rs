@@ -18,6 +18,9 @@ use crate::app::{App, ScreenMode};
 
 /// Draw the full UI, dispatching by screen mode.
 pub fn draw(f: &mut Frame, app: &App) {
+    // Reset all layout areas so hidden panels don't have stale hit regions
+    app.areas.reset();
+
     match app.screen_mode {
         ScreenMode::Normal => draw_normal(f, app),
         ScreenMode::Mini => mini_mode::draw(f, app),
@@ -48,20 +51,60 @@ fn draw_normal(f: &mut Frame, app: &App) {
             ])
             .split(chunks[0]);
 
-        // Split sidebar area for global usage panel when data is available
-        if app.global_usage.is_some() {
-            let sidebar_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(5),     // worktree list (flexible)
-                    Constraint::Length(4),  // global usage panel (border+2 lines+border)
-                ])
-                .split(main_chunks[0]);
+        // Record sidebar area for mouse hit-testing
+        app.areas.sidebar.set(main_chunks[0]);
 
-            sidebar::draw(f, app, sidebar_chunks[0]);
-            sidebar::draw_global_usage(f, app, sidebar_chunks[1]);
-        } else {
-            sidebar::draw(f, app, main_chunks[0]);
+        // Split sidebar area for terminal panel and global usage panel
+        {
+            let has_terminals = !app.terminal_ids.is_empty();
+            let has_usage = app.global_usage.is_some();
+            let terminal_panel_height = if has_terminals {
+                let h = (app.terminal_ids.len() as u16 + 2).min(8);
+                h
+            } else {
+                0
+            };
+
+            match (has_terminals, has_usage) {
+                (true, true) => {
+                    let sidebar_chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([
+                            Constraint::Min(5),                         // worktree list
+                            Constraint::Length(terminal_panel_height),  // terminal panel
+                            Constraint::Length(4),                      // global usage
+                        ])
+                        .split(main_chunks[0]);
+                    sidebar::draw(f, app, sidebar_chunks[0]);
+                    sidebar::draw_terminal_panel(f, app, sidebar_chunks[1]);
+                    sidebar::draw_global_usage(f, app, sidebar_chunks[2]);
+                }
+                (true, false) => {
+                    let sidebar_chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([
+                            Constraint::Min(5),                         // worktree list
+                            Constraint::Length(terminal_panel_height),  // terminal panel
+                        ])
+                        .split(main_chunks[0]);
+                    sidebar::draw(f, app, sidebar_chunks[0]);
+                    sidebar::draw_terminal_panel(f, app, sidebar_chunks[1]);
+                }
+                (false, true) => {
+                    let sidebar_chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([
+                            Constraint::Min(5),     // worktree list
+                            Constraint::Length(4),  // global usage
+                        ])
+                        .split(main_chunks[0]);
+                    sidebar::draw(f, app, sidebar_chunks[0]);
+                    sidebar::draw_global_usage(f, app, sidebar_chunks[1]);
+                }
+                (false, false) => {
+                    sidebar::draw(f, app, main_chunks[0]);
+                }
+            }
         }
 
         if show_queue {
@@ -73,9 +116,12 @@ fn draw_normal(f: &mut Frame, app: &App) {
                 ])
                 .split(main_chunks[1]);
 
+            app.areas.terminal_pane.set(pane_chunks[0]);
+            app.areas.prompt_queue.set(pane_chunks[1]);
             terminal_pane::draw(f, app, pane_chunks[0]);
             prompt_queue::draw(f, app, pane_chunks[1]);
         } else {
+            app.areas.terminal_pane.set(main_chunks[1]);
             terminal_pane::draw(f, app, main_chunks[1]);
         }
     } else {
@@ -88,13 +134,17 @@ fn draw_normal(f: &mut Frame, app: &App) {
                 ])
                 .split(chunks[0]);
 
+            app.areas.terminal_pane.set(pane_chunks[0]);
+            app.areas.prompt_queue.set(pane_chunks[1]);
             terminal_pane::draw(f, app, pane_chunks[0]);
             prompt_queue::draw(f, app, pane_chunks[1]);
         } else {
+            app.areas.terminal_pane.set(chunks[0]);
             terminal_pane::draw(f, app, chunks[0]);
         }
     }
 
+    app.areas.status_bar.set(chunks[1]);
     status_bar::draw(f, app, chunks[1]);
 
     // Draw dialog on top if present

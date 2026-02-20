@@ -1,6 +1,7 @@
 mod app;
 mod event;
 mod keys;
+mod mouse;
 mod session;
 mod ui;
 mod worktree;
@@ -11,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event as CrosstermEvent, MouseEventKind};
+use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event as CrosstermEvent, KeyModifiers as EvtKeyModifiers, MouseButton, MouseEventKind};
 
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -108,8 +109,35 @@ fn main() -> Result<()> {
         original_hook(panic_info);
     }));
 
-    // Determine the target directory: first CLI arg, else CWD
-    let target_dir = match std::env::args().nth(1) {
+    // Parse CLI arguments: supports --color-mode <mode> and a positional directory
+    let mut color_mode_override: Option<ui::theme::ColorMode> = None;
+    let mut positional_dir: Option<String> = None;
+    {
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            if arg == "--color-mode" {
+                if let Some(val) = args.next() {
+                    color_mode_override = match val.to_lowercase().as_str() {
+                        "truecolor" | "true" | "24bit" => Some(ui::theme::ColorMode::TrueColor),
+                        "256" | "256color" => Some(ui::theme::ColorMode::Color256),
+                        "basic" | "16" | "ansi" => Some(ui::theme::ColorMode::Basic),
+                        _ => {
+                            eprintln!("Unknown color mode '{}'. Use: truecolor, 256, basic", val);
+                            std::process::exit(1);
+                        }
+                    };
+                }
+            } else if positional_dir.is_none() {
+                positional_dir = Some(arg);
+            }
+        }
+    }
+
+    // Initialize theme before any UI code runs
+    ui::theme::init(color_mode_override);
+
+    // Determine the target directory: first positional arg, else CWD
+    let target_dir = match positional_dir {
         Some(arg) => {
             let p = std::path::PathBuf::from(&arg);
             if p.is_absolute() {
@@ -367,19 +395,38 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                     }
                     AppEvent::Input(CrosstermEvent::Mouse(mouse)) => {
                         match mouse.kind {
-                            MouseEventKind::ScrollUp => {
-                                keys::handle_scroll(&mut app, true);
+                            MouseEventKind::Down(MouseButton::Left) => {
+                                if mouse.modifiers.contains(EvtKeyModifiers::SHIFT) {
+                                    // Shift+Click → text selection anywhere (escape hatch)
+                                    app.mouse_captured = false;
+                                    app.mouse_capture_disabled_at = Some(Instant::now());
+                                    let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
+                                } else if mouse::is_terminal_session_area(&app, mouse.column, mouse.row) {
+                                    // Click in terminal session pane → disable capture immediately
+                                    // so the terminal emulator handles text selection natively
+                                    // (it gets the Down, Drag, and Up events directly).
+                                    // Also process the click to focus the pane.
+                                    mouse::handle_mouse(&mut app, mouse);
+                                    app.mouse_captured = false;
+                                    app.mouse_capture_disabled_at = Some(Instant::now());
+                                    let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
+                                } else {
+                                    // Click in sidebar/other panels → handle immediately as click.
+                                    // No text selection in non-terminal panels.
+                                    mouse::handle_mouse(&mut app, mouse);
+                                }
                                 needs_redraw = true;
                             }
-                            MouseEventKind::ScrollDown => {
-                                keys::handle_scroll(&mut app, false);
-                                needs_redraw = true;
-                            }
-                            MouseEventKind::Down(_) => {
-                                // Disable mouse capture so the terminal handles
-                                // native text selection. Any keypress re-enables it.
+                            MouseEventKind::Down(MouseButton::Middle)
+                            | MouseEventKind::Down(MouseButton::Right) => {
+                                // Middle/Right click → native text selection
                                 app.mouse_captured = false;
+                                app.mouse_capture_disabled_at = Some(Instant::now());
                                 let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
+                                needs_redraw = true;
+                            }
+                            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                                mouse::handle_mouse(&mut app, mouse);
                                 needs_redraw = true;
                             }
                             _ => {}
@@ -428,7 +475,18 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                     }
                     AppEvent::PushComplete { branch, error } => {
                         match error {
-                            Some(e) => app.set_status_with(StatusSeverity::Error, format!("Push '{}' failed: {}", branch, e)),
+                            Some(e) => {
+                                if worktree::git::is_auth_error(&e) {
+                                    app.set_status_with(StatusSeverity::Error, format!("Push '{}' — authentication needed", branch));
+                                    app.open_dialog(Dialog::AuthError {
+                                        operation: "push".to_string(),
+                                        message: e,
+                                        selected: 0,
+                                    });
+                                } else {
+                                    app.set_status_with(StatusSeverity::Error, format!("Push '{}' failed: {}", branch, e));
+                                }
+                            }
                             None => {
                                 app.set_status_with(StatusSeverity::Success, format!("Pushed '{}'", branch));
                             }
@@ -455,23 +513,46 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                                 });
                             }
                             (Some(msg), false) => {
-                                // Non-conflict error — open error dialog
-                                app.set_status_with(
-                                    StatusSeverity::Error,
-                                    format!("Pull '{}' failed", branch),
-                                );
-                                app.open_dialog(Dialog::PullError {
-                                    worktree_idx,
-                                    error_message: msg,
-                                    selected: 0,
-                                });
+                                if worktree::git::is_auth_error(&msg) {
+                                    app.set_status_with(
+                                        StatusSeverity::Error,
+                                        format!("Pull '{}' — authentication needed", branch),
+                                    );
+                                    app.open_dialog(Dialog::AuthError {
+                                        operation: "pull".to_string(),
+                                        message: msg,
+                                        selected: 0,
+                                    });
+                                } else {
+                                    // Non-conflict error — open error dialog
+                                    app.set_status_with(
+                                        StatusSeverity::Error,
+                                        format!("Pull '{}' failed", branch),
+                                    );
+                                    app.open_dialog(Dialog::PullError {
+                                        worktree_idx,
+                                        error_message: msg,
+                                        selected: 0,
+                                    });
+                                }
                             }
                         }
                         needs_redraw = true;
                     }
                     AppEvent::InitRepoComplete { error, .. } => {
                         match error {
-                            Some(e) => app.set_status_with(StatusSeverity::Error, format!("Init error: {}", e)),
+                            Some(e) => {
+                                if worktree::git::is_auth_error(&e) {
+                                    app.set_status_with(StatusSeverity::Error, "Clone failed — authentication needed");
+                                    app.open_dialog(Dialog::AuthError {
+                                        operation: "clone".to_string(),
+                                        message: e,
+                                        selected: 0,
+                                    });
+                                } else {
+                                    app.set_status_with(StatusSeverity::Error, format!("Init error: {}", e));
+                                }
+                            }
                             None => {
                                 app.repo_detected = true;
                                 app.set_status_with(StatusSeverity::Success, "Repository initialized!");
@@ -545,6 +626,15 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                         needs_redraw = true;
                     }
                     AppEvent::Tick => {
+                        // Auto-re-enable mouse capture after text selection timeout
+                        if let Some(disabled_at) = app.mouse_capture_disabled_at {
+                            if !app.mouse_captured && disabled_at.elapsed() > Duration::from_secs(2) {
+                                app.mouse_captured = true;
+                                app.mouse_capture_disabled_at = None;
+                                let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
+                            }
+                        }
+
                         // Increment spinner frame (~30fps from 33ms tick)
                         // We want ~10fps for the spinner, so advance every 3rd tick
                         app.spinner_frame = app.spinner_frame.wrapping_add(1);

@@ -1,11 +1,12 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem};
 use std::sync::atomic::Ordering;
 
-use crate::app::{AgentStatus, App, FocusTarget, SidebarItem};
+use crate::app::{AgentStatus, App, FocusTarget, SidebarItem, SidebarPanel};
 use super::theme;
 
 /// Get the current spinner character based on the app's frame counter.
@@ -17,6 +18,8 @@ fn spinner_char(app: &App) -> char {
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == FocusTarget::Sidebar;
+    let in_worktrees_panel = app.sidebar_panel == SidebarPanel::Worktrees;
+    let has_terminals = !app.terminal_ids.is_empty();
 
     let border_style = if is_focused {
         Style::default().fg(theme::BORDER_FOCUSED_SIDEBAR).add_modifier(Modifier::BOLD)
@@ -26,10 +29,19 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     let border_type = if is_focused { BorderType::Thick } else { BorderType::Plain };
 
-    let title = if is_focused { " ▸ Worktrees " } else { " Worktrees " };
+    // Only show ▸ indicator when this sub-panel is active
+    let title = if is_focused && in_worktrees_panel { " ▸ Worktrees " } else { " Worktrees " };
+
+    // Remove bottom border when terminals panel is below (they share the edge)
+    let borders = if has_terminals {
+        Borders::TOP | Borders::LEFT | Borders::RIGHT
+    } else {
+        Borders::ALL
+    };
+
     let block = Block::default()
         .title(title)
-        .borders(Borders::ALL)
+        .borders(borders)
         .border_type(border_type)
         .border_style(border_style);
 
@@ -40,7 +52,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(idx, item)| {
-            let is_selected = idx == app.sidebar_selected;
+            let is_selected = in_worktrees_panel && idx == app.sidebar_selected;
             match item {
                 SidebarItem::Worktree(wi) => {
                     render_worktree(app, *wi, is_selected, inner_width)
@@ -48,9 +60,16 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 SidebarItem::Session(wi, si) => {
                     render_session(app, *wi, *si, is_selected, inner_width)
                 }
+                SidebarItem::Terminal(_) => {
+                    // Terminals are rendered in the terminal panel, not here
+                    ListItem::new(Line::from(vec![]))
+                }
             }
         })
         .collect();
+
+    // Record inner area for mouse hit-testing
+    app.areas.sidebar_inner.set(block.inner(area));
 
     let list = List::new(items).block(block);
     f.render_widget(list, area);
@@ -77,7 +96,8 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) 
             .unwrap_or(false)
     }).count();
 
-    let bg = if is_selected { theme::SIDEBAR_SEL_BG } else { Color::Reset };
+    let t = theme::get();
+    let bg = if is_selected { t.sidebar_sel_bg } else { Color::Reset };
     let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
 
     let branch_style = Style::default()
@@ -134,16 +154,17 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
 
     // Background: selection highlight and active session highlight are independent
     let has_bg = is_selected || is_active_session;
+    let t = theme::get();
     let bg = match (is_selected, is_active_session) {
-        (true, true) => theme::SIDEBAR_SEL_ACTIVE_BG,
-        (true, false) => theme::SIDEBAR_SEL_BG,
-        (false, true) => theme::SIDEBAR_ACTIVE_BG,
+        (true, true) => t.sidebar_sel_active_bg,
+        (true, false) => t.sidebar_sel_bg,
+        (false, true) => t.sidebar_active_bg,
         (false, false) => Color::Reset,
     };
     let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
 
     if is_terminal {
-        return render_terminal_session(app, session, sid, is_selected, has_bg, bg, bold, inner_width);
+        return render_terminal_session(app, session, sid, has_bg, bg, bold, inner_width);
     }
 
     let status = session
@@ -237,7 +258,6 @@ fn render_terminal_session(
     _app: &App,
     session: Option<&crate::session::Session>,
     _sid: u64,
-    _is_selected: bool,
     has_bg: bool,
     bg: Color,
     bold: Modifier,
@@ -305,6 +325,72 @@ fn render_terminal_session(
     }
 
     ListItem::new(Line::from(spans))
+}
+
+/// Draw the terminal panel below the worktree list.
+pub fn draw_terminal_panel(f: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.focus == FocusTarget::Sidebar;
+    let in_terminal_panel = app.sidebar_panel == SidebarPanel::Terminals;
+
+    // Use same border style as the Worktrees panel for visual consistency
+    let border_style = if is_focused {
+        Style::default().fg(theme::BORDER_FOCUSED_SIDEBAR).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::BORDER_UNFOCUSED)
+    };
+
+    // Only show ▸ indicator when this sub-panel is active
+    let title = if is_focused && in_terminal_panel { " ▸ Terminals " } else { " Terminals " };
+
+    // Use T-junction corners to visually connect with the Worktrees panel above
+    let mut border_set = if is_focused {
+        symbols::border::THICK
+    } else {
+        symbols::border::PLAIN
+    };
+    border_set.top_left = if is_focused { "┣" } else { "├" };
+    border_set.top_right = if is_focused { "┫" } else { "┤" };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_set(border_set)
+        .border_style(border_style);
+
+    let inner_width = area.width.saturating_sub(2) as usize;
+
+    let items: Vec<ListItem> = app
+        .terminal_panel_items
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| {
+            let is_selected = in_terminal_panel && idx == app.terminal_panel_selected;
+            match item {
+                SidebarItem::Terminal(ti) => {
+                    if let Some(&sid) = app.terminal_ids.get(*ti) {
+                        let session = app.sessions.get(&sid);
+                        let is_active_session = app.active_session_id == Some(sid);
+                        let has_bg = is_selected || is_active_session;
+                        let t = theme::get();
+                        let bg = match (is_selected, is_active_session) {
+                            (true, true) => t.sidebar_sel_active_bg,
+                            (true, false) => t.sidebar_sel_bg,
+                            (false, true) => t.sidebar_active_bg,
+                            (false, false) => Color::Reset,
+                        };
+                        let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+                        render_terminal_session(app, session, sid, has_bg, bg, bold, inner_width)
+                    } else {
+                        ListItem::new(Line::from(vec![]))
+                    }
+                }
+                _ => ListItem::new(Line::from(vec![])),
+            }
+        })
+        .collect();
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, area);
 }
 
 /// Draw the global usage panel below the sidebar worktree list.

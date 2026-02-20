@@ -60,7 +60,6 @@ download_and_install() {
     local tag="$2"
     local archive="${BINARY_NAME}-${platform}.tar.gz"
 
-    local tmpdir
     tmpdir="$(mktemp -d)"
     trap 'rm -rf "$tmpdir"' EXIT
 

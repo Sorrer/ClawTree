@@ -306,6 +306,7 @@ pub fn clone_bare_repo(dir: &Path, url: &str, initial_branch: &str) -> Result<()
     // git clone --bare <url> .bare
     let output = Command::new("git")
         .args(["clone", "--bare", url, ".bare"])
+        .env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(dir)
         .output()
         .context("Failed to run git clone --bare")?;
@@ -481,6 +482,7 @@ pub enum PullResult {
 pub fn pull_branch(worktree_path: &Path) -> Result<PullResult> {
     let output = Command::new("git")
         .args(["pull"])
+        .env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(worktree_path)
         .output()
         .context("Failed to run git pull")?;
@@ -513,6 +515,7 @@ pub fn pull_branch(worktree_path: &Path) -> Result<PullResult> {
 pub fn push_branch(worktree_path: &Path, branch: &str) -> Result<String> {
     let output = Command::new("git")
         .args(["push"])
+        .env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(worktree_path)
         .output()
         .context("Failed to run git push")?;
@@ -527,6 +530,7 @@ pub fn push_branch(worktree_path: &Path, branch: &str) -> Result<String> {
     if stderr.contains("no upstream") || stderr.contains("has no upstream") || stderr.contains("--set-upstream") {
         let output2 = Command::new("git")
             .args(["push", "-u", "origin", branch])
+            .env("GIT_TERMINAL_PROMPT", "0")
             .current_dir(worktree_path)
             .output()
             .context("Failed to run git push -u origin")?;
@@ -840,6 +844,7 @@ pub fn convert_repo_to_location(source_repo: &Path, target_dir: &Path, branch_ov
 
     let output = Command::new("git")
         .args(["clone", "--bare", &source_url, ".bare"])
+        .env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(target_dir)
         .output()
         .context("Failed to run git clone --bare")?;
@@ -895,6 +900,19 @@ pub fn convert_repo_to_location(source_repo: &Path, target_dir: &Path, branch_ov
     }
 
     Ok(branch)
+}
+
+/// Check whether a git error message indicates an authentication failure.
+pub fn is_auth_error(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("terminal prompts disabled")
+        || lower.contains("authentication failed")
+        || lower.contains("could not read username")
+        || lower.contains("could not read password")
+        || lower.contains("permission denied (publickey)")
+        || lower.contains("http 401")
+        || lower.contains("http 403")
+        || (lower.contains("fatal: could not read") && lower.contains("terminal"))
 }
 
 #[cfg(test)]

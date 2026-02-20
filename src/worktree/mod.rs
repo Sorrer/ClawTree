@@ -75,29 +75,39 @@ pub fn refresh_worktrees(app: &mut App) -> Result<()> {
     Ok(())
 }
 
-/// Remove a worktree. Kills any associated sessions first.
+/// Remove a worktree. Kills any associated sessions and terminals first.
 pub fn remove_worktree(app: &mut App, worktree_path: &Path) -> Result<()> {
-    // Kill sessions associated with this worktree
-    if let Some(wt) = app.worktrees.iter().find(|w| w.path == worktree_path) {
-        let sids: Vec<u64> = wt.session_ids.clone();
-        for sid in sids {
-            crate::session::kill_session(app, sid);
-        }
-    }
-
+    kill_worktree_sessions(app, worktree_path);
     git::remove_worktree(&app.bare_repo_path, worktree_path)
 }
 
-/// Force-remove a worktree (even if dirty). Kills sessions first.
+/// Force-remove a worktree (even if dirty). Kills sessions and terminals first.
 pub fn force_remove_worktree(app: &mut App, worktree_path: &Path) -> Result<()> {
+    kill_worktree_sessions(app, worktree_path);
+    git::force_remove_worktree(&app.bare_repo_path, worktree_path)
+}
+
+/// Kill all sessions (agents and terminals) associated with a worktree path.
+fn kill_worktree_sessions(app: &mut App, worktree_path: &Path) {
+    // Kill agent sessions under this worktree
     if let Some(wt) = app.worktrees.iter().find(|w| w.path == worktree_path) {
         let sids: Vec<u64> = wt.session_ids.clone();
         for sid in sids {
             crate::session::kill_session(app, sid);
         }
     }
-
-    git::force_remove_worktree(&app.bare_repo_path, worktree_path)
+    // Kill terminal sessions whose worktree_path matches
+    let terminal_sids: Vec<u64> = app.terminal_ids.iter()
+        .filter(|&&tid| {
+            app.sessions.get(&tid)
+                .map(|s| s.worktree_path == worktree_path)
+                .unwrap_or(false)
+        })
+        .copied()
+        .collect();
+    for sid in terminal_sids {
+        crate::session::kill_session(app, sid);
+    }
 }
 
 /// Check if a worktree's working tree is clean (all changes committed).

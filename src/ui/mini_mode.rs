@@ -50,6 +50,10 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
+    // Record mini mode areas for mouse hit-testing
+    app.areas.mini_tree.set(h_chunks[0]);
+    app.areas.mini_detail.set(h_chunks[1]);
+
     draw_tree_sidebar(f, app, h_chunks[0]);
 
     // Right pane content depends on focus
@@ -84,6 +88,9 @@ fn draw_tree_sidebar(f: &mut Frame, app: &App, area: Rect) {
 
     let inner_width = area.width.saturating_sub(2) as usize;
 
+    // Record inner area for mouse hit-testing
+    app.areas.mini_tree_inner.set(block.inner(area));
+
     if app.mini.items.is_empty() {
         let empty = Paragraph::new(Line::styled(
             " No agents. 'a' to create.",
@@ -102,6 +109,7 @@ fn draw_tree_sidebar(f: &mut Frame, app: &App, area: Rect) {
             match item {
                 SidebarItem::Worktree(wi) => render_worktree(app, *wi, is_selected, inner_width),
                 SidebarItem::Session(wi, si) => render_session(app, *wi, *si, is_selected, inner_width),
+                SidebarItem::Terminal(_) => ListItem::new(Line::from(vec![])),
             }
         })
         .collect();
@@ -116,7 +124,7 @@ fn draw_detail_pane(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.mini.focus == MiniModeFocus::DetailInput;
 
     let border_style = if is_focused {
-        Style::default().fg(theme::BORDER_FOCUSED_TERMINAL).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme::get().border_focused_terminal).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::BORDER_UNFOCUSED)
     };
@@ -130,7 +138,7 @@ fn draw_detail_pane(f: &mut Frame, app: &App, area: Rect) {
         Some(SidebarItem::Worktree(wi)) => {
             draw_worktree_detail(f, app, area, wi, border_style, border_type);
         }
-        None => {
+        Some(SidebarItem::Terminal(_)) | None => {
             let block = Block::default()
                 .title(" Details ")
                 .borders(Borders::ALL)
@@ -485,7 +493,7 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) 
             .unwrap_or(false)
     }).count();
 
-    let bg = if is_selected { theme::SIDEBAR_SEL_BG } else { Color::Reset };
+    let bg = if is_selected { theme::get().sidebar_sel_bg } else { Color::Reset };
     let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
 
     let branch_style = Style::default()
@@ -528,7 +536,7 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
     let session = app.sessions.get(&sid);
     let is_terminal = session.map(|s| s.is_terminal).unwrap_or(false);
 
-    let bg = if is_selected { theme::SIDEBAR_SEL_BG } else { Color::Reset };
+    let bg = if is_selected { theme::get().sidebar_sel_bg } else { Color::Reset };
     let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
 
     if is_terminal {
@@ -870,7 +878,7 @@ pub fn draw_drilldown(f: &mut Frame, app: &App) {
     ]);
 
     f.render_widget(
-        Paragraph::new(header).style(Style::default().bg(theme::MINI_DRILLDOWN_HEADER_BG)),
+        Paragraph::new(header).style(Style::default().bg(theme::get().mini_drilldown_header_bg)),
         chunks[0],
     );
 

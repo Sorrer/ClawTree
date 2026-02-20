@@ -13,7 +13,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(" clawtree ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::BRAND_CLAW));
+        .border_style(Style::default().fg(theme::get().brand_claw));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -42,9 +42,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let claw_style = Style::default()
-        .fg(theme::BRAND_CLAW)
+        .fg(theme::get().brand_claw)
         .add_modifier(Modifier::BOLD);
-    let text_style = Style::default().fg(theme::BRAND_NAME);
+    let text_style = Style::default().fg(theme::get().brand_name);
 
     let mut lines: Vec<Line> = Vec::new();
 

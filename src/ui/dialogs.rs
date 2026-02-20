@@ -20,7 +20,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             branch_input,
             base_branch,
             focused_field,
-        } => draw_create_worktree(f, branch_input, base_branch, *focused_field),
+        } => draw_create_worktree(f, app, branch_input, base_branch, *focused_field),
         Dialog::MergeBranch {
             source_worktree_idx,
             branches,
@@ -31,16 +31,16 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .get(*source_worktree_idx)
                 .map(|w| w.branch.as_str())
                 .unwrap_or("???");
-            draw_merge(f, source_name, branches, *selected);
+            draw_merge(f, app, source_name, branches, *selected);
         }
-        Dialog::Confirm { message, .. } => draw_confirm(f, message),
-        Dialog::ConfirmDangerous { message, input, .. } => draw_confirm_dangerous(f, message, input),
+        Dialog::Confirm { message, .. } => draw_confirm(f, app, message),
+        Dialog::ConfirmDangerous { message, input, .. } => draw_confirm_dangerous(f, app, message, input),
         Dialog::InitRepo {
             url_input,
             branch_input,
             focused_field,
-        } => draw_init_repo(f, url_input, branch_input, *focused_field),
-        Dialog::RenameSession { input, .. } => draw_rename_session(f, input),
+        } => draw_init_repo(f, app, url_input, branch_input, *focused_field),
+        Dialog::RenameSession { input, .. } => draw_rename_session(f, app, input),
         Dialog::MergeConflict {
             worktree_idx,
             selected,
@@ -51,7 +51,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .get(*worktree_idx)
                 .map(|w| w.branch.as_str())
                 .unwrap_or("???");
-            draw_merge_conflict(f, branch_name, *selected);
+            draw_merge_conflict(f, app, branch_name, *selected);
         }
         Dialog::DirtyWorktree {
             worktree_idx,
@@ -63,7 +63,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .get(*worktree_idx)
                 .map(|w| w.branch.as_str())
                 .unwrap_or("???");
-            draw_dirty_worktree(f, branch_name, files, *selected);
+            draw_dirty_worktree(f, app, branch_name, files, *selected);
         }
         Dialog::GitCommit {
             worktree_idx,
@@ -79,7 +79,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .get(*worktree_idx)
                 .map(|w| w.branch.as_str())
                 .unwrap_or("???");
-            draw_git_commit(f, branch_name, unstaged, staged, *section, *selected, *phase, commit_message);
+            draw_git_commit(f, app, branch_name, unstaged, staged, *section, *selected, *phase, commit_message);
         }
         Dialog::PullError {
             worktree_idx,
@@ -91,7 +91,14 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .get(*worktree_idx)
                 .map(|w| w.branch.as_str())
                 .unwrap_or("???");
-            draw_pull_error(f, branch_name, error_message, *selected);
+            draw_pull_error(f, app, branch_name, error_message, *selected);
+        }
+        Dialog::AuthError {
+            operation,
+            message,
+            selected,
+        } => {
+            draw_auth_error(f, app, operation, message, *selected);
         }
         Dialog::ConvertRepo {
             mode,
@@ -100,7 +107,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             focused_field,
             source_repo_path,
         } => {
-            draw_convert_repo(f, source_repo_path, *mode, target_path_input, branch_name, *focused_field);
+            draw_convert_repo(f, app, source_repo_path, *mode, target_path_input, branch_name, *focused_field);
         }
     }
 }
@@ -125,8 +132,9 @@ fn centered_rect(percent_x: u16, height: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn draw_create_worktree(f: &mut Frame, branch: &str, base: &str, focused: usize) {
+fn draw_create_worktree(f: &mut Frame, app: &App, branch: &str, base: &str, focused: usize) {
     let area = centered_rect(50, 9, f.area());
+    app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -209,11 +217,12 @@ fn draw_create_worktree(f: &mut Frame, branch: &str, base: &str, focused: usize)
     );
 }
 
-fn draw_merge(f: &mut Frame, source: &str, branches: &[String], selected: usize) {
+fn draw_merge(f: &mut Frame, app: &App, source: &str, branches: &[String], selected: usize) {
     // Height: title + target info + separator + branches (max 10) + separator + help
     let visible_count = branches.len().min(10);
     let height = (visible_count as u16) + 5;
     let area = centered_rect(50, height, f.area());
+    app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -289,8 +298,9 @@ fn draw_merge(f: &mut Frame, source: &str, branches: &[String], selected: usize)
     );
 }
 
-fn draw_confirm(f: &mut Frame, message: &str) {
+fn draw_confirm(f: &mut Frame, app: &App, message: &str) {
     let area = centered_rect(50, 5, f.area());
+    app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -322,8 +332,9 @@ fn draw_confirm(f: &mut Frame, message: &str) {
     );
 }
 
-fn draw_confirm_dangerous(f: &mut Frame, message: &str, input: &str) {
+fn draw_confirm_dangerous(f: &mut Frame, app: &App, message: &str, input: &str) {
     let area = centered_rect(55, 8, f.area());
+    app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -372,8 +383,9 @@ fn draw_confirm_dangerous(f: &mut Frame, message: &str, input: &str) {
     );
 }
 
-fn draw_init_repo(f: &mut Frame, url: &str, branch: &str, focused: usize) {
+fn draw_init_repo(f: &mut Frame, app: &App, url: &str, branch: &str, focused: usize) {
     let area = centered_rect(60, 10, f.area());
+    app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -459,10 +471,11 @@ fn draw_init_repo(f: &mut Frame, url: &str, branch: &str, focused: usize) {
     );
 }
 
-fn draw_merge_conflict(f: &mut Frame, branch: &str, selected: usize) {
+fn draw_merge_conflict(f: &mut Frame, app: &App, branch: &str, selected: usize) {
     let options = ["VS Code", "JetBrains", "Claude", "Claude (skip perms)", "Abort merge"];
     let height = (options.len() as u16) + 6;
     let area = centered_rect(50, height, f.area());
+    app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -536,7 +549,7 @@ fn draw_merge_conflict(f: &mut Frame, branch: &str, selected: usize) {
     );
 }
 
-fn draw_pull_error(f: &mut Frame, branch: &str, error_message: &str, selected: usize) {
+fn draw_pull_error(f: &mut Frame, app: &App, branch: &str, error_message: &str, selected: usize) {
     let options = ["Claude", "Claude (skip perms)", "Dismiss"];
     // Calculate error display lines (wrap at ~56 chars to fit in dialog)
     let wrap_width = 56usize;
@@ -552,6 +565,7 @@ fn draw_pull_error(f: &mut Frame, branch: &str, error_message: &str, selected: u
     let error_display_lines = wrapped_count.min(8); // cap error display at 8 lines
     let height = (options.len() as u16) + (error_display_lines as u16) + 7;
     let area = centered_rect(60, height, f.area());
+    app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -639,8 +653,132 @@ fn draw_pull_error(f: &mut Frame, branch: &str, error_message: &str, selected: u
     );
 }
 
-fn draw_rename_session(f: &mut Frame, name: &str) {
+fn draw_auth_error(f: &mut Frame, app: &App, operation: &str, error_message: &str, selected: usize) {
+    // Calculate error display lines (wrap at ~56 chars to fit in dialog)
+    let wrap_width = 56usize;
+    let error_lines: Vec<&str> = error_message.lines().collect();
+    let mut wrapped_count = 0usize;
+    for line in &error_lines {
+        if line.is_empty() {
+            wrapped_count += 1;
+        } else {
+            wrapped_count += (line.len() + wrap_width - 1) / wrap_width;
+        }
+    }
+    let error_display_lines = wrapped_count.min(8);
+
+    // header(1) + sep(1) + error + sep(1) + instructions(1) + hints(3) + sep(1) + option(1) + help(1)
+    let height = (error_display_lines as u16) + 12;
+    let area = centered_rect(60, height, f.area());
+    app.areas.dialog.set(area);
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Authentication Required ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::DIALOG_WARNING));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),                           // header
+            Constraint::Length(1),                           // separator
+            Constraint::Length(error_display_lines as u16),  // error message
+            Constraint::Length(1),                           // separator
+            Constraint::Length(1),                           // instructions
+            Constraint::Length(3),                           // auth hints
+            Constraint::Length(1),                           // separator
+            Constraint::Length(1),                           // dismiss option
+            Constraint::Length(1),                           // help
+        ])
+        .split(inner);
+
+    let op_capitalized = match operation {
+        "push" => "Push",
+        "pull" => "Pull",
+        "clone" => "Clone",
+        _ => operation,
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} failed", op_capitalized),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " — git authentication needed",
+                Style::default().fg(Color::Yellow),
+            ),
+        ])),
+        chunks[0],
+    );
+
+    // Render error message (truncated to fit)
+    let display_text: String = error_lines
+        .iter()
+        .take(8)
+        .map(|l| if l.len() > wrap_width { &l[..wrap_width] } else { l })
+        .collect::<Vec<&str>>()
+        .join("\n");
+    f.render_widget(
+        Paragraph::new(display_text)
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[2],
+    );
+
+    f.render_widget(
+        Paragraph::new("Authenticate outside ClawTree, then retry:")
+            .style(Style::default().fg(Color::White)),
+        chunks[4],
+    );
+
+    let hints = vec![
+        Line::from(Span::styled(
+            "  - gh auth login (GitHub CLI)",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::styled(
+            "  - SSH keys: ssh-add ~/.ssh/id_*",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::styled(
+            "  - git credential helper / personal access token",
+            Style::default().fg(Color::Gray),
+        )),
+    ];
+    f.render_widget(Paragraph::new(hints), chunks[5]);
+
+    // Dismiss option
+    let is_sel = selected == 0;
+    let marker = if is_sel { ">" } else { " " };
+    let style = if is_sel {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {} Dismiss", marker),
+            style,
+        ))),
+        chunks[7],
+    );
+
+    f.render_widget(
+        Paragraph::new("Enter: dismiss  Esc: dismiss")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[8],
+    );
+}
+
+fn draw_rename_session(f: &mut Frame, app: &App, name: &str) {
     let area = centered_rect(50, 6, f.area());
+    app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -686,6 +824,7 @@ fn draw_rename_session(f: &mut Frame, name: &str) {
 
 fn draw_dirty_worktree(
     f: &mut Frame,
+    app: &App,
     branch: &str,
     files: &[(String, String)],
     selected: usize,
@@ -695,6 +834,7 @@ fn draw_dirty_worktree(
     // title(1) + info(1) + blank(1) + files + blank(1) + options(3) + blank(1) + help(1)
     let height = (visible_files as u16) + (options.len() as u16) + 6;
     let area = centered_rect(55, height, f.area());
+    app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -786,6 +926,7 @@ fn draw_dirty_worktree(
 
 fn draw_git_commit(
     f: &mut Frame,
+    app: &App,
     branch: &str,
     unstaged: &[(char, String)],
     staged: &[(char, String)],
@@ -796,16 +937,17 @@ fn draw_git_commit(
 ) {
     match phase {
         CommitPhase::Staging => {
-            draw_git_commit_staging(f, branch, unstaged, staged, section, selected);
+            draw_git_commit_staging(f, app, branch, unstaged, staged, section, selected);
         }
         CommitPhase::Message => {
-            draw_git_commit_message(f, branch, staged, commit_message);
+            draw_git_commit_message(f, app, branch, staged, commit_message);
         }
     }
 }
 
 fn draw_git_commit_staging(
     f: &mut Frame,
+    app: &App,
     branch: &str,
     unstaged: &[(char, String)],
     staged: &[(char, String)],
@@ -843,6 +985,7 @@ fn draw_git_commit_staging(
 
     let height = unstaged_visible + staged_visible + 3 + 2; // +3 for headers+help, +2 for borders
     let area = centered_rect(60, height, f.area());
+    app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -979,6 +1122,7 @@ fn scroll_offset_for(selected: usize, visible_count: usize) -> usize {
 
 fn draw_git_commit_message(
     f: &mut Frame,
+    app: &App,
     branch: &str,
     staged: &[(char, String)],
     commit_message: &str,
@@ -988,6 +1132,7 @@ fn draw_git_commit_message(
     let staged_visible = (staged.len() as u16).min(max_height.saturating_sub(fixed_rows));
     let height = staged_visible + fixed_rows;
     let area = centered_rect(60, height, f.area());
+    app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -1053,6 +1198,7 @@ fn draw_git_commit_message(
 
 fn draw_convert_repo(
     f: &mut Frame,
+    app: &App,
     source_path: &PathBuf,
     mode: usize,
     target_path: &str,
@@ -1061,6 +1207,7 @@ fn draw_convert_repo(
 ) {
     let height: u16 = if mode == 1 { 15 } else { 12 };
     let area = centered_rect(60, height, f.area());
+    app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
     let block = Block::default()

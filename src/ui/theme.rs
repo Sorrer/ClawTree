@@ -1,8 +1,129 @@
+use std::sync::OnceLock;
 use ratatui::style::Color;
+
+// ══════════════════════════════════════════════════════════════════════
+// Color mode detection & runtime theme
+// ══════════════════════════════════════════════════════════════════════
+
+/// Terminal color capability level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorMode {
+    TrueColor,
+    Color256,
+    Basic,
+}
+
+/// Runtime theme holding the 10 RGB-dependent colors.
+/// Initialized once at startup via [`init`].
+#[derive(Debug, Clone, Copy)]
+pub struct Theme {
+    pub sidebar_sel_bg: Color,
+    pub sidebar_active_bg: Color,
+    pub sidebar_sel_active_bg: Color,
+    pub status_bar_bg: Color,
+    pub scrollbar_track: Color,
+    pub mini_drilldown_header_bg: Color,
+    pub border_focused_terminal: Color,
+    pub mode_terminal_bg: Color,
+    pub brand_claw: Color,
+    pub brand_name: Color,
+}
+
+impl Theme {
+    /// Build a theme for the given color mode.
+    pub fn for_mode(mode: ColorMode) -> Self {
+        match mode {
+            ColorMode::TrueColor => Self {
+                sidebar_sel_bg: Color::Rgb(50, 50, 60),
+                sidebar_active_bg: Color::Rgb(30, 50, 35),
+                sidebar_sel_active_bg: Color::Rgb(40, 55, 50),
+                status_bar_bg: Color::Rgb(30, 30, 30),
+                scrollbar_track: Color::Rgb(40, 40, 40),
+                mini_drilldown_header_bg: Color::Rgb(60, 30, 60),
+                border_focused_terminal: Color::Rgb(220, 80, 30),
+                mode_terminal_bg: Color::Rgb(220, 80, 30),
+                brand_claw: Color::Rgb(187, 134, 252),
+                brand_name: Color::Rgb(149, 117, 205),
+            },
+            ColorMode::Color256 => Self {
+                sidebar_sel_bg: Color::Indexed(236),
+                sidebar_active_bg: Color::Indexed(22),
+                sidebar_sel_active_bg: Color::Indexed(23),
+                status_bar_bg: Color::Indexed(235),
+                scrollbar_track: Color::Indexed(236),
+                mini_drilldown_header_bg: Color::Indexed(53),
+                border_focused_terminal: Color::Indexed(166),
+                mode_terminal_bg: Color::Indexed(166),
+                brand_claw: Color::Indexed(141),
+                brand_name: Color::Indexed(140),
+            },
+            ColorMode::Basic => Self {
+                sidebar_sel_bg: Color::DarkGray,
+                sidebar_active_bg: Color::DarkGray,
+                sidebar_sel_active_bg: Color::DarkGray,
+                status_bar_bg: Color::DarkGray,
+                scrollbar_track: Color::DarkGray,
+                mini_drilldown_header_bg: Color::Magenta,
+                border_focused_terminal: Color::Red,
+                mode_terminal_bg: Color::Red,
+                brand_claw: Color::Magenta,
+                brand_name: Color::Magenta,
+            },
+        }
+    }
+}
+
+static THEME: OnceLock<Theme> = OnceLock::new();
+
+/// Detect terminal color capability from environment variables.
+pub fn detect_color_mode() -> ColorMode {
+    // 1. Explicit override via CLAWTREE_COLOR_MODE
+    if let Ok(val) = std::env::var("CLAWTREE_COLOR_MODE") {
+        match val.to_lowercase().as_str() {
+            "truecolor" | "true" | "24bit" => return ColorMode::TrueColor,
+            "256" | "256color" => return ColorMode::Color256,
+            "basic" | "16" | "ansi" => return ColorMode::Basic,
+            _ => {} // fall through to auto-detection
+        }
+    }
+
+    // 2. COLORTERM — set by most modern terminals
+    if let Ok(val) = std::env::var("COLORTERM") {
+        match val.to_lowercase().as_str() {
+            "truecolor" | "24bit" => return ColorMode::TrueColor,
+            _ => {}
+        }
+    }
+
+    // 3. TERM — check for 256color suffix
+    if let Ok(val) = std::env::var("TERM") {
+        if val.contains("256color") {
+            return ColorMode::Color256;
+        }
+    }
+
+    // 4. Default: 256-color (safe middle ground)
+    ColorMode::Color256
+}
+
+/// Initialize the global theme. Call once at startup before any UI code.
+/// If `mode` is `None`, auto-detects from environment.
+pub fn init(mode: Option<ColorMode>) {
+    let mode = mode.unwrap_or_else(detect_color_mode);
+    let _ = THEME.set(Theme::for_mode(mode));
+}
+
+/// Get the active theme. Panics if [`init`] was never called.
+pub fn get() -> &'static Theme {
+    THEME.get().expect("theme::init() must be called before theme::get()")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Static constants (non-RGB, unchanged)
+// ══════════════════════════════════════════════════════════════════════
 
 // ── Panel borders ────────────────────────────────────────────────────
 pub const BORDER_FOCUSED_SIDEBAR: Color = Color::Cyan;
-pub const BORDER_FOCUSED_TERMINAL: Color = Color::Rgb(220, 80, 30);
 pub const BORDER_FOCUSED_PROMPT_QUEUE: Color = Color::Green;
 pub const BORDER_UNFOCUSED: Color = Color::DarkGray;
 
@@ -10,19 +131,9 @@ pub const BORDER_UNFOCUSED: Color = Color::DarkGray;
 /// Maximum sidebar width in columns (sized to fit usage panel content).
 /// Usage line: " 7d: 100% ██████ Feb 19 16:00 EST" ≈ 34 inner + 2 border + 2 pad = 38 + extra pad.
 pub const SIDEBAR_MAX_WIDTH: u16 = 42;
-/// Cursor/selection highlight (blue-tint).
-pub const SIDEBAR_SEL_BG: Color = Color::Rgb(50, 50, 60);
-/// Active session highlight (green-tint).
-pub const SIDEBAR_ACTIVE_BG: Color = Color::Rgb(30, 50, 35);
-/// Both selected and active.
-pub const SIDEBAR_SEL_ACTIVE_BG: Color = Color::Rgb(40, 55, 50);
-
-// ── Status bar ───────────────────────────────────────────────────────
-pub const STATUS_BAR_BG: Color = Color::Rgb(30, 30, 30);
 
 // ── Mode badge backgrounds ───────────────────────────────────────────
 pub const MODE_NORMAL_BG: Color = Color::Cyan;
-pub const MODE_TERMINAL_BG: Color = Color::Rgb(220, 80, 30);
 pub const MODE_DIALOG_BG: Color = Color::Yellow;
 
 // ── Dialog borders (semantic) ────────────────────────────────────────
@@ -47,22 +158,16 @@ pub const STATUS_FADED: Color = Color::DarkGray;
 
 // ── Scrollbar ────────────────────────────────────────────────────────
 pub const SCROLLBAR_THUMB: Color = Color::DarkGray;
-pub const SCROLLBAR_TRACK: Color = Color::Rgb(40, 40, 40);
 
 // ── Spinner ──────────────────────────────────────────────────────────
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 // ── Mini mode ───────────────────────────────────────────────────
-pub const MINI_DRILLDOWN_HEADER_BG: Color = Color::Rgb(60, 30, 60);
 pub const MODE_MINI_BG: Color = Color::Magenta;
 pub const AGENT_WORKING: Color = Color::Yellow;
 pub const AGENT_IDLE: Color = Color::Green;
 pub const AGENT_NEEDS_INPUT: Color = Color::Cyan;
 pub const AGENT_EXITED: Color = Color::DarkGray;
-
-// ── Brand ───────────────────────────────────────────────────────
-pub const BRAND_CLAW: Color = Color::Rgb(187, 134, 252);
-pub const BRAND_NAME: Color = Color::Rgb(149, 117, 205);
 
 // ── Brand logo (big) ────────────────────────────────────────────
 //  Three claw marks + box-drawing "CLAWTREE"

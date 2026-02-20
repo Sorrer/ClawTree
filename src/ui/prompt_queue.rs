@@ -29,6 +29,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // Record inner area for mouse hit-testing
+    app.areas.prompt_queue_inner.set(inner);
+
     if inner.height == 0 || inner.width == 0 {
         return;
     }
@@ -68,7 +71,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         let style = if is_editing {
             Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC)
         } else if is_selected && focused {
-            Style::default().fg(Color::White).bg(theme::SIDEBAR_SEL_BG)
+            Style::default().fg(Color::White).bg(theme::get().sidebar_sel_bg)
         } else {
             Style::default().fg(Color::Gray)
         };
