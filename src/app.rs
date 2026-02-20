@@ -70,6 +70,7 @@ pub struct SavedPrompt {
 
 /// Status message severity for color coding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum StatusSeverity {
     Info,
     Success,
@@ -115,6 +116,12 @@ pub enum Dialog {
     },
     Confirm {
         message: String,
+        on_confirm: ConfirmAction,
+    },
+    /// Dangerous confirmation requiring the user to type "yes" before proceeding.
+    ConfirmDangerous {
+        message: String,
+        input: String,
         on_confirm: ConfirmAction,
     },
     /// Initialize a new bare-repo workflow in the current directory.
@@ -261,6 +268,8 @@ pub struct App {
     pub prompt_queue_selected: usize,
     /// Current input text in the prompt queue input field.
     pub prompt_queue_input: String,
+    /// Cursor byte offset within prompt_queue_input.
+    pub prompt_queue_cursor: usize,
     /// Index of the queue item being edited (None = not editing).
     pub prompt_queue_editing: Option<usize>,
     /// Timestamp of last auto-sent prompt (for cooldown).
@@ -335,6 +344,7 @@ impl App {
             prompt_queues: HashMap::new(),
             prompt_queue_selected: 0,
             prompt_queue_input: String::new(),
+            prompt_queue_cursor: 0,
             prompt_queue_editing: None,
             prompt_queue_last_send: None,
             prompt_queue_last_check: None,

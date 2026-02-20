@@ -130,6 +130,20 @@ fn sanitize_tmux_name(s: &str) -> String {
         .collect()
 }
 
+/// Generate a unique tmux session name for a plain terminal in a worktree.
+pub fn tmux_terminal_session_name(branch: &str, session_id: u64) -> String {
+    let base = format!("{}-term-{}-{}", TMUX_PREFIX, sanitize_tmux_name(branch), session_id);
+    if tmux_session_exists(&base) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        format!("{}-{}", base, ts % 10000)
+    } else {
+        base
+    }
+}
+
 /// Generate a unique tmux session name for a worktree branch + session id.
 pub fn tmux_session_name(branch: &str, session_id: u64) -> String {
     let base = format!("{}-{}-{}", TMUX_PREFIX, sanitize_tmux_name(branch), session_id);
@@ -155,7 +169,7 @@ fn tmux_session_exists(name: &str) -> bool {
 }
 
 /// Environment variable we set inside tmux to track the original worktree path.
-const TMUX_WORKTREE_ENV: &str = "WCTUI_WORKTREE";
+const TMUX_WORKTREE_ENV: &str = "CLAWTREE_WORKTREE";
 
 /// List all tmux sessions that belong to us (prefixed with TMUX_PREFIX).
 /// Returns (session_name, worktree_path) pairs sorted by creation time (oldest first).
@@ -194,7 +208,7 @@ pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf)> {
 
         let path = if let Ok(o) = &env_output {
             if o.status.success() {
-                // Output is "WCTUI_WORKTREE=/path/to/worktree\n"
+                // Output is "CLAWTREE_WORKTREE=/path/to/worktree\n"
                 let line = String::from_utf8_lossy(&o.stdout);
                 line.trim()
                     .strip_prefix(&format!("{}=", TMUX_WORKTREE_ENV))
@@ -311,6 +325,85 @@ pub fn spawn_claude_pty_tmux(
 
     // Now attach to that tmux session via a PTY
     attach_tmux_session(tmux_name, session_id, event_tx, rows, cols)
+}
+
+/// Spawn a plain shell inside a tmux session, then attach to it via PTY.
+pub fn spawn_terminal_pty_tmux(
+    working_dir: &Path,
+    session_id: u64,
+    event_tx: mpsc::UnboundedSender<AppEvent>,
+    rows: u16,
+    cols: u16,
+    tmux_name: &str,
+) -> Result<PtyHandle> {
+    let tmux_args = vec![
+        "new-session".to_string(),
+        "-d".to_string(),
+        "-s".to_string(),
+        tmux_name.to_string(),
+        "-x".to_string(),
+        cols.to_string(),
+        "-y".to_string(),
+        rows.to_string(),
+    ];
+
+    ensure_tmux_truecolor();
+
+    let output = Command::new("tmux")
+        .args(&tmux_args)
+        .current_dir(working_dir)
+        .env("TERM", "xterm-256color")
+        .output()
+        .context("Failed to create tmux terminal session")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "tmux new-session failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let _ = Command::new("tmux")
+        .args(["set-option", "-t", tmux_name, "status", "off"])
+        .output();
+
+    let _ = Command::new("tmux")
+        .args([
+            "set-environment",
+            "-t",
+            tmux_name,
+            TMUX_WORKTREE_ENV,
+            &working_dir.to_string_lossy(),
+        ])
+        .output();
+    let _ = Command::new("tmux")
+        .args(["set-environment", "-t", tmux_name, "COLORTERM", "truecolor"])
+        .output();
+
+    let _ = Command::new("tmux")
+        .args(["set-option", "-t", tmux_name, "allow-passthrough", "on"])
+        .output();
+
+    let _ = Command::new("tmux")
+        .args(["select-pane", "-t", tmux_name, "-T", ""])
+        .output();
+
+    attach_tmux_session(tmux_name, session_id, event_tx, rows, cols)
+}
+
+/// Query the current working directory of a tmux session's pane.
+pub fn query_tmux_pane_cwd(tmux_name: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args(["display-message", "-t", tmux_name, "-p", "#{pane_current_path}"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// Query the pane title from an existing tmux session.
@@ -465,7 +558,7 @@ fn setup_pty_threads(
                         if let Ok(mut t) = reader_last_output.write() {
                             *t = Instant::now();
                         }
-                        let _ = reader_tx.send(AppEvent::PtyOutput { session_id });
+                        let _ = reader_tx.send(AppEvent::PtyOutput { _session_id: session_id });
                     }
                     Err(_) => {
                         reader_exited.store(true, Ordering::SeqCst);

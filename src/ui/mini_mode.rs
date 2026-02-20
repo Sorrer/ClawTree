@@ -204,21 +204,17 @@ fn draw_session_detail(
     };
 
     // Status icon
-    let is_exited = session.map(|s| s.exited.load(Ordering::SeqCst)).unwrap_or(true);
-    let is_working = session.map(|s| s.is_active()).unwrap_or(false);
-    let status_icon: String = if is_exited {
-        "✗".to_string()
-    } else if is_working {
-        spinner_char(app).to_string()
-    } else {
-        "○".to_string()
+    let status_icon: String = match status {
+        AgentStatus::Exited => "✗".to_string(),
+        AgentStatus::Working => spinner_char(app).to_string(),
+        AgentStatus::NeedsInput => "●".to_string(),
+        AgentStatus::Idle => "○".to_string(),
     };
 
     // Usage info
     let usage_text = app.claude_usage.get(&sid).map(|u| {
         if u.effective_window > 0 {
-            let pct = (u.tokens_used as f64 / u.effective_window as f64 * 100.0) as usize;
-            format!("Context: {}%", pct)
+            format!("Context: {}%", u.usage_pct())
         } else {
             String::new()
         }
@@ -530,13 +526,72 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
     let wt = &app.worktrees[wi];
     let sid = wt.session_ids[si];
     let session = app.sessions.get(&sid);
+    let is_terminal = session.map(|s| s.is_terminal).unwrap_or(false);
 
-    let is_exited = session
-        .map(|s| s.exited.load(Ordering::SeqCst))
-        .unwrap_or(true);
-    let is_working = session
-        .map(|s| s.is_active())
-        .unwrap_or(false);
+    let bg = if is_selected { theme::SIDEBAR_SEL_BG } else { Color::Reset };
+    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+
+    if is_terminal {
+        let is_exited = session
+            .map(|s| s.exited.load(Ordering::SeqCst))
+            .unwrap_or(true);
+
+        let display_name = if is_exited {
+            "[exited]".to_string()
+        } else {
+            session
+                .and_then(|s| s.tmux_session_name.as_deref())
+                .and_then(crate::session::pty::query_tmux_pane_cwd)
+                .map(|cwd| {
+                    std::path::Path::new(&cwd)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or(cwd)
+                })
+                .unwrap_or_else(|| {
+                    session
+                        .map(|s| s.label.clone())
+                        .unwrap_or_else(|| "terminal".to_string())
+                })
+        };
+
+        let tag = "[terminal]";
+        let tag_fg = if is_exited { Color::DarkGray } else { Color::Green };
+        let name_fg = if is_selected {
+            if is_exited { Color::Gray } else { Color::White }
+        } else {
+            if is_exited { Color::DarkGray } else { Color::Gray }
+        };
+
+        let prefix_len = 2 + tag.len() + 1; // "  [terminal] "
+        let max_name = inner_width.saturating_sub(prefix_len);
+        let truncated = if display_name.len() > max_name && max_name > 1 {
+            let mut end = max_name.saturating_sub(1);
+            while end > 0 && !display_name.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}…", &display_name[..end])
+        } else {
+            display_name
+        };
+
+        let mut spans = vec![
+            Span::styled("  ", Style::default().bg(bg)),
+            Span::styled(tag.to_string(), Style::default().fg(tag_fg).bg(bg).add_modifier(bold)),
+            Span::styled(" ", Style::default().bg(bg)),
+            Span::styled(truncated, Style::default().fg(name_fg).bg(bg).add_modifier(bold)),
+        ];
+
+        let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
+        if is_selected && text_len < inner_width {
+            spans.push(Span::styled(
+                " ".repeat(inner_width - text_len),
+                Style::default().bg(bg),
+            ));
+        }
+
+        return ListItem::new(Line::from(spans));
+    }
 
     let nickname = session.and_then(|s| s.nickname.clone());
     let title = session.and_then(|s| s.terminal_title());
@@ -553,26 +608,14 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
             .to_string()
     });
 
-    let status_icon: String = if is_exited {
-        "✗".to_string()
-    } else if is_working {
-        spinner_char(app).to_string()
-    } else {
-        "○".to_string()
-    };
-
     let status = session.map(|s| s.agent_status()).unwrap_or(AgentStatus::Exited);
 
-    let fg = if is_exited {
-        Color::DarkGray
-    } else if is_working {
-        Color::Yellow
-    } else {
-        Color::Gray
+    let (status_icon, fg): (String, Color) = match status {
+        AgentStatus::Exited => ("✗".to_string(), Color::DarkGray),
+        AgentStatus::Working => (spinner_char(app).to_string(), Color::Yellow),
+        AgentStatus::NeedsInput => ("●".to_string(), theme::AGENT_NEEDS_INPUT),
+        AgentStatus::Idle => ("○".to_string(), Color::Gray),
     };
-
-    let bg = if is_selected { theme::SIDEBAR_SEL_BG } else { Color::Reset };
-    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
 
     let sel_fg = if is_selected {
         match fg {
@@ -587,7 +630,7 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
     // Usage percentage
     let usage_str = app.claude_usage.get(&sid).and_then(|u| {
         if u.effective_window > 0 {
-            Some(format!(" {}%", (u.tokens_used as f64 / u.effective_window as f64 * 100.0) as usize))
+            Some(format!(" {}%", u.usage_pct()))
         } else {
             None
         }

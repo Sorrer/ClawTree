@@ -11,7 +11,7 @@ pub enum AppEvent {
     /// A crossterm input event (key press, mouse, resize).
     Input(CrosstermEvent),
     /// PTY output is available for the given session.
-    PtyOutput { session_id: u64 },
+    PtyOutput { _session_id: u64 },
     /// PTY process has exited for the given session.
     PtyExited { session_id: u64 },
     /// Periodic tick for UI refresh.
@@ -52,5 +52,10 @@ pub enum AppEvent {
     /// Global account-level usage data updated from the Anthropic API.
     GlobalUsageUpdated {
         usage: GlobalUsage,
+    },
+    /// A one-shot Claude summary completed for a session.
+    SummaryReady {
+        session_id: u64,
+        summary: String,
     },
 }

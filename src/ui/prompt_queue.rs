@@ -83,14 +83,26 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     // Input line at bottom
     if focused {
-        let cursor_char = "_";
+        let cursor_pos = app.prompt_queue_cursor.min(app.prompt_queue_input.len());
+        let before = &app.prompt_queue_input[..cursor_pos];
+        let after = &app.prompt_queue_input[cursor_pos..];
+
+        // Character under the cursor (or space if at end)
+        let (cursor_ch, rest) = if after.is_empty() {
+            (" ", "")
+        } else {
+            let end = cursor_pos + after.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+            (&app.prompt_queue_input[cursor_pos..end], &app.prompt_queue_input[end..])
+        };
+
         let prefix_span = Span::styled("> ", Style::default().fg(Color::Cyan));
-        let input_span = Span::styled(
-            app.prompt_queue_input.clone(),
-            Style::default().fg(Color::White),
+        let before_span = Span::styled(before.to_string(), Style::default().fg(Color::White));
+        let cursor_span = Span::styled(
+            cursor_ch.to_string(),
+            Style::default().fg(Color::Black).bg(Color::Cyan),
         );
-        let cursor_span = Span::styled(cursor_char, Style::default().fg(Color::Cyan));
-        lines.push(Line::from(vec![prefix_span, input_span, cursor_span]));
+        let after_span = Span::styled(rest.to_string(), Style::default().fg(Color::White));
+        lines.push(Line::from(vec![prefix_span, before_span, cursor_span, after_span]));
     } else {
         let hint = "^p:toggle/focus";
         lines.push(Line::from(Span::styled(

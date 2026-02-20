@@ -1,0 +1,4 @@
+2026-02-19T22:34:12.299989Z  INFO clawtree: Bare repo detected at "/mnt/m/Development/Godot/extraction-builder/clawtree"
+2026-02-19T22:34:12.302897Z  INFO clawtree: Bare repo path: "/mnt/m/Development/Godot/extraction-builder/clawtree", detected: true
+2026-02-19T22:34:12.312899Z  INFO clawtree: tmux available: true
+2026-02-19T22:34:12.360185Z  INFO clawtree: wt.exe available: true

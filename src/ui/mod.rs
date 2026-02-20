@@ -43,8 +43,8 @@ fn draw_normal(f: &mut Frame, app: &App) {
         let main_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(30), // sidebar
-                Constraint::Percentage(70), // terminal pane
+                Constraint::Max(theme::SIDEBAR_MAX_WIDTH), // sidebar
+                Constraint::Min(0),                        // terminal pane
             ])
             .split(chunks[0]);
 

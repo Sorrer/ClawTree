@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 160" width="660" height="160">
+  <defs>
+    <linearGradient id="claw" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#D8B4FE"/>
+      <stop offset="45%" stop-color="#A855F7"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="txt" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#F3E8FF"/>
+      <stop offset="100%" stop-color="#C084FC"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Card background -->
+  <rect width="660" height="160" rx="16" fill="#0D0816"/>
+  <rect x="1.5" y="1.5" width="657" height="157" rx="14.5" fill="none" stroke="#2A1741" stroke-width="1"/>
+
+  <!-- Glow layer (wider translucent claw marks) -->
+  <g transform="translate(48, 18)" opacity="0.12">
+    <line x1="18" y1="124" x2="58" y2="0" stroke="#A855F7" stroke-width="30" stroke-linecap="round"/>
+    <line x1="48" y1="124" x2="88" y2="0" stroke="#A855F7" stroke-width="30" stroke-linecap="round"/>
+    <line x1="78" y1="124" x2="118" y2="0" stroke="#A855F7" stroke-width="30" stroke-linecap="round"/>
+  </g>
+
+  <!-- Three claw marks -->
+  <g transform="translate(48, 18)">
+    <line x1="18" y1="124" x2="58" y2="0" stroke="url(#claw)" stroke-width="12" stroke-linecap="round"/>
+    <line x1="48" y1="124" x2="88" y2="0" stroke="url(#claw)" stroke-width="12" stroke-linecap="round"/>
+    <line x1="78" y1="124" x2="118" y2="0" stroke="url(#claw)" stroke-width="12" stroke-linecap="round"/>
+  </g>
+
+  <!-- CLAWTREE title -->
+  <text x="205" y="90"
+        font-family="'JetBrains Mono','Fira Code','SF Mono','Cascadia Code',Consolas,'Liberation Mono',monospace"
+        font-size="54" font-weight="bold" fill="url(#txt)" letter-spacing="5">CLAWTREE</text>
+
+  <!-- Tagline -->
+  <text x="208" y="122"
+        font-family="'JetBrains Mono','Fira Code','SF Mono',Consolas,monospace"
+        font-size="12.5" fill="#5D4E73" letter-spacing="3.2">WORKTREE MANAGER FOR CLAUDE CODE</text>
+</svg>

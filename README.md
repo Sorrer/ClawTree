@@ -1,10 +1,28 @@
-```
-  ╱ ╱ ╱   ╔═╗ ╦   ╔═╗ ╦ ╦ ╔╦╗ ╦═╗ ╔═╗ ╔═╗
- ╱ ╱ ╱    ║   ║   ╠═╣ ║║║  ║  ╠╦╝ ║╣  ║╣
-╱ ╱ ╱     ╚═╝ ╩═╝ ╩ ╩ ╚╩╝  ╩  ╩╚═ ╚═╝ ╚═╝
-```
+<div align="center">
 
-A terminal-based UI for managing git worktrees with integrated Claude Code sessions. Built for the "bare repository" workflow where a project uses a `.bare/` directory with multiple worktree directories for different branches.
+<img src="assets/logo.svg" alt="Clawtree" width="580">
+
+<br>
+
+**A terminal UI for managing git worktrees with integrated Claude Code sessions.**
+
+[![Release](https://img.shields.io/github/v/release/Sorrer/ClawTree?style=flat-square&label=Release&color=blue)](https://github.com/Sorrer/ClawTree/releases/latest)
+[![Nightly](https://img.shields.io/github/actions/workflow/status/Sorrer/ClawTree/release.yml?style=flat-square&label=Nightly)](https://github.com/Sorrer/ClawTree/actions/workflows/release.yml)
+[![Rust](https://img.shields.io/badge/Rust-2021_Edition-f74c00?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Platforms](https://img.shields.io/badge/Platforms-Linux_|_macOS_|_WSL-lightgrey?style=flat-square)](#platform)
+
+</div>
+
+---
+
+Built for the **bare repository** workflow where a project uses a `.bare/` directory with multiple worktree directories for different branches.
+
+## Table of Contents
+
+- [Install](#install)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Building from Source](#building-from-source)
 
 ## Install
 
@@ -14,17 +32,29 @@ curl -fsSL https://raw.githubusercontent.com/Sorrer/ClawTree/main/install.sh | b
 
 This downloads a pre-built binary for your platform and adds it to your PATH. Supports Linux (x86_64, aarch64) and macOS (Intel, Apple Silicon).
 
-To install a specific version:
+<details>
+<summary><strong>Advanced install options</strong></summary>
+
+Install from a **private repo** (requires [GitHub CLI](https://cli.github.com/) authenticated via `gh auth login`):
 
 ```bash
-CLAWTREE_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Sorrer/ClawTree/main/install.sh | bash
+gh api repos/Sorrer/ClawTree/contents/install.sh \
+  -H "Accept: application/vnd.github.raw" | GITHUB_TOKEN=$(gh auth token) bash
 ```
 
-To install to a custom directory:
+Install a specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Sorrer/ClawTree/main/install.sh | bash -s -- v0.1.0
+```
+
+Install to a custom directory:
 
 ```bash
 CLAWTREE_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Sorrer/ClawTree/main/install.sh | bash
 ```
+
+</details>
 
 ### Usage
 
@@ -92,7 +122,7 @@ The target directory should contain a `.bare` git repository structure.
 | **tmux** | Yes | Session persistence and reconnection across restarts |
 | **wt.exe** | Optional | Windows Terminal tab integration (WSL only) |
 
-## Building from source
+## Building from Source
 
 Everything from the requirements above, plus Rust (edition 2021, 1.56+) and a C compiler.
 

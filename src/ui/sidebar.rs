@@ -71,6 +71,11 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) 
             .map(|s| s.is_active())
             .unwrap_or(false)
     }).count();
+    let needs_input = wt.session_ids.iter().filter(|sid| {
+        app.sessions.get(sid)
+            .map(|s| s.agent_status() == AgentStatus::NeedsInput)
+            .unwrap_or(false)
+    }).count();
 
     let bg = if is_selected { theme::SIDEBAR_SEL_BG } else { Color::Reset };
     let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
@@ -98,6 +103,14 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) 
                 Style::default().fg(Color::Yellow).bg(bg),
             ));
         }
+
+        if needs_input > 0 {
+            // Needs input count in blue
+            spans.push(Span::styled(
+                format!(" {}", needs_input),
+                Style::default().fg(Color::Blue).bg(bg),
+            ));
+        }
     }
 
     // Pad to full width so the highlight covers the whole row
@@ -117,6 +130,22 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
     let sid = wt.session_ids[si];
     let session = app.sessions.get(&sid);
     let is_active_session = app.active_session_id == Some(sid);
+    let is_terminal = session.map(|s| s.is_terminal).unwrap_or(false);
+
+    // Background: selection highlight and active session highlight are independent
+    let has_bg = is_selected || is_active_session;
+    let bg = match (is_selected, is_active_session) {
+        (true, true) => theme::SIDEBAR_SEL_ACTIVE_BG,
+        (true, false) => theme::SIDEBAR_SEL_BG,
+        (false, true) => theme::SIDEBAR_ACTIVE_BG,
+        (false, false) => Color::Reset,
+    };
+    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+
+    if is_terminal {
+        return render_terminal_session(app, session, sid, is_selected, has_bg, bg, bold, inner_width);
+    }
+
     let status = session
         .map(|s| s.agent_status())
         .unwrap_or(AgentStatus::Exited);
@@ -146,16 +175,6 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
         AgentStatus::Idle => ("○".to_string(), Color::Gray),
     };
 
-    // Background: selection highlight and active session highlight are independent
-    let has_bg = is_selected || is_active_session;
-    let bg = match (is_selected, is_active_session) {
-        (true, true) => theme::SIDEBAR_SEL_ACTIVE_BG,
-        (true, false) => theme::SIDEBAR_SEL_BG,
-        (false, true) => theme::SIDEBAR_ACTIVE_BG,
-        (false, false) => Color::Reset,
-    };
-    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
-
     // When highlighted, bump dim text to lighter so it's readable
     let sel_fg = if has_bg {
         match fg {
@@ -169,12 +188,7 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
 
     // Build context usage suffix if available (percentage display, greyed text)
     let usage_suffix = app.claude_usage.get(&sid).map(|u| {
-        let pct = if u.effective_window > 0 {
-            (u.tokens_used as f64 / u.effective_window as f64 * 100.0) as usize
-        } else {
-            0
-        };
-        (format!(" {}%", pct), Color::DarkGray)
+        (format!(" {}%", u.usage_pct()), Color::DarkGray)
     });
 
     // Truncate to fit sidebar width (account for usage suffix)
@@ -182,7 +196,12 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
     let suffix_len = usage_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
     let max_name = inner_width.saturating_sub(prefix.len()).saturating_sub(suffix_len);
     let truncated = if display_name.len() > max_name && max_name > 1 {
-        format!("{}…", &display_name[..max_name.saturating_sub(1)])
+        let mut end = max_name.saturating_sub(1);
+        // Walk back to a valid char boundary
+        while end > 0 && !display_name.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &display_name[..end])
     } else {
         display_name
     };
@@ -200,6 +219,81 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
             Style::default().fg(usage_color).bg(bg),
         ));
     }
+
+    // Pad to full width so the highlight covers the whole row
+    let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
+    if has_bg && text_len < inner_width {
+        spans.push(Span::styled(
+            " ".repeat(inner_width - text_len),
+            Style::default().bg(bg),
+        ));
+    }
+
+    ListItem::new(Line::from(spans))
+}
+
+/// Render a plain terminal session item with [terminal] tag and cwd as the name.
+fn render_terminal_session(
+    _app: &App,
+    session: Option<&crate::session::Session>,
+    _sid: u64,
+    _is_selected: bool,
+    has_bg: bool,
+    bg: Color,
+    bold: Modifier,
+    inner_width: usize,
+) -> ListItem<'static> {
+    let is_exited = session
+        .map(|s| s.exited.load(Ordering::SeqCst))
+        .unwrap_or(true);
+
+    // Get current working directory from tmux pane
+    let display_name = if is_exited {
+        "[exited]".to_string()
+    } else {
+        session
+            .and_then(|s| s.tmux_session_name.as_deref())
+            .and_then(crate::session::pty::query_tmux_pane_cwd)
+            .map(|cwd| {
+                // Truncate to just the last directory component
+                std::path::Path::new(&cwd)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or(cwd)
+            })
+            .unwrap_or_else(|| {
+                session
+                    .map(|s| s.label.clone())
+                    .unwrap_or_else(|| "terminal".to_string())
+            })
+    };
+
+    let tag = "[terminal]";
+    let tag_fg = if is_exited { Color::DarkGray } else { Color::Green };
+    let name_fg = if has_bg {
+        if is_exited { Color::Gray } else { Color::White }
+    } else {
+        if is_exited { Color::DarkGray } else { Color::Gray }
+    };
+
+    let prefix = format!("  {} ", tag);
+    let max_name = inner_width.saturating_sub(prefix.len());
+    let truncated = if display_name.len() > max_name && max_name > 1 {
+        let mut end = max_name.saturating_sub(1);
+        while end > 0 && !display_name.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &display_name[..end])
+    } else {
+        display_name
+    };
+
+    let mut spans = vec![
+        Span::styled("  ", Style::default().bg(bg)),
+        Span::styled(tag.to_string(), Style::default().fg(tag_fg).bg(bg).add_modifier(bold)),
+        Span::styled(" ", Style::default().bg(bg)),
+        Span::styled(truncated, Style::default().fg(name_fg).bg(bg).add_modifier(bold)),
+    ];
 
     // Pad to full width so the highlight covers the whole row
     let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
@@ -287,43 +381,28 @@ fn format_usage_line(label: &str, pct: f64, reset_iso: &str, bar_width: usize, i
     Line::from(spans)
 }
 
-/// Format an ISO 8601 reset timestamp as "Mon DD HH:MM UTC".
-/// e.g., "2026-02-19T21:00:00+00:00" → "Feb 19 21:00 UTC"
+/// Format an ISO 8601 reset timestamp in the system's local timezone.
+/// e.g., "2026-02-19T21:00:00+00:00" → "Feb 19 16:00 EST"
 fn format_reset_datetime(iso: &str) -> String {
-    let parts: Vec<&str> = iso.split('T').collect();
-    if parts.len() != 2 {
-        return "?".to_string();
-    }
+    use chrono::{DateTime, FixedOffset, Local};
 
-    let date_parts: Vec<&str> = parts[0].split('-').collect();
-    if date_parts.len() != 3 {
-        return "?".to_string();
-    }
-
-    let month_num: u32 = match date_parts[1].parse() {
-        Ok(m) => m,
+    let utc: DateTime<FixedOffset> = match iso.parse() {
+        Ok(dt) => dt,
         Err(_) => return "?".to_string(),
     };
-    let day: u32 = match date_parts[2].parse() {
-        Ok(d) => d,
-        Err(_) => return "?".to_string(),
+    let local = utc.with_timezone(&Local);
+
+    // chrono's %Z on Linux returns the offset ("-05:00") instead of the
+    // abbreviation ("EST"). Use libc::localtime_r to get tm_zone instead.
+    let epoch = local.timestamp() as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let tz = if !unsafe { libc::localtime_r(&epoch, &mut tm) }.is_null() && !tm.tm_zone.is_null() {
+        unsafe { std::ffi::CStr::from_ptr(tm.tm_zone) }
+            .to_str().unwrap_or("??").to_string()
+    } else {
+        local.format("%Z").to_string()
     };
 
-    let month_name = match month_num {
-        1 => "Jan", 2 => "Feb", 3 => "Mar", 4 => "Apr",
-        5 => "May", 6 => "Jun", 7 => "Jul", 8 => "Aug",
-        9 => "Sep", 10 => "Oct", 11 => "Nov", 12 => "Dec",
-        _ => "???",
-    };
-
-    // Extract HH:MM from time part (before timezone offset)
-    let time_str = parts[1]
-        .split('+').next().unwrap_or("")
-        .split('-').next().unwrap_or("");
-    let time_parts: Vec<&str> = time_str.split(':').collect();
-    let hh = time_parts.first().unwrap_or(&"??");
-    let mm = time_parts.get(1).unwrap_or(&"??");
-
-    format!("{} {} {}:{} UTC", month_name, day, hh, mm)
+    format!("{} {}", local.format("%b %-d %H:%M"), tz)
 }
 

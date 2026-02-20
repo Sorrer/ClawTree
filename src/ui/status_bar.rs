@@ -15,10 +15,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             InputMode::Normal => if app.prompt_queue_focused() {
                 "Prompt Queue"
             } else {
-                match app.selected_sidebar_item() {
-                    Some(crate::app::SidebarItem::Worktree(_)) => "Worktrees",
-                    _ => "NORMAL",
-                }
+                "Worktrees"
             },
             InputMode::Terminal => "Claude Code",
             InputMode::Dialog => "DIALOG",
@@ -119,7 +116,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let mode_bg = match app.screen_mode {
         ScreenMode::Mini | ScreenMode::MiniDrilldown => theme::MODE_MINI_BG,
         ScreenMode::Normal => match app.input_mode {
-            InputMode::Normal => theme::MODE_NORMAL_BG,
+            InputMode::Normal => if app.prompt_queue_focused() {
+                theme::BORDER_FOCUSED_PROMPT_QUEUE
+            } else {
+                theme::MODE_NORMAL_BG
+            },
             InputMode::Terminal => theme::MODE_TERMINAL_BG,
             InputMode::Dialog => theme::MODE_DIALOG_BG,
         },
