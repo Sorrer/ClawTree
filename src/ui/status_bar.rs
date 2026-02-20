@@ -126,6 +126,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         },
     };
 
+    let version = option_env!("CLAWTREE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+
     let line = Line::from(vec![
         Span::styled(
             format!(" {} ", theme::LOGO_SMALL),
@@ -133,6 +135,12 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 .fg(theme::BRAND_CLAW)
                 .bg(theme::STATUS_BAR_BG)
                 .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {} ", version),
+            Style::default()
+                .fg(Color::DarkGray)
+                .bg(theme::STATUS_BAR_BG),
         ),
         Span::styled(
             format!(" {} ", mode_text),
