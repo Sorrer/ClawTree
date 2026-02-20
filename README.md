@@ -124,8 +124,6 @@ Once initialized, clawtree opens the main interface where you can browse your wo
 ### Claude Code Sessions
 - Spawn multiple concurrent Claude Code sessions per worktree
 - tmux-backed sessions persist across TUI restarts with automatic reconnection
-- Truecolor (24-bit RGB) passthrough configured automatically
-- Full VT100 terminal emulation with 1000-line scrollback
 - Session renaming/nicknames
 - Optional `--dangerously-skip-permissions` mode
 
