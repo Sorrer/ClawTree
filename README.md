@@ -20,7 +20,14 @@ Built for the **bare repository** workflow where a project uses a `.bare/` direc
 ## Table of Contents
 
 - [Install](#install)
+- [Getting Started](#getting-started)
 - [Features](#features)
+  - [Worktree Management](#worktree-management)
+  - [Git Operations](#git-operations)
+  - [Claude Code Sessions](#claude-code-sessions)
+  - [Prompt Queue](#prompt-queue)
+  - [Mini Mode (WIP)](#mini-mode-wip)
+  - [Terminal & UI](#terminal--ui)
 - [Requirements](#requirements)
 - [Building from Source](#building-from-source)
 
@@ -56,13 +63,30 @@ CLAWTREE_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com
 
 </details>
 
-### Usage
+## Getting Started
+
+After installation, point clawtree at a directory:
 
 ```bash
-clawtree /path/to/bare/repo
+clawtree /path/to/your/project
 ```
 
-The target directory should contain a `.bare` git repository structure.
+If the directory does not contain a `.bare` repo layout, clawtree opens a **welcome screen** with setup options:
+
+<p align="center">
+  <img src="docs/screenshots/welcome.png" alt="Welcome screen" width="800">
+</p>
+
+From here you can:
+
+- Press **`i`** to **initialize** a new bare repo workflow — creates the `.bare/` directory structure and your first worktree
+- Press **`c`** to **convert** an existing regular git repo into the bare worktree layout (only shown when a `.git` directory is detected)
+
+Once initialized, clawtree opens the main interface where you can browse your worktrees in the sidebar and start spawning Claude Code sessions.
+
+<p align="center">
+  <img src="docs/screenshots/main.png" alt="Main interface" width="800">
+</p>
 
 ## Features
 
@@ -72,12 +96,20 @@ The target directory should contain a `.bare` git repository structure.
 - Convert existing regular git repos to the bare worktree layout (in-place or to a new location)
 - Background git status polling with per-worktree caching (auto-refreshes every 10s)
 
+<p align="center">
+  <img src="docs/screenshots/worktree-management.png" alt="Worktree management" width="800">
+</p>
+
 ### Git Operations
 - Interactive file staging/unstaging (single file, stage all)
 - Inline commit message input
 - Branch merging with automatic dirty-worktree detection and pre-merge commit prompts
 - Merge conflict resolution dialog — open in VS Code, JetBrains, Claude, or abort
 - Push to remote with automatic upstream setup (`-u origin`)
+
+<p align="center">
+  <img src="docs/screenshots/git-operations.png" alt="Git operations" width="800">
+</p>
 
 ### Claude Code Sessions
 - Spawn multiple concurrent Claude Code sessions per worktree
@@ -87,12 +119,23 @@ The target directory should contain a `.bare` git repository structure.
 - Session renaming/nicknames
 - Optional `--dangerously-skip-permissions` mode
 
+<p align="center">
+  <img src="docs/screenshots/claude-sessions.png" alt="Claude Code sessions" width="800">
+</p>
+
 ### Prompt Queue
 - Per-session prompt queues that auto-send when Claude is idle (5s cooldown)
 - Add, edit, and delete queued prompts
 - Queues persist to `.prompt_queues.json` and survive restarts
 
-### Mini Mode
+<p align="center">
+  <img src="docs/screenshots/prompt-queue.png" alt="Prompt queue" width="800">
+</p>
+
+### Mini Mode (WIP)
+
+> **Note:** Mini Mode is a work in progress and may change significantly.
+
 - Compact agent management view (toggle with F2)
 - Drilldown into a single agent's terminal full-screen
 - Agent status badges: Working, Idle, Needs Input, Exited
@@ -107,6 +150,10 @@ The target directory should contain a `.bare` git repository structure.
 - Context-sensitive help overlay with 6 tabs (press `?`)
 - Status bar with auto-fading messages and mode badges
 - Background Claude context usage tracking via debug log parsing
+
+<p align="center">
+  <img src="docs/screenshots/help-overlay.png" alt="Help overlay" width="800">
+</p>
 
 ### Platform
 - Linux (x86_64, aarch64) and macOS (Intel, Apple Silicon)
