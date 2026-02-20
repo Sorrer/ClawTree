@@ -132,6 +132,11 @@ Once initialized, clawtree opens the main interface where you can browse your wo
 </p>
 
 ### Prompt Queue
+
+> Personal Feature:
+>
+> After completing a big feature, I find that there is a lot of work to be cleaned up all easily one shotted. By utilizing a prompt queue, you can have claude one-shot bug fixes one at a time instead of all at once.
+
 - Per-session prompt queues that auto-send when Claude is idle (5s cooldown)
 - Add, edit, and delete queued prompts
 - Queues persist to `.prompt_queues.json` and survive restarts
