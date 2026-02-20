@@ -10,6 +10,7 @@
 [![Nightly](https://img.shields.io/github/actions/workflow/status/Sorrer/ClawTree/release.yml?style=flat-square&label=Nightly)](https://github.com/Sorrer/ClawTree/actions/workflows/release.yml)
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-f74c00?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Platforms](https://img.shields.io/badge/Platforms-Linux_|_macOS_|_WSL-lightgrey?style=flat-square)](#platform)
+[![License](https://img.shields.io/badge/License-AGPL--3.0-blue?style=flat-square)](LICENSE)
 
 </div>
 
