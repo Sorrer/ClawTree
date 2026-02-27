@@ -389,6 +389,11 @@ pub fn draw_terminal_panel(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    // Store areas for mouse hit-testing
+    app.areas.sidebar_terminal_panel.set(area);
+    let tp_inner = block.inner(area);
+    app.areas.sidebar_terminal_panel_inner.set(tp_inner);
+
     let list = List::new(items).block(block);
     f.render_widget(list, area);
 }
@@ -423,6 +428,11 @@ pub fn draw_global_usage(f: &mut Frame, app: &App, area: Rect) {
     let mut lines = vec![five_hour_line];
     if inner.height >= 2 {
         lines.push(seven_day_line);
+    }
+    if inner.height >= 3 {
+        if let (Some(pct), Some(ref reset)) = (usage.sonnet_7d_pct, &usage.sonnet_7d_reset) {
+            lines.push(format_usage_line("SN", pct, reset, bar_width, inner_w));
+        }
     }
 
     f.render_widget(Paragraph::new(lines), inner);

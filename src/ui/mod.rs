@@ -72,7 +72,7 @@ fn draw_normal(f: &mut Frame, app: &App) {
                         .constraints([
                             Constraint::Min(5),                         // worktree list
                             Constraint::Length(terminal_panel_height),  // terminal panel
-                            Constraint::Length(4),                      // global usage
+                            Constraint::Length(5),                      // global usage
                         ])
                         .split(main_chunks[0]);
                     sidebar::draw(f, app, sidebar_chunks[0]);
@@ -95,7 +95,7 @@ fn draw_normal(f: &mut Frame, app: &App) {
                         .direction(Direction::Vertical)
                         .constraints([
                             Constraint::Min(5),     // worktree list
-                            Constraint::Length(4),  // global usage
+                            Constraint::Length(5),  // global usage
                         ])
                         .split(main_chunks[0]);
                     sidebar::draw(f, app, sidebar_chunks[0]);

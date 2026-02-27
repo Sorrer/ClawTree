@@ -205,7 +205,7 @@ const INFO_PANEL_KEYS: &[KeyEntry] = &[
 pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     // ── Help overlay intercepts all keys when visible ──────────────
     if app.show_help {
-        handle_help_key(app, key);
+        handle_help_key(app, key, terminal_size);
         return;
     }
 
@@ -290,7 +290,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
 }
 
 /// Handle keys while the help overlay is open.
-fn handle_help_key(app: &mut App, key: KeyEvent) {
+fn handle_help_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('?') => {
             app.show_help = false;
@@ -317,7 +317,9 @@ fn handle_help_key(app: &mut App, key: KeyEvent) {
         KeyCode::Down | KeyCode::Char('j') => {
             let ctx = KeyContext::ALL[app.help_tab];
             let total = ctx.display_row_count(app.wt_available);
-            if app.help_scroll + 1 < total {
+            let visible = help_visible_rows(total, terminal_size.1);
+            let max_scroll = total.saturating_sub(visible);
+            if app.help_scroll < max_scroll {
                 app.help_scroll += 1;
             }
         }
@@ -328,6 +330,17 @@ fn handle_help_key(app: &mut App, key: KeyEvent) {
         }
         _ => {}
     }
+}
+
+/// Compute how many key-list rows are visible in the help popup.
+/// Mirrors the layout logic in ui/help.rs.
+fn help_visible_rows(display_rows: usize, term_height: u16) -> usize {
+    let max_height = (term_height as f32 * 0.8) as u16;
+    // tabs(1) + separator(1) + display_rows + separator(1) + help(1) + borders(2)
+    let content_height = (display_rows as u16) + 6;
+    let height = content_height.min(max_height).max(10);
+    // inner height = height - 2 (borders), key list = inner - 4 (tabs + 2 seps + footer)
+    (height.saturating_sub(6)) as usize
 }
 
 fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
@@ -1564,6 +1577,25 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                                 }
                             }
                         }
+                        2 => {
+                            // Ignore uncommitted changes — proceed with merge
+                            if let Some(action) = app.pending_merge.take() {
+                                let source_name = app
+                                    .worktrees
+                                    .get(worktree_idx)
+                                    .map(|w| w.branch.clone())
+                                    .unwrap_or_default();
+                                if let PendingAction::MergeExecute { ref target_branch, .. } = action {
+                                    let msg = format!("Merging '{}' into '{}'...", source_name, target_branch);
+                                    app.close_dialog();
+                                    app.queue_action(msg, action);
+                                } else {
+                                    app.close_dialog();
+                                }
+                            } else {
+                                app.close_dialog();
+                            }
+                        }
                         _ => {
                             // Cancel
                             app.pending_merge = None;
@@ -1612,6 +1644,9 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 }
                 Some(Dialog::AuthError { .. }) => {
                     // Only option is Dismiss
+                    app.close_dialog();
+                }
+                Some(Dialog::MergeSuccess { .. }) => {
                     app.close_dialog();
                 }
                 Some(Dialog::GitCommit {

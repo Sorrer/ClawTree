@@ -17,20 +17,12 @@ pub struct ClaudeUsage {
 }
 
 impl ClaudeUsage {
-    /// Full model context window size. The `effectiveWindow` from autocompact
-    /// is ~90% of the full context (the rest is the autocompact buffer).
-    /// This matches the denominator shown by Claude's `/context` command.
-    pub fn full_context(&self) -> usize {
-        // Round to nearest 1000 to avoid floating-point oddities
-        let raw = (self.effective_window as f64 / 0.9) as usize;
-        ((raw + 500) / 1000) * 1000
-    }
-
-    /// Context usage percentage relative to the full model context window.
+    /// Context usage percentage relative to the effective context window.
+    /// The `effectiveWindow` is the actual usable context — the buffer above
+    /// it is reserved by Claude Code for the autocompact process itself.
     pub fn usage_pct(&self) -> usize {
-        let full = self.full_context();
-        if full > 0 {
-            (self.tokens_used as f64 / full as f64 * 100.0) as usize
+        if self.effective_window > 0 {
+            (self.tokens_used as f64 / self.effective_window as f64 * 100.0) as usize
         } else {
             0
         }
@@ -1140,6 +1132,8 @@ pub struct GlobalUsage {
     pub five_hour_reset: String,
     pub seven_day_pct: f64,
     pub seven_day_reset: String,
+    pub sonnet_7d_pct: Option<f64>,
+    pub sonnet_7d_reset: Option<String>,
 }
 
 /// Spawn a background thread that polls the Anthropic API for global usage data.
@@ -1205,43 +1199,68 @@ fn poll_global_usage() -> Option<GlobalUsage> {
     let five_hour = json.get("five_hour")?;
     let seven_day = json.get("seven_day")?;
 
+    // seven_day_sonnet may be null when unused
+    let (sonnet_7d_pct, sonnet_7d_reset) = json.get("seven_day_sonnet")
+        .and_then(|v| v.as_object())
+        .map(|snt| {
+            let pct = snt.get("utilization").and_then(|v| v.as_f64());
+            let reset = snt.get("resets_at").and_then(|v| v.as_str()).map(|s| s.to_string());
+            (pct, reset)
+        })
+        .unwrap_or((None, None));
+
     Some(GlobalUsage {
         five_hour_pct: five_hour.get("utilization")?.as_f64()?,
         five_hour_reset: five_hour.get("resets_at")?.as_str()?.to_string(),
         seven_day_pct: seven_day.get("utilization")?.as_f64()?,
         seven_day_reset: seven_day.get("resets_at")?.as_str()?.to_string(),
+        sonnet_7d_pct,
+        sonnet_7d_reset,
     })
 }
 
 /// Parse the last `autocompact:` line from a Claude debug log file.
-/// Reads the file from the end for efficiency.
+/// Reads the file from the end in expanding chunks until an `autocompact:`
+/// line is found. Debug logs can contain heavy spam (e.g. "Fast mode
+/// unavailable" repeated hundreds of times), so a fixed-size tail is not
+/// enough — the last autocompact line can easily be 32KB+ from the end.
 fn parse_last_autocompact(path: &str) -> Option<ClaudeUsage> {
     use std::io::{Read, Seek, SeekFrom};
 
     let mut file = std::fs::File::open(path).ok()?;
     let file_len = file.metadata().ok()?.len();
-
-    // Read the last 8KB (autocompact lines are short, this is plenty)
-    let read_size = 8192u64.min(file_len);
-    if read_size == 0 {
+    if file_len == 0 {
         return None;
     }
 
-    file.seek(SeekFrom::End(-(read_size as i64))).ok()?;
-    let mut buf = vec![0u8; read_size as usize];
-    file.read_exact(&mut buf).ok()?;
-    let content = String::from_utf8_lossy(&buf);
+    // Start with 64KB and double up to the full file size.
+    let mut read_size = (64 * 1024u64).min(file_len);
+    loop {
+        file.seek(SeekFrom::End(-(read_size as i64))).ok()?;
+        let mut buf = vec![0u8; read_size as usize];
+        file.read_exact(&mut buf).ok()?;
+        let content = String::from_utf8_lossy(&buf);
 
-    // Find the last autocompact line
-    let mut last_line = None;
-    for line in content.lines() {
-        if line.contains("autocompact:") {
-            last_line = Some(line);
+        // Find the last autocompact line in this chunk
+        let mut last_line = None;
+        for line in content.lines() {
+            if line.contains("autocompact:") {
+                last_line = Some(line.to_owned());
+            }
         }
-    }
 
-    let line = last_line?;
-    parse_autocompact_line(line)
+        if let Some(line) = last_line {
+            return parse_autocompact_line(&line);
+        }
+
+        // Already read the whole file — give up
+        if read_size >= file_len {
+            return None;
+        }
+
+        // Double the window and try again
+        read_size = (read_size * 2).min(file_len);
+    }
 }
 
 /// Parse an autocompact log line: `autocompact: tokens=78536 threshold=167000 effectiveWindow=180000`

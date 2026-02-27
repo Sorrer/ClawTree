@@ -65,6 +65,9 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .unwrap_or("???");
             draw_dirty_worktree(f, app, branch_name, files, *selected);
         }
+        Dialog::MergeSuccess { message } => {
+            draw_merge_success(f, app, message);
+        }
         Dialog::GitCommit {
             worktree_idx,
             unstaged,
@@ -829,7 +832,7 @@ fn draw_dirty_worktree(
     files: &[(String, String)],
     selected: usize,
 ) {
-    let options = ["Commit changes", "Open with Claude", "Cancel"];
+    let options = ["Commit changes", "Open with Claude", "Ignore", "Cancel"];
     let visible_files = files.len().min(8);
     // title(1) + info(1) + blank(1) + files + blank(1) + options(3) + blank(1) + help(1)
     let height = (visible_files as u16) + (options.len() as u16) + 6;
@@ -921,6 +924,56 @@ fn draw_dirty_worktree(
         Paragraph::new("j/k: select  Enter: confirm  Esc: cancel")
             .style(Style::default().fg(Color::DarkGray)),
         chunks[5],
+    );
+}
+
+fn draw_merge_success(f: &mut Frame, app: &App, message: &str) {
+    // title(1) + message(1) + blank(1) + ok(1) + help(1)
+    let height = 5;
+    let area = centered_rect(50, height, f.area());
+    app.areas.dialog.set(area);
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Merge Complete ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // message
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // ok
+            Constraint::Length(1), // help
+        ])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            message,
+            Style::default().fg(Color::White),
+        ))),
+        chunks[0],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " > OK",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        chunks[2],
+    );
+
+    f.render_widget(
+        Paragraph::new("Enter/Esc: dismiss")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[3],
     );
 }
 

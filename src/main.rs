@@ -977,14 +977,14 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
 
             match worktree::merge_into_worktree(app, target_wt_idx, &source_name) {
                 Ok(worktree::git::MergeResult::Success(output)) => {
-                    app.set_status(format!(
-                        "Merged '{}' into '{}': {}",
-                        source_name,
-                        target_branch,
-                        output.lines().next().unwrap_or("ok").trim()
-                    ));
+                    let detail = output.lines().next().unwrap_or("ok").trim().to_string();
+                    let msg = format!("Merged '{}' into '{}': {}", source_name, target_branch, detail);
+                    app.set_status(msg.clone());
                     let _ = worktree::refresh_worktrees(app);
                     app.refresh_worktree_status();
+                    app.open_dialog(Dialog::MergeSuccess {
+                        message: msg,
+                    });
                 }
                 Ok(worktree::git::MergeResult::Conflict(_)) => {
                     app.set_status(format!(

@@ -2,8 +2,7 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use crate::app::{
-    App, Dialog, FocusTarget, InputMode, MiniModeFocus, ScreenMode, SidebarItem, SidebarPanel,
-    CONFLICT_RESOLVER_COUNT, DIRTY_WORKTREE_OPTION_COUNT, PULL_ERROR_OPTION_COUNT,
+    App, FocusTarget, InputMode, MiniModeFocus, ScreenMode, SidebarItem, SidebarPanel,
 };
 use crate::keys;
 use crate::ui::terminal_pane;
@@ -50,12 +49,9 @@ pub fn is_terminal_session_area(app: &App, col: u16, row: u16) -> bool {
 // ── Left click dispatch ──────────────────────────────────────────────
 
 fn handle_left_click(app: &mut App, col: u16, row: u16) -> bool {
-    // Overlays take priority
-    if app.show_help {
-        return handle_help_click(app, col, row);
-    }
-    if app.dialog.is_some() {
-        return handle_dialog_click(app, col, row);
+    // Overlays consume clicks — require keyboard to dismiss
+    if app.show_help || app.dialog.is_some() {
+        return true;
     }
 
     match app.screen_mode {
@@ -89,15 +85,27 @@ fn handle_sidebar_click(app: &mut App, col: u16, row: u16) -> bool {
     app.focus = FocusTarget::Sidebar;
     app.input_mode = InputMode::Normal;
 
+    // Check if click is in the terminal panel sub-area first
+    let tp_inner = app.areas.sidebar_terminal_panel_inner.get();
+    if point_in_rect(col, row, tp_inner) {
+        let item_row = (row - tp_inner.y) as usize;
+        if item_row < app.terminal_panel_items.len() {
+            app.sidebar_panel = SidebarPanel::Terminals;
+            app.terminal_panel_selected = item_row;
+            app.activate_selected();
+        }
+        return true;
+    }
+
+    // Check worktree list area
     let inner = app.areas.sidebar_inner.get();
     if !point_in_rect(col, row, inner) {
-        return true; // clicked the border, just focus
+        return true; // clicked a border, just focus
     }
 
     // Map row to item index
     let item_row = (row - inner.y) as usize;
 
-    // The sidebar_inner only covers the worktree list portion
     if item_row < app.sidebar_items.len() {
         app.sidebar_panel = SidebarPanel::Worktrees;
         app.sidebar_selected = item_row;
@@ -214,12 +222,9 @@ fn handle_prompt_queue_click(app: &mut App, col: u16, row: u16) -> bool {
 // ── Scroll dispatch ──────────────────────────────────────────────────
 
 fn handle_scroll(app: &mut App, col: u16, row: u16, up: bool) -> bool {
-    // Overlays
-    if app.show_help {
-        return handle_help_scroll(app, up);
-    }
-    if app.dialog.is_some() {
-        return handle_dialog_scroll(app, up);
+    // Overlays consume scroll — require keyboard to interact
+    if app.show_help || app.dialog.is_some() {
+        return true;
     }
 
     match app.screen_mode {
@@ -313,205 +318,6 @@ fn scroll_prompt_queue(app: &mut App, up: bool) {
     } else if app.prompt_queue_selected + 1 < queue_len {
         app.prompt_queue_selected += 1;
     }
-}
-
-// ── Help overlay mouse ───────────────────────────────────────────────
-
-fn handle_help_click(app: &mut App, col: u16, row: u16) -> bool {
-    let area = app.areas.help_overlay.get();
-    if !point_in_rect(col, row, area) {
-        app.show_help = false;
-        return true;
-    }
-    // Check if clicking in the tab bar area (first inner row)
-    // The inner area starts at area.y + 1 (border), and tabs are the first row
-    let tab_row = area.y + 1;
-    if row == tab_row {
-        // Rough tab hit-testing: divide inner width by number of tabs
-        let inner_x = area.x + 1;
-        let inner_width = area.width.saturating_sub(2);
-        let tab_count = keys::KEY_CONTEXT_COUNT as u16;
-        if tab_count > 0 && col >= inner_x {
-            let rel_x = col - inner_x;
-            let tab_width = inner_width / tab_count;
-            if tab_width > 0 {
-                let clicked_tab = (rel_x / tab_width) as usize;
-                if clicked_tab < keys::KEY_CONTEXT_COUNT {
-                    app.help_tab = clicked_tab;
-                    app.help_scroll = 0;
-                }
-            }
-        }
-    }
-    true
-}
-
-fn handle_help_scroll(app: &mut App, up: bool) -> bool {
-    let ctx = keys::KeyContext::ALL[app.help_tab];
-    let keys = ctx.keys();
-    let extra = ctx.extra_keys(app.wt_available);
-    let total = keys.len() + extra.len();
-    if up {
-        if app.help_scroll > 0 {
-            app.help_scroll -= 1;
-        }
-    } else if app.help_scroll + 1 < total {
-        app.help_scroll += 1;
-    }
-    true
-}
-
-// ── Dialog mouse ─────────────────────────────────────────────────────
-
-fn handle_dialog_click(app: &mut App, col: u16, row: u16) -> bool {
-    let dialog_area = app.areas.dialog.get();
-    if !point_in_rect(col, row, dialog_area) {
-        // Click outside dialog — close if not dangerous
-        match &app.dialog {
-            Some(Dialog::ConfirmDangerous { .. }) => {} // don't close dangerous
-            Some(_) => app.close_dialog(),
-            None => {}
-        }
-        return true;
-    }
-
-    // For list-based dialogs, try to select item by row
-    match &app.dialog {
-        Some(Dialog::MergeBranch { branches, .. }) => {
-            let inner_y = dialog_area.y + 1; // border
-            // Layout: border(1) + target info(1) + separator(1) + list...
-            let list_start = inner_y + 2;
-            if row >= list_start {
-                let idx = (row - list_start) as usize;
-                if idx < branches.len() {
-                    if let Some(Dialog::MergeBranch { selected, .. }) = &mut app.dialog {
-                        *selected = idx;
-                    }
-                }
-            }
-        }
-        Some(Dialog::MergeConflict { .. }) => {
-            let inner_y = dialog_area.y + 1;
-            // Layout: conflict msg(1) + separator(1) + list...
-            let list_start = inner_y + 2;
-            if row >= list_start {
-                let idx = (row - list_start) as usize;
-                if idx < CONFLICT_RESOLVER_COUNT {
-                    if let Some(Dialog::MergeConflict { selected, .. }) = &mut app.dialog {
-                        *selected = idx;
-                    }
-                }
-            }
-        }
-        Some(Dialog::DirtyWorktree { files, .. }) => {
-            let inner_y = dialog_area.y + 1;
-            let visible_files = files.len().min(8);
-            // Layout: info(1) + blank(1) + files + blank(1) + options...
-            let options_start = inner_y + 1 + 1 + visible_files as u16 + 1;
-            if row >= options_start {
-                let idx = (row - options_start) as usize;
-                if idx < DIRTY_WORKTREE_OPTION_COUNT {
-                    if let Some(Dialog::DirtyWorktree { selected, .. }) = &mut app.dialog {
-                        *selected = idx;
-                    }
-                }
-            }
-        }
-        Some(Dialog::PullError { .. }) => {
-            // For simplicity, just detect clicks on the option list
-            let inner_y = dialog_area.y + 1;
-            let inner_h = dialog_area.height.saturating_sub(2);
-            // Options are near the bottom: help(1) at very bottom, then options above it
-            let help_row = inner_y + inner_h - 1;
-            let options_end = help_row;
-            let options_start = options_end.saturating_sub(PULL_ERROR_OPTION_COUNT as u16);
-            if row >= options_start && row < options_end {
-                let idx = (row - options_start) as usize;
-                if idx < PULL_ERROR_OPTION_COUNT {
-                    if let Some(Dialog::PullError { selected, .. }) = &mut app.dialog {
-                        *selected = idx;
-                    }
-                }
-            }
-        }
-        Some(Dialog::AuthError { .. }) => {
-            // Single dismiss option
-            let inner_y = dialog_area.y + 1;
-            let inner_h = dialog_area.height.saturating_sub(2);
-            let dismiss_row = inner_y + inner_h - 2; // help is last, dismiss above it
-            if row == dismiss_row {
-                if let Some(Dialog::AuthError { selected, .. }) = &mut app.dialog {
-                    *selected = 0;
-                }
-            }
-        }
-        _ => {}
-    }
-    true
-}
-
-fn handle_dialog_scroll(app: &mut App, up: bool) -> bool {
-    match &app.dialog {
-        Some(Dialog::MergeBranch { branches, selected, .. }) => {
-            let len = branches.len();
-            let sel = *selected;
-            if up {
-                if sel > 0 {
-                    if let Some(Dialog::MergeBranch { selected, .. }) = &mut app.dialog {
-                        *selected = sel - 1;
-                    }
-                }
-            } else if sel + 1 < len {
-                if let Some(Dialog::MergeBranch { selected, .. }) = &mut app.dialog {
-                    *selected = sel + 1;
-                }
-            }
-        }
-        Some(Dialog::MergeConflict { selected, .. }) => {
-            let sel = *selected;
-            if up {
-                if sel > 0 {
-                    if let Some(Dialog::MergeConflict { selected, .. }) = &mut app.dialog {
-                        *selected = sel - 1;
-                    }
-                }
-            } else if sel + 1 < CONFLICT_RESOLVER_COUNT {
-                if let Some(Dialog::MergeConflict { selected, .. }) = &mut app.dialog {
-                    *selected = sel + 1;
-                }
-            }
-        }
-        Some(Dialog::DirtyWorktree { selected, .. }) => {
-            let sel = *selected;
-            if up {
-                if sel > 0 {
-                    if let Some(Dialog::DirtyWorktree { selected, .. }) = &mut app.dialog {
-                        *selected = sel - 1;
-                    }
-                }
-            } else if sel + 1 < DIRTY_WORKTREE_OPTION_COUNT {
-                if let Some(Dialog::DirtyWorktree { selected, .. }) = &mut app.dialog {
-                    *selected = sel + 1;
-                }
-            }
-        }
-        Some(Dialog::PullError { selected, .. }) => {
-            let sel = *selected;
-            if up {
-                if sel > 0 {
-                    if let Some(Dialog::PullError { selected, .. }) = &mut app.dialog {
-                        *selected = sel - 1;
-                    }
-                }
-            } else if sel + 1 < PULL_ERROR_OPTION_COUNT {
-                if let Some(Dialog::PullError { selected, .. }) = &mut app.dialog {
-                    *selected = sel + 1;
-                }
-            }
-        }
-        _ => {}
-    }
-    true
 }
 
 // ── Mini mode mouse ──────────────────────────────────────────────────

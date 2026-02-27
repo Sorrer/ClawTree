@@ -22,6 +22,9 @@ pub struct LayoutAreas {
     pub sidebar_inner: Cell<Rect>,
     pub terminal_pane_inner: Cell<Rect>,
     pub prompt_queue_inner: Cell<Rect>,
+    // Sidebar sub-panels
+    pub sidebar_terminal_panel: Cell<Rect>,
+    pub sidebar_terminal_panel_inner: Cell<Rect>,
     // Overlays
     pub help_overlay: Cell<Rect>,
     pub dialog: Cell<Rect>,
@@ -41,6 +44,8 @@ impl Default for LayoutAreas {
             sidebar_inner: Cell::new(Rect::default()),
             terminal_pane_inner: Cell::new(Rect::default()),
             prompt_queue_inner: Cell::new(Rect::default()),
+            sidebar_terminal_panel: Cell::new(Rect::default()),
+            sidebar_terminal_panel_inner: Cell::new(Rect::default()),
             help_overlay: Cell::new(Rect::default()),
             dialog: Cell::new(Rect::default()),
             mini_tree: Cell::new(Rect::default()),
@@ -60,6 +65,8 @@ impl LayoutAreas {
         self.sidebar_inner.set(Rect::default());
         self.terminal_pane_inner.set(Rect::default());
         self.prompt_queue_inner.set(Rect::default());
+        self.sidebar_terminal_panel.set(Rect::default());
+        self.sidebar_terminal_panel_inner.set(Rect::default());
         self.help_overlay.set(Rect::default());
         self.dialog.set(Rect::default());
         self.mini_tree.set(Rect::default());
@@ -209,7 +216,11 @@ pub enum Dialog {
     DirtyWorktree {
         worktree_idx: usize,
         files: Vec<(String, String)>, // (status_display, path) for read-only display
-        selected: usize,              // 0=Commit, 1=Claude, 2=Cancel
+        selected: usize,              // 0=Commit, 1=Claude, 2=Ignore, 3=Cancel
+    },
+    /// Merge completed successfully — show result.
+    MergeSuccess {
+        message: String,
     },
     /// Convert an existing regular repo to bare worktree layout.
     ConvertRepo {
@@ -252,7 +263,7 @@ pub enum Dialog {
 pub const CONFLICT_RESOLVER_COUNT: usize = 5;
 
 /// Number of options in DirtyWorktree dialog.
-pub const DIRTY_WORKTREE_OPTION_COUNT: usize = 3;
+pub const DIRTY_WORKTREE_OPTION_COUNT: usize = 4;
 
 /// Number of options in PullError dialog.
 pub const PULL_ERROR_OPTION_COUNT: usize = 3;
