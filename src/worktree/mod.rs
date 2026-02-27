@@ -256,6 +256,13 @@ pub fn stage_all(app: &App, worktree_idx: usize) -> Result<()> {
     git::stage_all(&wt.path)
 }
 
+/// Get the diff of staged changes in a worktree.
+pub fn diff_staged(app: &App, worktree_idx: usize) -> Result<String> {
+    let wt = app.worktrees.get(worktree_idx)
+        .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
+    git::diff_staged(&wt.path)
+}
+
 /// Commit staged changes in a worktree.
 pub fn commit(app: &App, worktree_idx: usize, message: &str) -> Result<()> {
     let wt = app.worktrees.get(worktree_idx)

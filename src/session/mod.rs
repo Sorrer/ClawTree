@@ -1287,3 +1287,114 @@ fn parse_autocompact_line(line: &str) -> Option<ClaudeUsage> {
         _threshold: threshold?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── content_has_input_prompt tests ──────────────────────────────────
+
+    #[test]
+    fn test_content_has_input_prompt_bare_chevron() {
+        // ❯ with no text after it → idle prompt
+        let content = "Some output\n│ ❯ │\n";
+        assert!(Session::content_has_input_prompt(content));
+    }
+
+    #[test]
+    fn test_content_has_input_prompt_with_separator() {
+        // ❯ with text, preceded by separator → input area
+        let content = "Some output\n├──────────────────┤\n│ ❯ type here │\n";
+        assert!(Session::content_has_input_prompt(content));
+    }
+
+    #[test]
+    fn test_content_has_input_prompt_selection_menu() {
+        // ❯ with text, no separator → selection menu, NOT idle prompt
+        let content = "Choose an option:\n❯ Yes\n  No\n";
+        assert!(!Session::content_has_input_prompt(content));
+    }
+
+    #[test]
+    fn test_content_has_input_prompt_empty() {
+        assert!(!Session::content_has_input_prompt(""));
+    }
+
+    // ── starts_with_prompt tests ───────────────────────────────────────
+
+    #[test]
+    fn test_starts_with_prompt_heavy_chevron() {
+        assert!(Session::starts_with_prompt("❯"));
+        assert!(Session::starts_with_prompt("❯ some text"));
+    }
+
+    #[test]
+    fn test_starts_with_prompt_single_angle() {
+        assert!(Session::starts_with_prompt("› prompt"));
+    }
+
+    #[test]
+    fn test_starts_with_prompt_plain_gt() {
+        // Plain > should NOT match (too common in build output)
+        assert!(!Session::starts_with_prompt("> not a prompt"));
+    }
+
+    #[test]
+    fn test_starts_with_prompt_regular_text() {
+        assert!(!Session::starts_with_prompt("Hello world"));
+        assert!(!Session::starts_with_prompt(""));
+    }
+
+    // ── is_horizontal_rule tests ───────────────────────────────────────
+
+    #[test]
+    fn test_is_horizontal_rule_long_dashes() {
+        assert!(Session::is_horizontal_rule("──────────────────────"));
+    }
+
+    #[test]
+    fn test_is_horizontal_rule_too_short() {
+        assert!(!Session::is_horizontal_rule("─────"));
+    }
+
+    #[test]
+    fn test_is_horizontal_rule_mixed_text() {
+        // Majority must be horizontal box chars
+        assert!(!Session::is_horizontal_rule("── hello world ──────"));
+    }
+
+    #[test]
+    fn test_is_horizontal_rule_all_text() {
+        assert!(!Session::is_horizontal_rule("this is just text content"));
+    }
+
+    // ── extract_clawtree_tagged_output tests ───────────────────────────
+
+    #[test]
+    fn test_extract_tagged_output_simple() {
+        let content = "some output\n<IMPORTANT_CLAWTREE_OUTPUT>\nHello summary\n</IMPORTANT_CLAWTREE_OUTPUT>\nmore output\n";
+        let result = extract_clawtree_tagged_output(content);
+        assert_eq!(result, Some("Hello summary".to_string()));
+    }
+
+    #[test]
+    fn test_extract_tagged_output_with_borders() {
+        let content = "│ <IMPORTANT_CLAWTREE_OUTPUT> │\n│ Summary here │\n│ </IMPORTANT_CLAWTREE_OUTPUT> │\n";
+        let result = extract_clawtree_tagged_output(content);
+        assert_eq!(result, Some("Summary here".to_string()));
+    }
+
+    #[test]
+    fn test_extract_tagged_output_empty_tags() {
+        let content = "<IMPORTANT_CLAWTREE_OUTPUT>\n</IMPORTANT_CLAWTREE_OUTPUT>\n";
+        let result = extract_clawtree_tagged_output(content);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_tagged_output_no_tags() {
+        let content = "just regular output with no tags";
+        let result = extract_clawtree_tagged_output(content);
+        assert!(result.is_none());
+    }
+}

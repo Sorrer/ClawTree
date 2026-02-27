@@ -4,6 +4,8 @@ mod keys;
 mod mouse;
 mod session;
 mod ui;
+mod update;
+mod url;
 mod worktree;
 
 use std::io;
@@ -297,6 +299,9 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
     // ── Global usage poller — background thread ────────────────
     session::spawn_global_usage_poller(event_tx.clone());
 
+    // ── Update checker — one-shot background thread ──────────
+    update::spawn_update_checker(event_tx.clone());
+
     // ── Worktree status poller — background thread ───────────────
     let status_poller_paths = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     if repo_detected {
@@ -316,6 +321,28 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
         }
 
         if needs_redraw {
+            // Refresh URL cache before rendering if dirty
+            if app.url_cache_dirty {
+                // Only scan URLs on the live view (scroll == 0); when scrolled
+                // the tmux-captured content doesn't match the vt100 screen.
+                if app.terminal_scroll == 0 {
+                    if let Some(sid) = app.active_session_id {
+                        if let Some(session) = app.sessions.get(&sid) {
+                            if let Ok(guard) = session.parser.try_read() {
+                                let screen = guard.screen();
+                                app.url_cache.urls = url::scan_urls_from_screen(screen);
+                                app.url_cache.last_scan = Instant::now();
+                            }
+                        }
+                    } else {
+                        app.url_cache.urls.clear();
+                    }
+                } else {
+                    app.url_cache.urls.clear();
+                    app.url_cache.hovered = None;
+                }
+                app.url_cache_dirty = false;
+            }
             terminal.draw(|f| ui::draw(f, &app))?;
             needs_redraw = false;
         }
@@ -358,16 +385,23 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
             if app.should_quit { break; }
                 match event {
                     AppEvent::Input(CrosstermEvent::Key(key)) => {
-                        // Re-enable mouse capture on any keypress if it was
-                        // disabled for text selection
-                        if !app.mouse_captured {
-                            app.mouse_captured = true;
-                            let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
-                        }
                         let session_count_before = app.sessions.len();
                         let worktree_count_before = app.worktrees.len();
+                        let scroll_before = app.terminal_scroll;
                         let size = terminal.size()?;
                         keys::handle_key(&mut app, key, (size.width, size.height));
+                        if app.terminal_scroll != scroll_before {
+                            app.url_cache_dirty = true;
+                        }
+                        // Re-enable mouse capture on any keypress (user is done
+                        // with native text selection if it was active).
+                        if !app.mouse_captured {
+                            app.mouse_captured = true;
+                            app.mouse_capture_disabled_at = None;
+                            let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
+                        }
+                        // Clear any in-progress text selection on keypress
+                        app.text_selection = None;
                         // If sessions changed, update the tmux poller's snapshot
                         if tmux_available && app.sessions.len() != session_count_before {
                             if let Ok(mut info) = tmux_session_info.lock() {
@@ -400,46 +434,143 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                     AppEvent::Input(CrosstermEvent::Mouse(mouse)) => {
                         match mouse.kind {
                             MouseEventKind::Down(MouseButton::Left) => {
+                                // Clear any existing selection on new click
+                                app.text_selection = None;
+
                                 if mouse.modifiers.contains(EvtKeyModifiers::SHIFT) {
-                                    // Shift+Click → text selection anywhere (escape hatch)
+                                    // Shift+Click → native text selection (escape hatch)
                                     app.mouse_captured = false;
                                     app.mouse_capture_disabled_at = Some(Instant::now());
                                     let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
                                 } else if mouse::is_terminal_session_area(&app, mouse.column, mouse.row) {
-                                    // Click in terminal session pane → disable capture immediately
-                                    // so the terminal emulator handles text selection natively
-                                    // (it gets the Down, Drag, and Up events directly).
-                                    // Also process the click to focus the pane.
-                                    mouse::handle_mouse(&mut app, mouse);
-                                    app.mouse_captured = false;
-                                    app.mouse_capture_disabled_at = Some(Instant::now());
-                                    let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
+                                    // Check if clicking a URL first (only in live view)
+                                    if app.terminal_scroll == 0 {
+                                        if let Some(idx) = mouse::url_at_position(&app, mouse.column, mouse.row) {
+                                            if let Some(detected) = app.url_cache.urls.get(idx) {
+                                                let url = detected.url.clone();
+                                                match url::open_url_in_browser(&url) {
+                                                    Ok(()) => app.set_status(format!("Opened: {}", url)),
+                                                    Err(e) => app.set_status_with(app::StatusSeverity::Error, format!("Failed to open URL: {}", e)),
+                                                }
+                                            }
+                                            // URL click handled; skip selection start
+                                            needs_redraw = true;
+                                            continue;
+                                        }
+                                    }
+                                    // Start in-app text selection (works in both live and scrollback)
+                                    if let Some(pos) = mouse::screen_to_vt100(&app, mouse.column, mouse.row) {
+                                        app.text_selection = Some(app::TextSelection {
+                                            anchor: pos,
+                                            endpoint: pos,
+                                        });
+                                    }
+                                    // Set focus without resetting scroll
+                                    app.focus = app::FocusTarget::TerminalPane;
+                                    app.input_mode = app::InputMode::Terminal;
                                 } else {
-                                    // Click in sidebar/other panels → handle immediately as click.
-                                    // No text selection in non-terminal panels.
+                                    // Click in sidebar/other panels
                                     mouse::handle_mouse(&mut app, mouse);
                                 }
                                 needs_redraw = true;
                             }
+                            MouseEventKind::Drag(MouseButton::Left) => {
+                                // Update text selection endpoint while dragging.
+                                // Use clamped variant so dragging outside the pane
+                                // extends the selection to the edge instead of freezing.
+                                if app.text_selection.is_some() {
+                                    if let Some(pos) = mouse::screen_to_vt100_clamped(&app, mouse.column, mouse.row) {
+                                        if let Some(ref mut sel) = app.text_selection {
+                                            sel.endpoint = pos;
+                                        }
+                                        needs_redraw = true;
+                                    }
+                                }
+                            }
+                            MouseEventKind::Up(MouseButton::Left) => {
+                                // Finish text selection: extract text and copy to clipboard
+                                if let Some(sel) = app.text_selection.take() {
+                                    // Only copy if there's a meaningful selection (not just a click)
+                                    if sel.anchor != sel.endpoint {
+                                        let (start, end) = sel.ordered();
+                                        let extracted = if app.terminal_scroll > 0 {
+                                            // Scrollback: extract from tmux plain-text capture
+                                            app.active_session_id.and_then(|sid| {
+                                                let session = app.sessions.get(&sid)?;
+                                                let tmux_name = session.tmux_session_name.as_ref()?;
+                                                let inner = app.areas.terminal_pane_inner.get();
+                                                let visible_rows = inner.height as usize;
+                                                let history = ui::terminal_pane::tmux_history_size(tmux_name);
+                                                let eff = app.terminal_scroll.min(history);
+                                                let s = -(eff as i64);
+                                                let e = s + visible_rows as i64 - 1;
+                                                let content = ui::terminal_pane::capture_tmux_pane_plain(tmux_name, s, e)?;
+                                                let text = mouse::extract_text_from_plain(&content, start, end);
+                                                if text.is_empty() { None } else { Some(text) }
+                                            })
+                                        } else {
+                                            // Live view: extract from vt100 screen
+                                            app.active_session_id.and_then(|sid| {
+                                                let session = app.sessions.get(&sid)?;
+                                                let guard = session.parser.try_read().ok()?;
+                                                let screen = guard.screen();
+                                                let text = mouse::extract_text_from_screen(screen, start, end);
+                                                if text.is_empty() { None } else { Some(text) }
+                                            })
+                                        };
+                                        if let Some(text) = extracted {
+                                            match mouse::copy_to_clipboard(&text) {
+                                                Ok(()) => {
+                                                    app.set_status_with(
+                                                        app::StatusSeverity::Success,
+                                                        format!("Copied {} chars", text.len()),
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    app.set_status_with(
+                                                        app::StatusSeverity::Error,
+                                                        format!("Clipboard error: {}", e),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    needs_redraw = true;
+                                }
+                            }
                             MouseEventKind::Down(MouseButton::Middle)
                             | MouseEventKind::Down(MouseButton::Right) => {
                                 // Middle/Right click → native text selection
+                                app.text_selection = None;
                                 app.mouse_captured = false;
                                 app.mouse_capture_disabled_at = Some(Instant::now());
                                 let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
                                 needs_redraw = true;
                             }
                             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                                app.text_selection = None;
+                                let scroll_before = app.terminal_scroll;
                                 mouse::handle_mouse(&mut app, mouse);
+                                if app.terminal_scroll != scroll_before {
+                                    app.url_cache_dirty = true;
+                                }
                                 needs_redraw = true;
+                            }
+                            MouseEventKind::Moved => {
+                                let old_hovered = app.url_cache.hovered;
+                                app.url_cache.hovered = mouse::url_at_position(&app, mouse.column, mouse.row);
+                                if app.url_cache.hovered != old_hovered {
+                                    needs_redraw = true;
+                                }
                             }
                             _ => {}
                         }
                     }
                     AppEvent::Input(CrosstermEvent::Paste(data)) => {
-                        // Re-enable mouse capture if it was disabled for text selection
+                        // Re-enable mouse capture on paste (user finished selecting).
                         if !app.mouse_captured {
                             app.mouse_captured = true;
+                            app.mouse_capture_disabled_at = None;
                             let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
                         }
                         keys::handle_paste(&mut app, data);
@@ -448,10 +579,12 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                     AppEvent::Input(CrosstermEvent::Resize(w, h)) => {
                         tracing::info!("RESIZE-EVENT from crossterm: {}x{}", w, h);
                         session::resize_all(&app, h, w);
+                        app.text_selection = None;
                         needs_redraw = true;
                     }
                     AppEvent::Input(_) => {}
                     AppEvent::PtyOutput { .. } => {
+                        app.url_cache_dirty = true;
                         needs_redraw = true;
                     }
                     AppEvent::PtyExited { session_id } => {
@@ -616,6 +749,35 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                         app.agent_summaries.insert(session_id, summary);
                         needs_redraw = true;
                     }
+                    AppEvent::ClaudeCommitMessageReady { worktree_idx, message } => {
+                        // Only apply if the dialog is still open and in GeneratingMessage phase
+                        let applies = matches!(
+                            &app.dialog,
+                            Some(Dialog::GitCommit { worktree_idx: wi, phase, .. })
+                            if *wi == worktree_idx && *phase == CommitPhase::GeneratingMessage
+                        );
+                        if applies {
+                            match message {
+                                Ok(msg) => {
+                                    if let Some(Dialog::GitCommit { ref mut commit_message, ref mut phase, .. }) = app.dialog {
+                                        *commit_message = msg;
+                                        *phase = CommitPhase::Message;
+                                    }
+                                }
+                                Err(e) => {
+                                    if let Some(Dialog::GitCommit { ref mut phase, .. }) = app.dialog {
+                                        *phase = CommitPhase::Message;
+                                    }
+                                    app.set_status(format!("AI message failed: {}", e));
+                                }
+                            }
+                        }
+                        needs_redraw = true;
+                    }
+                    AppEvent::UpdateAvailable { latest_version } => {
+                        app.update_available = Some(latest_version);
+                        needs_redraw = true;
+                    }
                     AppEvent::WorktreeStatusReady { worktree_path, status, next_refresh_at } => {
                         // Update the per-worktree cache
                         app.worktree_statuses.insert(worktree_path.clone(), status.clone());
@@ -630,7 +792,7 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                         needs_redraw = true;
                     }
                     AppEvent::Tick => {
-                        // Auto-re-enable mouse capture after text selection timeout
+                        // Auto-re-enable mouse capture after text selection timeout.
                         if let Some(disabled_at) = app.mouse_capture_disabled_at {
                             if !app.mouse_captured && disabled_at.elapsed() > Duration::from_secs(2) {
                                 app.mouse_captured = true;

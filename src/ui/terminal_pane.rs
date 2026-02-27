@@ -8,7 +8,8 @@ use ratatui::text::{Line, Span};
 use ratatui::style::Modifier;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::app::{App, FocusTarget};
+use crate::app::{App, FocusTarget, TextSelection};
+use crate::url;
 use super::theme;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
@@ -79,6 +80,33 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                             let para = Paragraph::new(lines);
                             f.render_widget(para, inner_area);
 
+                            // Selection overlay for scrolled content
+                            if let Some(sel) = app.text_selection.as_ref() {
+                                let ((sr, sc), (er, ec)) = sel.ordered();
+                                let buf = f.buffer_mut();
+                                for row in sr..=er {
+                                    if row >= inner_area.height {
+                                        break;
+                                    }
+                                    let col_start = if row == sr { sc } else { 0 };
+                                    let col_end = if row == er { ec } else { inner_area.width.saturating_sub(1) };
+                                    for col in col_start..=col_end {
+                                        if col >= inner_area.width {
+                                            break;
+                                        }
+                                        let buf_x = inner_area.x + col;
+                                        let buf_y = inner_area.y + row;
+                                        if buf_x >= buf.area().right() || buf_y >= buf.area().bottom() {
+                                            continue;
+                                        }
+                                        let buf_cell = &mut buf[(buf_x, buf_y)];
+                                        let mut style = buf_cell.style();
+                                        style = style.add_modifier(Modifier::REVERSED);
+                                        buf_cell.set_style(style);
+                                    }
+                                }
+                            }
+
                             // Draw scrollbar
                             let total = history + visible_rows;
                             let scrollbar_area = Rect {
@@ -98,7 +126,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             match session.parser.try_read() {
                 Ok(guard) => {
                     let screen = guard.screen();
-                    render_vt100_screen(f, screen, block, area);
+                    render_vt100_screen(f, screen, block, area, &app.url_cache, app.text_selection.as_ref());
                     return;
                 }
                 Err(_) => {
@@ -349,12 +377,31 @@ fn file_status_color(status: char) -> Color {
     }
 }
 
-/// Capture tmux pane content for a range of lines. Returns None on failure.
+/// Capture tmux pane content for a range of lines (with ANSI escapes). Returns None on failure.
 fn capture_tmux_pane(tmux_name: &str, start: i64, end: i64) -> Option<String> {
     let output = std::process::Command::new("tmux")
         .args([
             "capture-pane", "-t", tmux_name,
             "-p", "-e",
+            "-S", &start.to_string(),
+            "-E", &end.to_string(),
+        ])
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        None
+    }
+}
+
+/// Capture tmux pane content as plain text (no ANSI escapes).
+pub fn capture_tmux_pane_plain(tmux_name: &str, start: i64, end: i64) -> Option<String> {
+    let output = std::process::Command::new("tmux")
+        .args([
+            "capture-pane", "-t", tmux_name,
+            "-p",
             "-S", &start.to_string(),
             "-E", &end.to_string(),
         ])
@@ -434,7 +481,7 @@ fn draw_scrollbar(f: &mut Frame, area: Rect, total_lines: usize, scroll_offset: 
 /// attribute (SGR 2).  Claude Code uses dim for placeholder/hint text, so
 /// without this the placeholders render at full intensity — the same color
 /// as regular typed text.
-fn render_vt100_screen(f: &mut Frame, screen: &vt100::Screen, block: Block, area: Rect) {
+fn render_vt100_screen(f: &mut Frame, screen: &vt100::Screen, block: Block, area: Rect, url_cache: &url::UrlCache, selection: Option<&TextSelection>) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -484,6 +531,58 @@ fn render_vt100_screen(f: &mut Frame, screen: &vt100::Screen, block: Block, area
                 buf_cell.set_style(style);
                 buf_cell.set_fg(fg);
                 buf_cell.set_bg(bg);
+            }
+        }
+    }
+
+    // Overlay URL highlighting on detected URLs
+    for (i, detected) in url_cache.urls.iter().enumerate() {
+        let row = detected.row;
+        if row >= inner.height.min(screen_rows) {
+            continue;
+        }
+        let is_hovered = url_cache.hovered == Some(i);
+        for col in detected.col_start..detected.col_end {
+            if col >= inner.width.min(screen_cols) {
+                break;
+            }
+            let buf_x = inner.x + col;
+            let buf_y = inner.y + row;
+            if buf_x >= buf.area().right() || buf_y >= buf.area().bottom() {
+                continue;
+            }
+            let buf_cell = &mut buf[(buf_x, buf_y)];
+            let mut style = buf_cell.style();
+            style = style.add_modifier(Modifier::UNDERLINED);
+            if is_hovered {
+                style = style.fg(Color::Cyan).add_modifier(Modifier::BOLD);
+            }
+            buf_cell.set_style(style);
+        }
+    }
+
+    // Overlay selection highlighting (inverse video)
+    if let Some(sel) = selection {
+        let ((sr, sc), (er, ec)) = sel.ordered();
+        for row in sr..=er {
+            if row >= inner.height.min(screen_rows) {
+                break;
+            }
+            let col_start = if row == sr { sc } else { 0 };
+            let col_end = if row == er { ec } else { inner.width.min(screen_cols).saturating_sub(1) };
+            for col in col_start..=col_end {
+                if col >= inner.width.min(screen_cols) {
+                    break;
+                }
+                let buf_x = inner.x + col;
+                let buf_y = inner.y + row;
+                if buf_x >= buf.area().right() || buf_y >= buf.area().bottom() {
+                    continue;
+                }
+                let buf_cell = &mut buf[(buf_x, buf_y)];
+                let mut style = buf_cell.style();
+                style = style.add_modifier(Modifier::REVERSED);
+                buf_cell.set_style(style);
             }
         }
     }

@@ -1,8 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, CommitPhase, ConfirmAction, Dialog, FocusTarget, InputMode, MiniModeFocus, PendingAction, ScreenMode, SidebarItem, SavedPrompt};
+use crate::app::{App, CommitPhase, ConfirmAction, Dialog, FocusTarget, InputMode, MiniModeFocus, PendingAction, ScreenMode, SidebarItem, SavedPrompt, StatusSeverity};
 use crate::session;
 use crate::ui::terminal_pane;
+use crate::url;
 use crate::worktree;
 
 // ── Keybinding registry ─────────────────────────────────────────────
@@ -132,6 +133,9 @@ const SIDEBAR_KEYS: &[KeyEntry] = &[
     ("s",                       "Stage & commit"),
     ("p",                       "Push branch to remote"),
     ("Shift + p",               "Pull branch from remote"),
+    section("URLs"),
+    ("u",                       "Copy last URL to clipboard"),
+    ("Shift + U",               "Open last URL in browser"),
 ];
 
 /// Additional sidebar keys shown only when wt.exe is available.
@@ -145,6 +149,8 @@ const TERMINAL_KEYS: &[KeyEntry] = &[
     section("Navigation"),
     ("Tab",                     "Back to sidebar / prompt queue"),
     ("PgUp / PgDn",             "Scroll through history"),
+    section("URLs"),
+    ("Ctrl + U",                "Copy last URL to clipboard"),
     section("Input"),
     ("(all keys)",              "Sent directly to Claude session"),
 ];
@@ -490,6 +496,15 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     input: current,
                 });
             }
+        }
+
+        // u — copy last URL to clipboard
+        (_, KeyCode::Char('u')) => {
+            handle_url_copy(app);
+        }
+        // U — open last URL in browser
+        (KeyModifiers::SHIFT, KeyCode::Char('U')) => {
+            handle_url_open(app);
         }
 
         // w — open new Windows Terminal tab in worktree directory (WSL only)
@@ -1077,6 +1092,12 @@ fn handle_terminal_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Ctrl+U — copy last URL to clipboard (intercepted before PTY forwarding)
+    if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('u') {
+        handle_url_copy(app);
+        return;
+    }
+
     // PgUp / PgDown scroll through history
     match key.code {
         KeyCode::PageUp => {
@@ -1183,6 +1204,32 @@ fn clamp_terminal_scroll(app: &mut App) {
     }
 }
 
+/// Copy the last detected URL to the clipboard.
+fn handle_url_copy(app: &mut App) {
+    if let Some(last) = app.url_cache.urls.last() {
+        let u = last.url.clone();
+        match url::copy_to_clipboard(&u) {
+            Ok(()) => app.set_status(format!("Copied: {}", u)),
+            Err(e) => app.set_status_with(StatusSeverity::Error, format!("Clipboard error: {}", e)),
+        }
+    } else {
+        app.set_status("No URLs detected");
+    }
+}
+
+/// Open the last detected URL in the browser.
+fn handle_url_open(app: &mut App) {
+    if let Some(last) = app.url_cache.urls.last() {
+        let u = last.url.clone();
+        match url::open_url_in_browser(&u) {
+            Ok(()) => app.set_status(format!("Opened: {}", u)),
+            Err(e) => app.set_status_with(StatusSeverity::Error, format!("Failed to open URL: {}", e)),
+        }
+    } else {
+        app.set_status("No URLs detected");
+    }
+}
+
 fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     // GitCommit-specific keys need to be handled before the general match
     // because Space, 'a', 'c' have special meaning in staging phase
@@ -1202,6 +1249,16 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     return;
                 }
                 _ => {} // fall through to general handler
+            }
+        }
+    }
+
+    // GitCommit message phase: Ctrl+G to generate AI commit message
+    if let Some(Dialog::GitCommit { ref phase, .. }) = app.dialog {
+        if *phase == CommitPhase::Message {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
+                handle_git_commit_claude_message(app);
+                return;
             }
         }
     }
@@ -1229,6 +1286,11 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             if let Some(Dialog::GitCommit { ref mut phase, .. }) = app.dialog {
                 if *phase == CommitPhase::Message {
                     *phase = CommitPhase::Staging;
+                    return;
+                }
+                // GeneratingMessage: cancel generation, go back to message
+                if *phase == CommitPhase::GeneratingMessage {
+                    *phase = CommitPhase::Message;
                     return;
                 }
             }
@@ -1659,8 +1721,8 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     commit_message,
                 }) => {
                     match phase {
-                        CommitPhase::Staging => {
-                            // Enter does nothing in staging phase — put dialog back
+                        CommitPhase::Staging | CommitPhase::GeneratingMessage => {
+                            // Enter does nothing in staging/generating phase — put dialog back
                             app.dialog = Some(Dialog::GitCommit {
                                 worktree_idx,
                                 unstaged,
@@ -2094,6 +2156,118 @@ fn handle_git_commit_enter_message(app: &mut App) {
             *phase = CommitPhase::Message;
         }
     }
+}
+
+/// Generate a commit message using Claude for the staged diff.
+fn handle_git_commit_claude_message(app: &mut App) {
+    let (worktree_idx, staged_empty, already_generating) = match &app.dialog {
+        Some(Dialog::GitCommit { worktree_idx, staged, phase, .. }) => {
+            (*worktree_idx, staged.is_empty(), *phase == CommitPhase::GeneratingMessage)
+        }
+        _ => return,
+    };
+
+    if staged_empty {
+        app.set_status("No staged files — stage files first");
+        return;
+    }
+    if already_generating {
+        return;
+    }
+
+    // Get staged diff
+    let diff = match worktree::diff_staged(app, worktree_idx) {
+        Ok(d) => d,
+        Err(e) => {
+            app.set_status(format!("Failed to get diff: {}", e));
+            return;
+        }
+    };
+
+    if diff.trim().is_empty() {
+        app.set_status("Staged diff is empty");
+        return;
+    }
+
+    // Truncate to ~8000 chars to avoid overwhelming the model
+    let diff_truncated = if diff.len() > 8000 {
+        format!("{}...\n[truncated]", &diff[..8000])
+    } else {
+        diff
+    };
+
+    // Set phase to generating
+    if let Some(Dialog::GitCommit { ref mut phase, .. }) = app.dialog {
+        *phase = CommitPhase::GeneratingMessage;
+    }
+
+    let tx = app.event_tx.clone();
+    std::thread::Builder::new()
+        .name("claude-commit-msg".into())
+        .spawn(move || {
+            use std::io::Write;
+            let mut child = match std::process::Command::new("claude")
+                .args([
+                    "-p",
+                    "--model", "haiku",
+                    "--no-session-persistence",
+                    "--system-prompt",
+                    "You are a commit message generator. You will receive a git diff of staged changes. Write a commit message that accurately describes ALL the changes. Use imperative mood. Format: a summary line, then a blank line, then bullet points describing each significant change. Output ONLY the commit message, nothing else. No quotes, no prefix, no explanation.",
+                ])
+                .env("CLAUDECODE", "")
+                .env("CLAUDE_CODE_ENTRYPOINT", "")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(e) => {
+                    let _ = tx.send(crate::event::AppEvent::ClaudeCommitMessageReady {
+                        worktree_idx,
+                        message: Err(format!("Failed to run claude: {}", e)),
+                    });
+                    return;
+                }
+            };
+
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(diff_truncated.as_bytes());
+            }
+
+            let output = match child.wait_with_output() {
+                Ok(out) => out,
+                Err(e) => {
+                    let _ = tx.send(crate::event::AppEvent::ClaudeCommitMessageReady {
+                        worktree_idx,
+                        message: Err(format!("claude process error: {}", e)),
+                    });
+                    return;
+                }
+            };
+
+            if output.status.success() {
+                let msg = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if msg.is_empty() {
+                    let _ = tx.send(crate::event::AppEvent::ClaudeCommitMessageReady {
+                        worktree_idx,
+                        message: Err("Claude returned empty message".to_string()),
+                    });
+                } else {
+                    let _ = tx.send(crate::event::AppEvent::ClaudeCommitMessageReady {
+                        worktree_idx,
+                        message: Ok(msg),
+                    });
+                }
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let _ = tx.send(crate::event::AppEvent::ClaudeCommitMessageReady {
+                    worktree_idx,
+                    message: Err(format!("claude failed: {}", if stderr.is_empty() { "unknown error".to_string() } else { stderr })),
+                });
+            }
+        })
+        .ok();
 }
 
 // ── Mini mode key handlers ─────────────────────────────────────────

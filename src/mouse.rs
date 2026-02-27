@@ -1,3 +1,6 @@
+use std::io::Write as _;
+use std::process::{Command, Stdio};
+
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
@@ -6,6 +9,214 @@ use crate::app::{
 };
 use crate::keys;
 use crate::ui::terminal_pane;
+
+/// Convert screen coordinates to vt100-relative (row, col) within the terminal pane.
+/// Returns None if the position is outside the terminal pane inner area.
+pub fn screen_to_vt100(app: &App, col: u16, row: u16) -> Option<(u16, u16)> {
+    let inner = app.areas.terminal_pane_inner.get();
+    if inner.width == 0 || inner.height == 0 {
+        return None;
+    }
+    if col < inner.x || col >= inner.x + inner.width
+        || row < inner.y || row >= inner.y + inner.height
+    {
+        return None;
+    }
+    Some((row - inner.y, col - inner.x))
+}
+
+/// Like screen_to_vt100 but clamps to the terminal pane edges instead of
+/// returning None.  Used during drag so the selection endpoint tracks even
+/// when the mouse leaves the pane.
+pub fn screen_to_vt100_clamped(app: &App, col: u16, row: u16) -> Option<(u16, u16)> {
+    let inner = app.areas.terminal_pane_inner.get();
+    if inner.width == 0 || inner.height == 0 {
+        return None;
+    }
+    let clamped_col = col.max(inner.x).min(inner.x + inner.width - 1) - inner.x;
+    let clamped_row = row.max(inner.y).min(inner.y + inner.height - 1) - inner.y;
+    Some((clamped_row, clamped_col))
+}
+
+/// Extract text from a vt100 screen between two (row, col) positions (inclusive).
+/// Handles wide characters, trims trailing whitespace per line, joins with newline.
+pub fn extract_text_from_screen(
+    screen: &vt100::Screen,
+    start: (u16, u16),
+    end: (u16, u16),
+) -> String {
+    let (screen_rows, screen_cols) = screen.size();
+    let mut lines: Vec<String> = Vec::new();
+
+    for row in start.0..=end.0 {
+        if row >= screen_rows {
+            break;
+        }
+        let col_start = if row == start.0 { start.1 } else { 0 };
+        let col_end = if row == end.0 { end.1 } else { screen_cols.saturating_sub(1) };
+
+        let mut line = String::new();
+        let mut col = col_start;
+        while col <= col_end && col < screen_cols {
+            if let Some(cell) = screen.cell(row, col) {
+                if cell.is_wide_continuation() {
+                    col += 1;
+                    continue;
+                }
+                if cell.has_contents() {
+                    line.push_str(cell.contents());
+                } else {
+                    line.push(' ');
+                }
+            } else {
+                line.push(' ');
+            }
+            col += 1;
+        }
+        lines.push(line.trim_end().to_string());
+    }
+
+    // Trim trailing empty lines
+    while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+        lines.pop();
+    }
+
+    lines.join("\n")
+}
+
+/// Copy text to the system clipboard via OSC 52 escape sequence.
+/// This is instant (just writes to stdout), handles UTF-8 perfectly via
+/// base64 encoding, and works in Windows Terminal, iTerm2, Alacritty, kitty, etc.
+/// Falls back to external clipboard tools if the write fails.
+pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    // Primary: OSC 52 — supported by all modern terminals
+    if copy_via_osc52(text).is_ok() {
+        return Ok(());
+    }
+
+    // Fallback: external tools
+    let candidates: &[&[&str]] = &[
+        &["xclip", "-selection", "clipboard"],
+        &["xsel", "--clipboard", "--input"],
+        &["wl-copy"],
+        &["pbcopy"],
+        &["win32yank.exe", "-i", "--crlf"],
+    ];
+    for args in candidates {
+        if let Ok(()) = try_clipboard_cmd(args[0], &args[1..], text.as_bytes()) {
+            return Ok(());
+        }
+    }
+
+    Err("No clipboard tool found".to_string())
+}
+
+/// Write an OSC 52 escape sequence to set the system clipboard.
+/// The terminal emulator intercepts this and copies the base64-decoded text.
+fn copy_via_osc52(text: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    let encoded = base64_encode(text.as_bytes());
+    let seq = format!("\x1b]52;c;{}\x07", encoded);
+    let mut stdout = std::io::stdout();
+    stdout.write_all(seq.as_bytes()).map_err(|e| e.to_string())?;
+    stdout.flush().map_err(|e| e.to_string())
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
+
+fn try_clipboard_cmd(program: &str, args: &[&str], data: &[u8]) -> Result<(), ()> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| ())?;
+    if let Some(ref mut stdin) = child.stdin {
+        let _ = stdin.write_all(data);
+    }
+    drop(child.stdin.take()); // close stdin so the child can finish
+    let status = child.wait().map_err(|_| ())?;
+    if status.success() { Ok(()) } else { Err(()) }
+}
+
+/// Extract text from plain-text content (e.g. tmux capture without -e) by
+/// row/col coordinates.  Used for scrollback selection where we don't have
+/// a vt100::Screen.
+pub fn extract_text_from_plain(content: &str, start: (u16, u16), end: (u16, u16)) -> String {
+    let lines_vec: Vec<&str> = content.lines().collect();
+    let mut result: Vec<String> = Vec::new();
+
+    for row in start.0..=end.0 {
+        let row_idx = row as usize;
+        if row_idx >= lines_vec.len() {
+            break;
+        }
+        let line = lines_vec[row_idx];
+        let chars: Vec<char> = line.chars().collect();
+        let col_start = if row == start.0 { start.1 as usize } else { 0 };
+        let col_end = if row == end.0 { end.1 as usize } else { chars.len().saturating_sub(1) };
+        let col_end = col_end.min(chars.len().saturating_sub(1));
+
+        if col_start <= col_end && col_start < chars.len() {
+            let s: String = chars[col_start..=col_end].iter().collect();
+            result.push(s.trim_end().to_string());
+        } else {
+            result.push(String::new());
+        }
+    }
+
+    // Trim trailing empty lines
+    while result.last().map(|l| l.is_empty()).unwrap_or(false) {
+        result.pop();
+    }
+
+    result.join("\n")
+}
+
+/// Check if a screen position overlaps a cached URL, returning its index.
+pub fn url_at_position(app: &App, col: u16, row: u16) -> Option<usize> {
+    // URLs are only detected in the terminal pane inner area
+    let inner = app.areas.terminal_pane_inner.get();
+    if inner.width == 0 || inner.height == 0 {
+        return None;
+    }
+    if col < inner.x || col >= inner.x + inner.width || row < inner.y || row >= inner.y + inner.height {
+        return None;
+    }
+    // Convert screen coordinates to terminal-relative coordinates
+    let rel_col = col - inner.x;
+    let rel_row = row - inner.y;
+
+    for (i, url) in app.url_cache.urls.iter().enumerate() {
+        if url.row == rel_row && rel_col >= url.col_start && rel_col < url.col_end {
+            return Some(i);
+        }
+    }
+    None
+}
 
 /// Check if a point (col, row) is inside a Rect.
 fn point_in_rect(col: u16, row: u16, rect: Rect) -> bool {

@@ -992,6 +992,9 @@ fn draw_git_commit(
         CommitPhase::Staging => {
             draw_git_commit_staging(f, app, branch, unstaged, staged, section, selected);
         }
+        CommitPhase::GeneratingMessage => {
+            draw_git_commit_generating(f, app, branch, staged);
+        }
         CommitPhase::Message => {
             draw_git_commit_message(f, app, branch, staged, commit_message);
         }
@@ -1161,6 +1164,74 @@ fn draw_git_commit_staging(
     );
 }
 
+fn draw_git_commit_generating(
+    f: &mut Frame,
+    app: &App,
+    branch: &str,
+    staged: &[(char, String)],
+) {
+    let max_height = (f.area().height as f32 * 0.6) as u16;
+    let fixed_rows = 5; // staged header + blank + spinner + help + borders
+    let staged_visible = (staged.len() as u16).min(max_height.saturating_sub(fixed_rows));
+    let height = staged_visible + fixed_rows;
+    let area = centered_rect(60, height, f.area());
+    app.areas.dialog.set(area);
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(format!(" Commit — {} ", branch))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::DIALOG_CREATION));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),                // staged header
+            Constraint::Length(staged_visible),   // staged files
+            Constraint::Length(1),                // blank
+            Constraint::Length(1),                // spinner
+            Constraint::Length(1),                // help
+        ])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(format!("── Staged ({}) ──", staged.len()))
+            .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        chunks[0],
+    );
+
+    let staged_items: Vec<ListItem> = staged
+        .iter()
+        .take(staged_visible as usize)
+        .map(|(status, path)| {
+            ListItem::new(Line::from(Span::styled(
+                format!("  {} {}", status, path),
+                Style::default().fg(Color::White),
+            )))
+        })
+        .collect();
+    f.render_widget(List::new(staged_items), chunks[1]);
+
+    let spinner_idx = (app.spinner_frame / 3) % theme::SPINNER_FRAMES.len();
+    let spinner = theme::SPINNER_FRAMES[spinner_idx];
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{} Generating commit message with Claude...", spinner),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ))),
+        chunks[3],
+    );
+
+    f.render_widget(
+        Paragraph::new("Esc: cancel")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[4],
+    );
+}
+
 /// Calculate scroll offset to keep `selected` visible within `visible_count` rows.
 fn scroll_offset_for(selected: usize, visible_count: usize) -> usize {
     if visible_count == 0 {
@@ -1180,10 +1251,14 @@ fn draw_git_commit_message(
     staged: &[(char, String)],
     commit_message: &str,
 ) {
-    let max_height = (f.area().height as f32 * 0.6) as u16;
-    let fixed_rows = 6; // header + blank + label + input + help + borders
-    let staged_visible = (staged.len() as u16).min(max_height.saturating_sub(fixed_rows));
-    let height = staged_visible + fixed_rows;
+    let max_height = (f.area().height as f32 * 0.8) as u16;
+    // Count message lines (at least 1 for the cursor)
+    let msg_line_count = commit_message.lines().count().max(1) as u16;
+    let max_msg_lines = max_height.saturating_sub(7); // reserve for header, staged, label, help, borders
+    let msg_visible = msg_line_count.min(max_msg_lines).max(3); // at least 3 lines for the message area
+    let fixed_rows = 5; // staged header + blank + label + help + borders
+    let staged_visible = (staged.len() as u16).min(max_height.saturating_sub(fixed_rows + msg_visible));
+    let height = staged_visible + msg_visible + fixed_rows;
     let area = centered_rect(60, height, f.area());
     app.areas.dialog.set(area);
     f.render_widget(Clear, area);
@@ -1200,10 +1275,9 @@ fn draw_git_commit_message(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),                     // staged header
-            Constraint::Length(staged_visible),          // staged files
-            Constraint::Length(1),                     // blank
-            Constraint::Length(1),                     // label
-            Constraint::Length(1),                     // input
+            Constraint::Length(staged_visible),        // staged files
+            Constraint::Length(1),                     // blank/label
+            Constraint::Length(msg_visible),           // message area
             Constraint::Length(1),                     // help
         ])
         .split(inner);
@@ -1229,23 +1303,30 @@ fn draw_git_commit_message(
     f.render_widget(
         Paragraph::new("Commit message:")
             .style(Style::default().fg(Color::Gray)),
+        chunks[2],
+    );
+
+    // Build message lines with cursor on the last line
+    let display_msg = format!("{}_", commit_message);
+    let msg_lines: Vec<Line> = display_msg
+        .lines()
+        .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))))
+        .collect();
+    // Scroll to keep the last line (cursor) visible
+    let scroll = if msg_line_count > msg_visible {
+        (msg_line_count - msg_visible) as u16
+    } else {
+        0
+    };
+    f.render_widget(
+        Paragraph::new(msg_lines).scroll((scroll, 0)),
         chunks[3],
     );
 
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!("{}_", commit_message),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ))),
-        chunks[4],
-    );
-
-    f.render_widget(
-        Paragraph::new("Enter: commit  Esc: back")
+        Paragraph::new("Enter: commit  Ctrl+G: AI msg  Esc: back")
             .style(Style::default().fg(Color::DarkGray)),
-        chunks[5],
+        chunks[4],
     );
 }
 

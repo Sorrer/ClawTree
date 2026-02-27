@@ -67,4 +67,13 @@ pub enum AppEvent {
         session_id: u64,
         summary: String,
     },
+    /// Claude-generated commit message is ready.
+    ClaudeCommitMessageReady {
+        worktree_idx: usize,
+        message: Result<String, String>,
+    },
+    /// A newer version is available on GitHub Releases.
+    UpdateAvailable {
+        latest_version: String,
+    },
 }

@@ -571,6 +571,26 @@ pub fn push_branch(worktree_path: &Path, branch: &str) -> Result<String> {
     anyhow::bail!("git push failed: {}", stderr);
 }
 
+/// Parse the output of `git status --porcelain` into a list of file changes.
+pub fn parse_status_porcelain(output: &str) -> Vec<FileChange> {
+    let mut changes = Vec::new();
+    for line in output.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let index_status = bytes[0] as char;
+        let work_status = bytes[1] as char;
+        let path = line[3..].to_string();
+        changes.push(FileChange {
+            path,
+            index_status,
+            work_status,
+        });
+    }
+    changes
+}
+
 /// Get file status using `git status --porcelain`.
 pub fn status_porcelain(worktree_path: &Path) -> Result<Vec<FileChange>> {
     let output = Command::new("git")
@@ -587,22 +607,7 @@ pub fn status_porcelain(worktree_path: &Path) -> Result<Vec<FileChange>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut changes = Vec::new();
-    for line in stdout.lines() {
-        if line.len() < 4 {
-            continue;
-        }
-        let bytes = line.as_bytes();
-        let index_status = bytes[0] as char;
-        let work_status = bytes[1] as char;
-        let path = line[3..].to_string();
-        changes.push(FileChange {
-            path,
-            index_status,
-            work_status,
-        });
-    }
-    Ok(changes)
+    Ok(parse_status_porcelain(&stdout))
 }
 
 /// Stage a single file.
@@ -654,6 +659,23 @@ pub fn stage_all(worktree_path: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Get the diff of staged changes.
+pub fn diff_staged(worktree_path: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .args(["diff", "--staged"])
+        .current_dir(worktree_path)
+        .output()
+        .context("Failed to run git diff --staged")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "git diff --staged failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 /// Commit staged changes with a message.
@@ -763,13 +785,20 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
     std::fs::write(repo_path.join(".git"), "gitdir: ./.bare\n")
         .context("Failed to write .git pointer file")?;
 
-    // 7. Fix remote fetch refspec
+    // 7. Mark the repo as bare so git doesn't think the root dir is a worktree
+    // (without this, `git worktree add` fails with "already checked out")
+    let _ = Command::new("git")
+        .args(["config", "core.bare", "true"])
+        .current_dir(repo_path)
+        .output();
+
+    // 8. Fix remote fetch refspec
     let _ = Command::new("git")
         .args(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
         .current_dir(repo_path)
         .output();
 
-    // 8. Create worktree for the branch
+    // 9. Create worktree for the branch
     let wt_output = Command::new("git")
         .args(["worktree", "add", &branch])
         .current_dir(repo_path)
@@ -777,32 +806,30 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
         .context("Failed to create worktree")?;
 
     if !wt_output.status.success() {
-        // If worktree add failed, try to recover
         let stderr = String::from_utf8_lossy(&wt_output.stderr);
-        // It might fail because branch is already checked out — try with a different path
-        if stderr.contains("already checked out") || stderr.contains("is already used") {
-            // Detach HEAD in bare repo first
-            let head_ref = format!("refs/heads/{}", branch);
-            let _ = Command::new("git")
-                .args(["symbolic-ref", "HEAD", &head_ref])
-                .current_dir(&dot_bare)
-                .output();
-            // Try again
-            let retry = Command::new("git")
-                .args(["worktree", "add", "--force", &branch])
-                .current_dir(repo_path)
-                .output();
-            if let Ok(ref out) = retry {
-                if !out.status.success() {
-                    tracing::warn!("worktree add retry failed: {}", String::from_utf8_lossy(&out.stderr));
-                }
+        tracing::warn!("worktree add failed: {}", stderr);
+        // Try with --force as fallback
+        let retry = Command::new("git")
+            .args(["worktree", "add", "--force", &branch])
+            .current_dir(repo_path)
+            .output();
+        if let Ok(ref out) = retry {
+            if !out.status.success() {
+                tracing::warn!("worktree add --force also failed: {}", String::from_utf8_lossy(&out.stderr));
             }
-        } else {
-            tracing::warn!("worktree add failed: {}", stderr);
         }
     }
 
-    // 9. Remove the leftover working tree files from root
+    // 10. Verify worktree was created before removing old files
+    let wt_path = repo_path.join(&branch);
+    if !wt_path.is_dir() {
+        anyhow::bail!(
+            "Failed to create worktree directory '{}'. Repo was converted to bare layout but files remain at the root.",
+            branch
+        );
+    }
+
+    // 11. Remove the leftover working tree files from root
     for entry in root_entries {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
@@ -818,7 +845,7 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
         }
     }
 
-    // 10. Pop stash in the new worktree if one was saved
+    // 12. Pop stash in the new worktree if one was saved
     if stashed {
         let wt_path = repo_path.join(&branch);
         if wt_path.is_dir() {
@@ -941,6 +968,8 @@ pub fn is_auth_error(msg: &str) -> bool {
 mod tests {
     use super::*;
 
+    // ── parse_worktree_list tests ──────────────────────────────────────
+
     #[test]
     fn test_parse_worktree_list() {
         let output = "\
@@ -961,5 +990,168 @@ branch refs/heads/feature-x
         assert!(entries[0].is_bare);
         assert_eq!(entries[1].branch.as_deref(), Some("main"));
         assert_eq!(entries[2].branch.as_deref(), Some("feature-x"));
+    }
+
+    #[test]
+    fn test_parse_worktree_list_empty() {
+        let entries = parse_worktree_list("").unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_worktree_list_single_bare() {
+        let output = "worktree /repo/.bare\nHEAD 0000000000000000000000000000000000000000\nbare\n";
+        let entries = parse_worktree_list(output).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_bare);
+        assert!(entries[0].branch.is_none());
+        assert_eq!(entries[0].path, PathBuf::from("/repo/.bare"));
+    }
+
+    #[test]
+    fn test_parse_worktree_list_detached_head() {
+        let output = "\
+worktree /repo/.bare
+HEAD abc123
+bare
+
+worktree /repo/detached
+HEAD def456
+detached
+";
+        let entries = parse_worktree_list(output).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries[1].branch.is_none());
+        assert!(!entries[1].is_bare);
+    }
+
+    #[test]
+    fn test_parse_worktree_list_spaces_in_path() {
+        let output = "worktree /home/user/my project/main\nHEAD abc123\nbranch refs/heads/main\n";
+        let entries = parse_worktree_list(output).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, PathBuf::from("/home/user/my project/main"));
+        assert_eq!(entries[0].branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn test_parse_worktree_list_no_trailing_newline() {
+        let output = "worktree /repo/main\nHEAD abc123\nbranch refs/heads/main";
+        let entries = parse_worktree_list(output).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].branch.as_deref(), Some("main"));
+    }
+
+    // ── is_auth_error tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_is_auth_error_terminal_prompt() {
+        assert!(is_auth_error("fatal: could not read Username for 'https://github.com': terminal prompts disabled"));
+    }
+
+    #[test]
+    fn test_is_auth_error_auth_failed() {
+        assert!(is_auth_error("remote: Authentication failed for 'https://github.com/repo.git'"));
+    }
+
+    #[test]
+    fn test_is_auth_error_publickey() {
+        assert!(is_auth_error("git@github.com: Permission denied (publickey)."));
+    }
+
+    #[test]
+    fn test_is_auth_error_http_401() {
+        assert!(is_auth_error("The requested URL returned error: HTTP 401"));
+    }
+
+    #[test]
+    fn test_is_auth_error_http_403() {
+        assert!(is_auth_error("The requested URL returned error: HTTP 403"));
+    }
+
+    #[test]
+    fn test_is_auth_error_unrelated() {
+        assert!(!is_auth_error("fatal: repository not found"));
+    }
+
+    #[test]
+    fn test_is_auth_error_empty() {
+        assert!(!is_auth_error(""));
+    }
+
+    #[test]
+    fn test_is_auth_error_case_insensitive() {
+        assert!(is_auth_error("AUTHENTICATION FAILED for repo"));
+        assert!(is_auth_error("Terminal Prompts Disabled"));
+    }
+
+    // ── parse_status_porcelain tests ───────────────────────────────────
+
+    #[test]
+    fn test_parse_status_porcelain_empty() {
+        let changes = parse_status_porcelain("");
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn test_parse_status_porcelain_modified() {
+        let changes = parse_status_porcelain(" M src/main.rs\n");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].index_status, ' ');
+        assert_eq!(changes[0].work_status, 'M');
+        assert_eq!(changes[0].path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_parse_status_porcelain_staged() {
+        let changes = parse_status_porcelain("M  src/lib.rs\n");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].index_status, 'M');
+        assert_eq!(changes[0].work_status, ' ');
+        assert_eq!(changes[0].path, "src/lib.rs");
+    }
+
+    #[test]
+    fn test_parse_status_porcelain_untracked() {
+        let changes = parse_status_porcelain("?? new_file.txt\n");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].index_status, '?');
+        assert_eq!(changes[0].work_status, '?');
+        assert_eq!(changes[0].path, "new_file.txt");
+    }
+
+    #[test]
+    fn test_parse_status_porcelain_mixed() {
+        let output = " M src/main.rs\nM  src/lib.rs\n?? todo.txt\n";
+        let changes = parse_status_porcelain(output);
+        assert_eq!(changes.len(), 3);
+        assert_eq!(changes[0].path, "src/main.rs");
+        assert_eq!(changes[1].path, "src/lib.rs");
+        assert_eq!(changes[2].path, "todo.txt");
+    }
+
+    #[test]
+    fn test_parse_status_porcelain_renamed() {
+        let changes = parse_status_porcelain("R  old.rs -> new.rs\n");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].index_status, 'R');
+        assert_eq!(changes[0].path, "old.rs -> new.rs");
+    }
+
+    #[test]
+    fn test_parse_status_porcelain_short_line() {
+        // Lines shorter than 4 chars should be skipped
+        let changes = parse_status_porcelain("M\n M\nMM \n M src/ok.rs\n");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "src/ok.rs");
+    }
+
+    #[test]
+    fn test_parse_status_porcelain_added_and_modified() {
+        let changes = parse_status_porcelain("AM src/new.rs\n");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].index_status, 'A');
+        assert_eq!(changes[0].work_status, 'M');
+        assert_eq!(changes[0].path, "src/new.rs");
     }
 }

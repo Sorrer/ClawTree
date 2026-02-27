@@ -137,11 +137,29 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
+            "CLAWTREE ",
+            Style::default()
+                .fg(theme::get().brand_claw)
+                .bg(theme::get().status_bar_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
             format!("{} ", version),
             Style::default()
                 .fg(Color::DarkGray)
                 .bg(theme::get().status_bar_bg),
         ),
+        if let Some(ref latest) = app.update_available {
+            Span::styled(
+                format!("\u{2191} v{} ", latest),
+                Style::default()
+                    .fg(theme::STATUS_WARNING)
+                    .bg(theme::get().status_bar_bg)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        },
         Span::styled(
             format!(" {} ", mode_text),
             Style::default()

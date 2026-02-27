@@ -5,7 +5,7 @@ fn main() {
     println!("cargo::rerun-if-changed=.git/HEAD");
 
     let version = Command::new("git")
-        .args(["describe", "--tags", "--always"])
+        .args(["describe", "--tags", "--match", "v*", "--always"])
         .output()
         .ok()
         .filter(|o| o.status.success())

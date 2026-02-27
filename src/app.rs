@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 
 use crate::event::AppEvent;
 use crate::session::{ClaudeUsage, GlobalUsage, Session};
+use crate::url;
 use crate::worktree::{self, Worktree, WorktreeStatus};
 
 /// Stores the screen regions of interactive UI elements, updated each frame.
@@ -72,6 +73,26 @@ impl LayoutAreas {
         self.mini_tree.set(Rect::default());
         self.mini_tree_inner.set(Rect::default());
         self.mini_detail.set(Rect::default());
+    }
+}
+
+/// In-app text selection state (anchor + current drag position in vt100 coords).
+#[derive(Debug, Clone, Copy)]
+pub struct TextSelection {
+    pub anchor: (u16, u16),   // vt100 (row, col) where drag started
+    pub endpoint: (u16, u16), // vt100 (row, col) current drag position
+}
+
+impl TextSelection {
+    /// Return (start, end) in reading order (top-left to bottom-right).
+    pub fn ordered(&self) -> ((u16, u16), (u16, u16)) {
+        let (ar, ac) = self.anchor;
+        let (er, ec) = self.endpoint;
+        if ar < er || (ar == er && ac <= ec) {
+            ((ar, ac), (er, ec))
+        } else {
+            ((er, ec), (ar, ac))
+        }
     }
 }
 
@@ -273,8 +294,9 @@ pub const AUTH_ERROR_OPTION_COUNT: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitPhase {
-    Staging,  // navigating files, staging/unstaging
-    Message,  // typing commit message
+    Staging,           // navigating files, staging/unstaging
+    GeneratingMessage, // waiting for Claude to generate commit message
+    Message,           // typing commit message
 }
 
 #[derive(Debug, Clone)]
@@ -402,6 +424,12 @@ pub struct App {
     pub mouse_captured: bool,
     /// When mouse capture was last disabled (for auto-re-enable timer).
     pub mouse_capture_disabled_at: Option<Instant>,
+    /// In-app text selection (drag-to-select in terminal pane).
+    pub text_selection: Option<TextSelection>,
+    /// Cached URL scan results from the active terminal screen.
+    pub url_cache: url::UrlCache,
+    /// Whether the URL cache needs to be refreshed (set on new PTY output, scroll, etc.).
+    pub url_cache_dirty: bool,
     /// Claude Code context window usage per session, from debug logs.
     pub claude_usage: HashMap<u64, ClaudeUsage>,
     /// Global account-level usage from the Anthropic API.
@@ -416,6 +444,8 @@ pub struct App {
     pub terminal_panel_items: Vec<SidebarItem>,
     /// Screen regions of interactive UI elements, updated each frame for mouse hit-testing.
     pub areas: LayoutAreas,
+    /// Latest version string from GitHub Releases, if newer than current.
+    pub update_available: Option<String>,
 }
 
 impl App {
@@ -472,6 +502,9 @@ impl App {
             mini_drilldown_session: None,
             mouse_captured: true,
             mouse_capture_disabled_at: None,
+            text_selection: None,
+            url_cache: url::UrlCache::default(),
+            url_cache_dirty: true,
             claude_usage: HashMap::new(),
             global_usage: None,
             terminal_ids: Vec::new(),
@@ -479,6 +512,7 @@ impl App {
             sidebar_panel: SidebarPanel::Worktrees,
             terminal_panel_items: Vec::new(),
             areas: LayoutAreas::default(),
+            update_available: None,
         }
     }
 
@@ -637,6 +671,7 @@ impl App {
     }
 
     pub fn activate_selected(&mut self) {
+        self.text_selection = None;
         match self.selected_sidebar_item() {
             Some(SidebarItem::Session(wi, si)) => {
                 if let Some(wt) = self.worktrees.get(wi) {
@@ -647,6 +682,7 @@ impl App {
                         self.terminal_scroll = 0;
                         self.focus = FocusTarget::TerminalPane;
                         self.input_mode = InputMode::Terminal;
+                        self.url_cache_dirty = true;
                     }
                 }
             }
@@ -682,6 +718,7 @@ impl App {
                     self.terminal_scroll = 0;
                     self.focus = FocusTarget::TerminalPane;
                     self.input_mode = InputMode::Terminal;
+                    self.url_cache_dirty = true;
                 }
             }
             None => {}
