@@ -154,6 +154,7 @@ fn draw_detail_pane(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_session_detail(
     f: &mut Frame,
     app: &App,
@@ -567,9 +568,7 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
         let tag_fg = if is_exited { Color::DarkGray } else { Color::Green };
         let name_fg = if is_selected {
             if is_exited { Color::Gray } else { Color::White }
-        } else {
-            if is_exited { Color::DarkGray } else { Color::Gray }
-        };
+        } else if is_exited { Color::DarkGray } else { Color::Gray };
 
         let prefix_len = 2 + tag.len() + 1; // "  [terminal] "
         let max_name = inner_width.saturating_sub(prefix_len);

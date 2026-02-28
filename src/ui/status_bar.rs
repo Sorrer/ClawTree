@@ -44,9 +44,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     } else if !app.repo_detected && app.input_mode != InputMode::Dialog {
         if app.regular_repo_path.is_some() {
             if wide { "i:init repo  c:convert  ?:help  ^q:quit" } else { "i:init c:convert ?:help ^q:quit" }
-        } else {
-            if wide { "i:init repo  ?:help  ^q:quit" } else { "i:init-repo ?:help ^q:quit" }
-        }
+        } else if wide { "i:init repo  ?:help  ^q:quit" } else { "i:init-repo ?:help ^q:quit" }
     } else if app.prompt_queue_focused() {
         if wide {
             "Enter:add/edit  d:delete  \u{2191}\u{2193}:navigate  Esc:back  ^p:hide queue"

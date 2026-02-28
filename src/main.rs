@@ -822,7 +822,7 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                         app.spinner_frame = app.spinner_frame.wrapping_add(1);
 
                         // ── Mini mode agent tracking (~1/sec, on every 30th tick) ──
-                        if app.spinner_frame % 30 == 0 {
+                        if app.spinner_frame.is_multiple_of(30) {
                             // Rebuild agent list if in mini mode
                             if app.screen_mode == ScreenMode::Mini {
                                 app.rebuild_mini_agent_list();

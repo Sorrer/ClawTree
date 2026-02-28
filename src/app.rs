@@ -749,6 +749,7 @@ impl App {
     }
 
     /// Get the split unstaged/staged file lists from the cached worktree status.
+    #[allow(clippy::type_complexity)]
     pub fn info_panel_file_lists(&self) -> (Vec<(char, String)>, Vec<(char, String)>) {
         let mut unstaged = Vec::new();
         let mut staged = Vec::new();

@@ -53,7 +53,7 @@ fn parse_worktree_list(output: &str) -> Result<Vec<GitWorktreeEntry>> {
     let mut is_bare = false;
 
     for line in output.lines() {
-        if line.starts_with("worktree ") {
+        if let Some(rest) = line.strip_prefix("worktree ") {
             // Save previous entry
             if let Some(path) = current_path.take() {
                 entries.push(GitWorktreeEntry {
@@ -64,11 +64,10 @@ fn parse_worktree_list(output: &str) -> Result<Vec<GitWorktreeEntry>> {
                 });
                 is_bare = false;
             }
-            current_path = Some(PathBuf::from(&line[9..]));
-        } else if line.starts_with("HEAD ") {
-            current_head = line[5..].to_string();
-        } else if line.starts_with("branch ") {
-            let branch_ref = &line[7..];
+            current_path = Some(PathBuf::from(rest));
+        } else if let Some(rest) = line.strip_prefix("HEAD ") {
+            current_head = rest.to_string();
+        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
             // Extract short branch name from refs/heads/...
             current_branch = Some(
                 branch_ref
@@ -716,13 +715,11 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
     let _ = std::fs::remove_dir_all(&holding);
 
     // 12. Pop stash in the new worktree if one was saved
-    if stashed {
-        if wt_path.is_dir() {
-            let _ = Command::new("git")
-                .args(["stash", "pop"])
-                .current_dir(&wt_path)
-                .output();
-        }
+    if stashed && wt_path.is_dir() {
+        let _ = Command::new("git")
+            .args(["stash", "pop"])
+            .current_dir(&wt_path)
+            .output();
     }
 
     Ok(branch)

@@ -241,6 +241,7 @@ pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf)> {
 }
 
 /// Spawn a `claude` process inside a tmux session, then attach to it via PTY.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_claude_pty_tmux(
     working_dir: &Path,
     session_id: u64,

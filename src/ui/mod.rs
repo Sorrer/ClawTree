@@ -59,8 +59,7 @@ fn draw_normal(f: &mut Frame, app: &App) {
             let has_terminals = !app.terminal_ids.is_empty();
             let has_usage = app.global_usage.is_some();
             let terminal_panel_height = if has_terminals {
-                let h = (app.terminal_ids.len() as u16 + 2).min(8);
-                h
+                (app.terminal_ids.len() as u16 + 2).min(8)
             } else {
                 0
             };
@@ -124,24 +123,22 @@ fn draw_normal(f: &mut Frame, app: &App) {
             app.areas.terminal_pane.set(main_chunks[1]);
             terminal_pane::draw(f, app, main_chunks[1]);
         }
-    } else {
-        if show_queue {
-            let pane_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(5),
-                    Constraint::Length(app.queue_panel_height()),
-                ])
-                .split(chunks[0]);
+    } else if show_queue {
+        let pane_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(5),
+                Constraint::Length(app.queue_panel_height()),
+            ])
+            .split(chunks[0]);
 
-            app.areas.terminal_pane.set(pane_chunks[0]);
-            app.areas.prompt_queue.set(pane_chunks[1]);
-            terminal_pane::draw(f, app, pane_chunks[0]);
-            prompt_queue::draw(f, app, pane_chunks[1]);
-        } else {
-            app.areas.terminal_pane.set(chunks[0]);
-            terminal_pane::draw(f, app, chunks[0]);
-        }
+        app.areas.terminal_pane.set(pane_chunks[0]);
+        app.areas.prompt_queue.set(pane_chunks[1]);
+        terminal_pane::draw(f, app, pane_chunks[0]);
+        prompt_queue::draw(f, app, pane_chunks[1]);
+    } else {
+        app.areas.terminal_pane.set(chunks[0]);
+        terminal_pane::draw(f, app, chunks[0]);
     }
 
     app.areas.status_bar.set(chunks[1]);

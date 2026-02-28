@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -563,7 +563,7 @@ fn draw_pull_error(f: &mut Frame, app: &App, branch: &str, error_message: &str, 
         if line.is_empty() {
             wrapped_count += 1;
         } else {
-            wrapped_count += (line.len() + wrap_width - 1) / wrap_width;
+            wrapped_count += line.len().div_ceil(wrap_width);
         }
     }
     let error_display_lines = wrapped_count.min(8); // cap error display at 8 lines
@@ -666,7 +666,7 @@ fn draw_auth_error(f: &mut Frame, app: &App, operation: &str, error_message: &st
         if line.is_empty() {
             wrapped_count += 1;
         } else {
-            wrapped_count += (line.len() + wrap_width - 1) / wrap_width;
+            wrapped_count += line.len().div_ceil(wrap_width);
         }
     }
     let error_display_lines = wrapped_count.min(8);
@@ -978,6 +978,7 @@ fn draw_merge_success(f: &mut Frame, app: &App, message: &str) {
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_git_commit(
     f: &mut Frame,
     app: &App,
@@ -1314,11 +1315,7 @@ fn draw_git_commit_message(
         .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))))
         .collect();
     // Scroll to keep the last line (cursor) visible
-    let scroll = if msg_line_count > msg_visible {
-        (msg_line_count - msg_visible) as u16
-    } else {
-        0
-    };
+    let scroll = msg_line_count.saturating_sub(msg_visible);
     f.render_widget(
         Paragraph::new(msg_lines).scroll((scroll, 0)),
         chunks[3],
@@ -1331,10 +1328,11 @@ fn draw_git_commit_message(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_convert_repo(
     f: &mut Frame,
     app: &App,
-    source_path: &PathBuf,
+    source_path: &Path,
     mode: usize,
     target_path: &str,
     branch: &str,

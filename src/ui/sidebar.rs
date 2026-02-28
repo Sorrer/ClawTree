@@ -299,9 +299,7 @@ fn render_terminal_session(
     let tag_fg = if is_exited { Color::DarkGray } else { Color::Green };
     let name_fg = if has_bg {
         if is_exited { Color::Gray } else { Color::White }
-    } else {
-        if is_exited { Color::DarkGray } else { Color::Gray }
-    };
+    } else if is_exited { Color::DarkGray } else { Color::Gray };
 
     let prefix = format!("  {} ", tag);
     let max_name = inner_width.saturating_sub(prefix.len());

@@ -855,7 +855,7 @@ fn handle_merge(app: &mut App) {
                 let source_branch = app.worktrees.get(wi).map(|w| w.branch.as_str());
                 let filtered: Vec<String> = branches
                     .into_iter()
-                    .filter(|b| source_branch.map_or(true, |sb| b != sb))
+                    .filter(|b| source_branch.is_none_or(|sb| b != sb))
                     .collect();
                 if filtered.is_empty() {
                     app.set_status("No other branches to merge into");
@@ -956,10 +956,9 @@ fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u1
             app.prompt_queue_cursor = app.prompt_queue_input.len();
         }
         KeyCode::Up => {
-            if app.prompt_queue_input.is_empty() && app.prompt_queue_editing.is_none() {
-                if app.prompt_queue_selected > 0 {
-                    app.prompt_queue_selected -= 1;
-                }
+            if app.prompt_queue_input.is_empty() && app.prompt_queue_editing.is_none()
+                && app.prompt_queue_selected > 0 {
+                app.prompt_queue_selected -= 1;
             }
         }
         KeyCode::Down => {
@@ -1084,7 +1083,7 @@ pub fn handle_paste(app: &mut App, data: String) {
                 Some(Dialog::RenameSession { ref mut input, .. }) => {
                     input.push_str(&data);
                 }
-                Some(Dialog::GitCommit { ref mut commit_message, phase, .. }) if phase == CommitPhase::Message => {
+                Some(Dialog::GitCommit { ref mut commit_message, phase: CommitPhase::Message, .. }) => {
                     commit_message.push_str(&data);
                 }
                 _ => {}
@@ -1173,11 +1172,10 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
 
     // GitCommit message phase: Ctrl+G to generate AI commit message
     if let Some(Dialog::GitCommit { ref phase, .. }) = app.dialog {
-        if *phase == CommitPhase::Message {
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
-                handle_git_commit_claude_message(app);
-                return;
-            }
+        if *phase == CommitPhase::Message
+            && key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
+            handle_git_commit_claude_message(app);
+            return;
         }
     }
 
@@ -1228,7 +1226,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     app.set_status(if url_input.is_empty() {
                         format!("Initializing bare repo (branch '{}')...", branch)
                     } else {
-                        format!("Cloning into bare repo...")
+                        "Cloning into bare repo...".to_string()
                     });
                     app.close_dialog();
 
@@ -2673,12 +2671,10 @@ fn modified_tilde_key(n: u8, modifier: u8) -> Vec<u8> {
         } else {
             vec![0x1b, b'[', n + b'0', b';', modifier + b'0', b'~']
         }
+    } else if n >= 10 {
+        vec![0x1b, b'[', (n / 10) + b'0', (n % 10) + b'0', b'~']
     } else {
-        if n >= 10 {
-            vec![0x1b, b'[', (n / 10) + b'0', (n % 10) + b'0', b'~']
-        } else {
-            vec![0x1b, b'[', n + b'0', b'~']
-        }
+        vec![0x1b, b'[', n + b'0', b'~']
     }
 }
 

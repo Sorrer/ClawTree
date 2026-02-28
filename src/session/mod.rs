@@ -134,8 +134,8 @@ impl Session {
             if trimmed.is_empty() { continue; }
 
             let stripped = trimmed
-                .trim_start_matches(|c: char| c == '│' || c == '┃' || c == '|')
-                .trim_end_matches(|c: char| c == '│' || c == '┃' || c == '|')
+                .trim_start_matches(['│', '┃', '|'])
+                .trim_end_matches(['│', '┃', '|'])
                 .trim()
                 .trim_matches('\u{a0}')
                 .trim();
@@ -144,7 +144,7 @@ impl Session {
             if Self::starts_with_prompt(stripped) {
                 prompt_idx = Some(i);
                 let after = stripped
-                    .trim_start_matches(|c: char| c == '❯' || c == '›')
+                    .trim_start_matches(['❯', '›'])
                     .trim();
                 prompt_has_text = !after.is_empty();
                 break;
@@ -166,14 +166,14 @@ impl Session {
         // which marks the boundary between output and input areas.
         // Claude Code uses either `├───┤` (box-drawing) or a solid line of
         // `─` characters as the input area separator.
-        for j in (idx + 1)..bottom_lines.len() {
-            let above = bottom_lines[j].trim();
+        for line in &bottom_lines[(idx + 1)..] {
+            let above = line.trim();
             if above.is_empty() { continue; }
 
             // Skip lines that are empty inside their borders
             let inner = above
-                .trim_start_matches(|c: char| c == '│' || c == '┃' || c == '|')
-                .trim_end_matches(|c: char| c == '│' || c == '┃' || c == '|')
+                .trim_start_matches(['│', '┃', '|'])
+                .trim_end_matches(['│', '┃', '|'])
                 .trim()
                 .trim_matches('\u{a0}')
                 .trim();
@@ -306,8 +306,8 @@ pub fn extract_summary(session: &Session) -> Option<String> {
     for line in lines.iter().rev() {
         // Skip prompt lines
         let stripped = line
-            .trim_start_matches(|c: char| c == '│' || c == '┃' || c == '|')
-            .trim_end_matches(|c: char| c == '│' || c == '┃' || c == '|')
+            .trim_start_matches(['│', '┃', '|'])
+            .trim_end_matches(['│', '┃', '|'])
             .trim();
         if stripped.is_empty() {
             continue;
@@ -354,8 +354,8 @@ fn extract_clawtree_tagged_output(content: &str) -> Option<String> {
         .lines()
         .map(|l| {
             l.trim()
-                .trim_start_matches(|c: char| c == '│' || c == '┃' || c == '|')
-                .trim_end_matches(|c: char| c == '│' || c == '┃' || c == '|')
+                .trim_start_matches(['│', '┃', '|'])
+                .trim_end_matches(['│', '┃', '|'])
                 .trim()
         })
         .collect::<Vec<_>>()
@@ -681,13 +681,12 @@ pub fn spawn_tmux_title_poller(
                     }
                 }
 
-                if !updates.is_empty() {
-                    if event_tx
+                if !updates.is_empty()
+                    && event_tx
                         .send(crate::event::AppEvent::TmuxTitlesChanged { updates })
                         .is_err()
-                    {
-                        break; // channel closed, app shutting down
-                    }
+                {
+                    break; // channel closed, app shutting down
                 }
             }
         })
@@ -943,13 +942,12 @@ pub fn spawn_claude_usage_poller(
                     }
                 }
 
-                if !updates.is_empty() {
-                    if event_tx
+                if !updates.is_empty()
+                    && event_tx
                         .send(crate::event::AppEvent::ClaudeUsageUpdated { updates })
                         .is_err()
-                    {
-                        break;
-                    }
+                {
+                    break;
                 }
             }
         })
@@ -1044,10 +1042,10 @@ fn match_debug_file_by_timestamp(
         if let Some(file_epoch) = read_first_line_epoch(&path_str) {
             let diff = file_epoch - target_epoch;
             // Must be within 0-5 seconds after process start
-            if diff >= 0 && diff <= 5 {
-                if best.as_ref().map(|(d, _)| diff < *d).unwrap_or(true) {
-                    best = Some((diff, path_str));
-                }
+            if (0..=5).contains(&diff)
+                && best.as_ref().map(|(d, _)| diff < *d).unwrap_or(true)
+            {
+                best = Some((diff, path_str));
             }
         }
     }

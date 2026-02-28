@@ -68,6 +68,9 @@ assert_contains() {
         PASSED=$((PASSED + 1))
     else
         echo "  FAIL: $test_name (expected to find '$pattern')"
+        echo "  ---- captured pane ----"
+        echo "$content" | head -20
+        echo "  ---- end ----"
         FAILED=$((FAILED + 1))
         ERRORS="${ERRORS}\n  - $test_name: pattern '$pattern' not found"
     fi
@@ -112,7 +115,7 @@ echo "Test 1: Welcome screen appears when no repo detected"
 TEMP_DIR=$(mktemp -d)
 EMPTY_DIR=$(mktemp -d)
 start_clawtree "$EMPTY_DIR"
-assert_contains "Welcome screen shows" "welcome"
+assert_contains "Welcome screen shows" "No git bare repo detected"
 send_keys C-q
 wait_settle 2
 tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
@@ -128,13 +131,18 @@ mkdir -p "$REPO_DIR"
 # Init bare repo
 git init --bare "$REPO_DIR/.bare" >/dev/null 2>&1
 echo "gitdir: ./.bare" > "$REPO_DIR/.git"
-git -C "$REPO_DIR/.bare" symbolic-ref HEAD refs/heads/main 2>/dev/null
-git -C "$REPO_DIR" config user.name "Test" 2>/dev/null
-git -C "$REPO_DIR" config user.email "test@test.com" 2>/dev/null
-git -C "$REPO_DIR" commit --allow-empty -m "Initial commit" >/dev/null 2>&1
+git -C "$REPO_DIR/.bare" symbolic-ref HEAD refs/heads/main
+git -C "$REPO_DIR/.bare" config user.name "Test"
+git -C "$REPO_DIR/.bare" config user.email "test@test.com"
+
+# Initial commit — must use GIT_DIR + GIT_WORK_TREE because .bare has core.bare=true
+GIT_DIR="$REPO_DIR/.bare" GIT_WORK_TREE="$REPO_DIR" \
+    git -c user.name=Test -c user.email=test@test.com \
+    commit --allow-empty -m "Initial commit" >/dev/null 2>&1
+
 git -C "$REPO_DIR" worktree add "$REPO_DIR/main" main >/dev/null 2>&1
-git -C "$REPO_DIR/main" config user.name "Test" 2>/dev/null
-git -C "$REPO_DIR/main" config user.email "test@test.com" 2>/dev/null
+git -C "$REPO_DIR/main" config user.name "Test"
+git -C "$REPO_DIR/main" config user.email "test@test.com"
 
 # Add a file so it's not empty
 echo "hello" > "$REPO_DIR/main/README.md"
@@ -143,8 +151,8 @@ git -C "$REPO_DIR/main" commit -m "Add README" >/dev/null 2>&1
 
 # Create a second worktree
 git -C "$REPO_DIR" worktree add -b feature "$REPO_DIR/feature" main >/dev/null 2>&1
-git -C "$REPO_DIR/feature" config user.name "Test" 2>/dev/null
-git -C "$REPO_DIR/feature" config user.email "test@test.com" 2>/dev/null
+git -C "$REPO_DIR/feature" config user.name "Test"
+git -C "$REPO_DIR/feature" config user.email "test@test.com"
 
 # Make feature dirty
 echo "dirty" > "$REPO_DIR/feature/dirty.txt"
@@ -157,8 +165,9 @@ echo ""
 echo "Test 2: Regular repo detection offers convert option"
 REGULAR_DIR=$(mktemp -d)
 git init "$REGULAR_DIR" >/dev/null 2>&1
-git -C "$REGULAR_DIR" config user.name "Test" 2>/dev/null
-git -C "$REGULAR_DIR" config user.email "test@test.com" 2>/dev/null
+git -C "$REGULAR_DIR" config user.name "Test"
+git -C "$REGULAR_DIR" config user.email "test@test.com"
+git -C "$REGULAR_DIR" checkout -b main >/dev/null 2>&1 || true
 git -C "$REGULAR_DIR" commit --allow-empty -m "init" >/dev/null 2>&1
 
 start_clawtree "$REGULAR_DIR"
@@ -201,10 +210,8 @@ wait_settle 1
 
 echo ""
 echo "Test 6: Stage/commit dialog opens with 's' on dirty worktree"
-# Navigate to feature worktree (which has dirty files)
+# Navigate to feature worktree (first in list, has dirty files)
 send_keys Home
-wait_settle 0.5
-send_keys j
 wait_settle 0.5
 send_keys s
 wait_settle 2
