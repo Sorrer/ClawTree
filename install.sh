@@ -184,6 +184,18 @@ main() {
 
     echo
     info "Done! cd into your project and run 'clawtree' to get started."
+
+    # Check for required dependencies
+    local missing=()
+    command -v git   >/dev/null 2>&1 || missing+=("git")
+    command -v tmux  >/dev/null 2>&1 || missing+=("tmux")
+    command -v claude >/dev/null 2>&1 || missing+=("claude (Claude Code CLI)")
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo
+        warn "Missing dependencies: ${missing[*]}"
+        warn "ClawTree requires these to run. Please install them before using clawtree."
+    fi
 }
 
 main "$@"

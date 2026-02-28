@@ -95,9 +95,9 @@ fn main() -> Result<()> {
     // Register signal handlers. These just set SIGNAL_RECEIVED; the watchdog
     // thread does the actual cleanup + exit.
     unsafe {
-        libc::signal(libc::SIGINT, signal_handler as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, signal_handler as libc::sighandler_t);
-        libc::signal(libc::SIGHUP, signal_handler as libc::sighandler_t);
+        libc::signal(libc::SIGINT, signal_handler as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, signal_handler as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGHUP, signal_handler as *const () as libc::sighandler_t);
     }
 
     // Set up file logging (to file, never stdout)
