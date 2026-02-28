@@ -1,8 +1,0 @@
-2026-02-28T00:22:23.920967Z  INFO clawtree: Bare repo detected at "/tmp/tmp.cLgZU74DvA"
-2026-02-28T00:22:23.921194Z  INFO clawtree: Bare repo path: "/tmp/tmp.cLgZU74DvA", detected: true
-2026-02-28T00:22:23.926229Z  INFO clawtree: tmux available: true
-2026-02-28T00:22:23.977221Z  INFO clawtree: wt.exe available: true
-2026-02-28T00:22:38.102019Z  INFO clawtree: RESIZE-EVENT from crossterm: 245x70
-2026-02-28T00:22:38.102218Z  INFO clawtree::session: RESIZE-ALL session 1 resizing to 201x67
-2026-02-28T00:23:10.135839Z  INFO clawtree::session: RESIZE-ALL session 1 resizing to 201x63
-2026-02-28T00:23:10.137449Z  INFO clawtree::session: RESIZE-ALL session 2 resizing to 201x63
