@@ -374,6 +374,213 @@ fn test_convert_in_place_uncommitted_files_only() {
     assert!(git::is_worktree_clean(&wt).unwrap());
 }
 
+/// When the repo has a directory matching the branch name (e.g. "main/"),
+/// the conversion should still succeed — the old directory is moved aside
+/// so `git worktree add main` can create the worktree directory.
+#[test]
+fn test_convert_in_place_with_conflicting_dir_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    test_helpers::setup_regular_repo(dir);
+
+    // Create a directory that matches the branch name
+    test_helpers::create_file(dir, "main/scene.tscn", "godot scene");
+    test_helpers::create_file(dir, "main/player.gd", "extends Node");
+    test_helpers::create_file(dir, "project.godot", "[gd_project]");
+    test_helpers::git_commit(dir, "Add project files");
+
+    let branch = git::convert_repo_in_place(dir, "").unwrap();
+    assert_eq!(branch, "main");
+
+    // Bare layout created
+    assert!(dir.join(".bare").is_dir(), ".bare directory not found");
+    assert!(dir.join(".git").is_file(), ".git should be a pointer file");
+
+    // Worktree exists and contains the files (from checkout)
+    let wt = dir.join("main");
+    assert!(wt.is_dir(), "main worktree not created");
+    assert!(wt.join("main/scene.tscn").exists(), "main/scene.tscn not in worktree");
+    assert!(wt.join("main/player.gd").exists(), "main/player.gd not in worktree");
+    assert!(wt.join("project.godot").exists(), "project.godot not in worktree");
+
+    // Root should be clean
+    assert!(!dir.join("project.godot").exists(), "root project.godot should be removed");
+
+    // Temp holding dir should be cleaned up
+    assert!(!dir.join(".clawtree_convert_tmp").exists(), "temp dir should be removed");
+
+    // Repo should be functional
+    let entries = git::list_worktrees(dir).unwrap();
+    let main_wt = entries.iter().find(|e| e.branch.as_deref() == Some("main"));
+    assert!(main_wt.is_some(), "main worktree not in list");
+}
+
+/// Comprehensive test verifying that ALL file states are preserved during
+/// in-place conversion:
+///   1. Committed files      – restored by `git worktree add`
+///   2. Staged (indexed)     – preserved via stash/pop
+///   3. Unstaged (modified)  – preserved via stash/pop
+///   4. Untracked files      – preserved via stash --include-untracked / pop
+///   5. Ignored files        – preserved via `move_missing_entries()`
+#[test]
+fn test_convert_in_place_preserves_all_file_states() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    test_helpers::setup_regular_repo(dir);
+
+    // ── 1. Committed files (including .gitignore for step 5) ──────────
+    test_helpers::create_file(dir, "committed.txt", "committed content");
+    test_helpers::create_file(dir, "src/lib.rs", "pub fn hello() {}");
+    test_helpers::create_file(dir, ".gitignore", "build/\n*.log\n");
+    test_helpers::git_commit(dir, "Add committed files and .gitignore");
+
+    // ── 2. Staged (indexed) but not committed ───────────────────────────
+    test_helpers::create_file(dir, "staged_new.txt", "staged new file");
+    let _ = Command::new("git")
+        .args(["add", "staged_new.txt"])
+        .current_dir(dir)
+        .output();
+
+    // ── 3. Unstaged modifications to a tracked file ─────────────────────
+    test_helpers::create_file(dir, "committed.txt", "modified but not staged");
+
+    // ── 4. Untracked files (not added to git at all) ────────────────────
+    test_helpers::create_file(dir, "untracked.txt", "untracked content");
+    test_helpers::create_file(dir, "untracked_dir/deep.txt", "deep untracked");
+
+    // ── 5. Ignored files (.gitignore'd) ─────────────────────────────────
+    test_helpers::create_file(dir, "build/output.bin", "binary data");
+    test_helpers::create_file(dir, "build/cache/temp.dat", "cached data");
+    test_helpers::create_file(dir, "debug.log", "log line 1");
+
+    // ── Verify pre-conditions ───────────────────────────────────────────
+    // staged_new.txt should be in the index
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let status_str = String::from_utf8_lossy(&status.stdout);
+    assert!(status_str.contains("A  staged_new.txt"), "staged_new.txt should be staged before conversion, got: {}", status_str);
+    assert!(status_str.contains(" M committed.txt"), "committed.txt should have unstaged modifications before conversion, got: {}", status_str);
+    assert!(status_str.contains("?? untracked.txt"), "untracked.txt should be untracked before conversion, got: {}", status_str);
+
+    // Ignored files should be ignored
+    let ignored = Command::new("git")
+        .args(["status", "--porcelain", "--ignored"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let ignored_str = String::from_utf8_lossy(&ignored.stdout);
+    assert!(ignored_str.contains("!! build/"), "build/ should be ignored before conversion, got: {}", ignored_str);
+
+    // ── Run conversion ──────────────────────────────────────────────────
+    let branch = git::convert_repo_in_place(dir, "").unwrap();
+    assert_eq!(branch, "main");
+
+    let wt = dir.join("main");
+    assert!(wt.is_dir(), "worktree directory should exist");
+
+    // ── Verify 1: Committed files are present ───────────────────────────
+    assert!(wt.join("committed.txt").exists(), "committed.txt should be in worktree");
+    assert!(wt.join("src/lib.rs").exists(), "src/lib.rs should be in worktree");
+    assert_eq!(
+        std::fs::read_to_string(wt.join("src/lib.rs")).unwrap(),
+        "pub fn hello() {}",
+        "committed file content should be intact"
+    );
+
+    // ── Verify 2: Staged file is present and still staged ───────────────
+    assert!(wt.join("staged_new.txt").exists(), "staged_new.txt should be in worktree");
+    assert_eq!(
+        std::fs::read_to_string(wt.join("staged_new.txt")).unwrap(),
+        "staged new file",
+        "staged file content should be intact"
+    );
+    // Check it's still in the index (staged)
+    let wt_status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&wt)
+        .output()
+        .unwrap();
+    let wt_status_str = String::from_utf8_lossy(&wt_status.stdout);
+    assert!(
+        wt_status_str.contains("A  staged_new.txt") || wt_status_str.contains("A staged_new.txt"),
+        "staged_new.txt should still be staged in worktree, got: {}",
+        wt_status_str
+    );
+
+    // ── Verify 3: Unstaged modification is present ──────────────────────
+    assert_eq!(
+        std::fs::read_to_string(wt.join("committed.txt")).unwrap(),
+        "modified but not staged",
+        "unstaged modification should be preserved"
+    );
+    // committed.txt should show as modified (unstaged)
+    assert!(
+        wt_status_str.contains("M committed.txt") || wt_status_str.contains(" M committed.txt"),
+        "committed.txt should show as modified in worktree, got: {}",
+        wt_status_str
+    );
+
+    // ── Verify 4: Untracked files are present ───────────────────────────
+    assert!(wt.join("untracked.txt").exists(), "untracked.txt should be in worktree");
+    assert_eq!(
+        std::fs::read_to_string(wt.join("untracked.txt")).unwrap(),
+        "untracked content",
+        "untracked file content should be intact"
+    );
+    assert!(wt.join("untracked_dir/deep.txt").exists(), "untracked_dir/deep.txt should be in worktree");
+    assert_eq!(
+        std::fs::read_to_string(wt.join("untracked_dir/deep.txt")).unwrap(),
+        "deep untracked",
+        "deep untracked file content should be intact"
+    );
+
+    // ── Verify 5: Ignored files are present ─────────────────────────────
+    assert!(wt.join("build/output.bin").exists(), "ignored build/output.bin should be in worktree");
+    assert_eq!(
+        std::fs::read_to_string(wt.join("build/output.bin")).unwrap(),
+        "binary data",
+        "ignored file content should be intact"
+    );
+    assert!(wt.join("build/cache/temp.dat").exists(), "ignored build/cache/temp.dat should be in worktree");
+    assert_eq!(
+        std::fs::read_to_string(wt.join("build/cache/temp.dat")).unwrap(),
+        "cached data",
+        "deep ignored file content should be intact"
+    );
+    assert!(wt.join("debug.log").exists(), "ignored debug.log should be in worktree");
+    assert_eq!(
+        std::fs::read_to_string(wt.join("debug.log")).unwrap(),
+        "log line 1",
+        "ignored log file content should be intact"
+    );
+
+    // ── Verify .gitignore itself is present ─────────────────────────────
+    assert!(wt.join(".gitignore").exists(), ".gitignore should be in worktree");
+
+    // ── Verify cleanup: no leftover files at root ───────────────────────
+    let root_entries: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    for entry in &root_entries {
+        assert!(
+            entry == ".bare" || entry == ".git" || entry == "main",
+            "unexpected root entry after conversion: '{}'", entry
+        );
+    }
+
+    // ── Verify temp holding dir is cleaned up ───────────────────────────
+    assert!(!dir.join(".clawtree_convert_tmp").exists(), "temp dir should be cleaned up");
+
+    // ── Verify repo is functional after conversion ──────────────────────
+    let entries = git::list_worktrees(dir).unwrap();
+    assert!(entries.len() >= 2, "expected bare + main, got {} entries", entries.len());
+}
+
 // ── Convert to separate location ─────────────────────────────────────────
 
 #[test]

@@ -90,22 +90,19 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::Gray),
     )));
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
+    let tree_lines = [
         "  project/",
-        Style::default().fg(Color::DarkGray),
-    )));
-    lines.push(Line::from(Span::styled(
         "  +-- .bare/          (bare git repository)",
-        Style::default().fg(Color::DarkGray),
-    )));
-    lines.push(Line::from(Span::styled(
         "  +-- .git            (gitdir pointer to .bare)",
-        Style::default().fg(Color::DarkGray),
-    )));
-    lines.push(Line::from(Span::styled(
         "  +-- main/           (worktree for main branch)",
-        Style::default().fg(Color::DarkGray),
-    )));
+    ];
+    let max_w = tree_lines.iter().map(|l| l.len()).max().unwrap_or(0);
+    for tl in &tree_lines {
+        lines.push(Line::from(Span::styled(
+            format!("{:<width$}", tl, width = max_w),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("Press ", Style::default().fg(Color::Gray)),

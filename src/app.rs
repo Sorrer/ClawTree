@@ -159,11 +159,9 @@ pub struct SavedPrompt {
 
 /// Status message severity for color coding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum StatusSeverity {
     Info,
     Success,
-    Warning,
     Error,
 }
 
@@ -255,6 +253,8 @@ pub enum Dialog {
         focused_field: usize,
         /// Detected regular repo path
         source_repo_path: PathBuf,
+        /// Whether the user has confirmed the warning
+        confirmed: bool,
     },
     /// Git pull failed with a non-conflict error — show error and offer resolution.
     PullError {
@@ -309,14 +309,12 @@ pub enum ConfirmAction {
 /// A blocking git action queued for execution by the main loop.
 /// The main loop draws a loading overlay first, then runs the action.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum PendingAction {
     StageFile { worktree_idx: usize, file: String },
     UnstageFile { worktree_idx: usize, file: String },
     StageAll { worktree_idx: usize },
     Commit { worktree_idx: usize, message: String },
     RefreshWorktreeStatus,
-    FetchWorktreeStatus { worktree_idx: usize },
     OpenStageCommit { worktree_idx: usize },
     MergeExecute {
         source_worktree_idx: usize,
@@ -353,8 +351,6 @@ pub struct App {
     /// Cursor position for interactive file list in the info panel.
     pub info_panel_section: usize,  // 0=unstaged, 1=staged
     pub info_panel_cursor: usize,   // index within current section
-    /// Commit message input for inline commit in the info panel.
-    pub info_panel_commit_msg: Option<String>,
     pub dialog: Option<Dialog>,
     /// Loading overlay message shown during blocking git operations.
     pub loading_message: Option<String>,
@@ -462,7 +458,6 @@ impl App {
             worktree_status: None,
             info_panel_section: 0,
             info_panel_cursor: 0,
-            info_panel_commit_msg: None,
             dialog: None,
             loading_message: None,
             pending_action: None,
@@ -535,7 +530,6 @@ impl App {
                 } else {
                     self.focus = FocusTarget::Sidebar;
                     self.input_mode = InputMode::Normal;
-                    self.info_panel_commit_msg = None;
                 }
             }
             FocusTarget::PromptQueue => {
@@ -694,7 +688,6 @@ impl App {
                     self.active_worktree_idx = Some(wi);
                     self.info_panel_section = 0;
                     self.info_panel_cursor = 0;
-                    self.info_panel_commit_msg = None;
                     self.terminal_scroll = 0;
                     // Use cached status immediately if available (no blocking)
                     self.worktree_status = self.worktree_statuses.get(&wt_path).cloned();

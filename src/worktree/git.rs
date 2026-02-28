@@ -19,22 +19,29 @@ pub struct GitWorktreeEntry {
     pub is_bare: bool,
 }
 
-/// List all worktrees from a bare repo path.
-pub fn list_worktrees(bare_repo_path: &Path) -> Result<Vec<GitWorktreeEntry>> {
+/// Run a git command and return its stdout as a String.
+/// Fails with a descriptive error if the command exits non-zero.
+fn run_git(args: &[&str], cwd: &Path, description: &str) -> Result<String> {
     let output = Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(bare_repo_path)
+        .args(args)
+        .current_dir(cwd)
         .output()
-        .context("Failed to run git worktree list")?;
+        .with_context(|| format!("Failed to run {}", description))?;
 
     if !output.status.success() {
         anyhow::bail!(
-            "git worktree list failed: {}",
+            "{} failed: {}",
+            description,
             String::from_utf8_lossy(&output.stderr)
         );
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// List all worktrees from a bare repo path.
+pub fn list_worktrees(bare_repo_path: &Path) -> Result<Vec<GitWorktreeEntry>> {
+    let stdout = run_git(&["worktree", "list", "--porcelain"], bare_repo_path, "git worktree list")?;
     parse_worktree_list(&stdout)
 }
 
@@ -121,70 +128,29 @@ pub fn create_worktree(bare_repo_path: &Path, branch: &str, rel_path: &str, base
 
 /// Remove a worktree.
 pub fn remove_worktree(bare_repo_path: &Path, worktree_path: &Path) -> Result<()> {
-    let output = Command::new("git")
-        .args([
-            "worktree",
-            "remove",
-            &worktree_path.to_string_lossy(),
-        ])
-        .current_dir(bare_repo_path)
-        .output()
-        .context("Failed to run git worktree remove")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git worktree remove failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
+    let wt_str = worktree_path.to_string_lossy();
+    run_git(&["worktree", "remove", &wt_str], bare_repo_path, "git worktree remove")?;
     Ok(())
 }
 
 /// List local branches.
 pub fn list_branches(bare_repo_path: &Path) -> Result<Vec<String>> {
-    let output = Command::new("git")
-        .args(["branch", "--format=%(refname:short)"])
-        .current_dir(bare_repo_path)
-        .output()
-        .context("Failed to run git branch")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git branch failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = run_git(&["branch", "--format=%(refname:short)"], bare_repo_path, "git branch")?;
     Ok(stdout.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
 }
 
 /// Result of a merge operation.
-#[allow(dead_code)]
 pub enum MergeResult {
     /// Merge completed successfully.
     Success(String),
     /// Merge resulted in conflicts. The worktree is in a conflicted state.
-    Conflict(String),
+    Conflict,
 }
 
 /// Check if a worktree has no uncommitted changes (clean working tree + index).
 pub fn is_worktree_clean(worktree_path: &Path) -> Result<bool> {
-    let output = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(worktree_path)
-        .output()
-        .context("Failed to run git status")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git status failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().is_empty())
+    let stdout = run_git(&["status", "--porcelain"], worktree_path, "git status")?;
+    Ok(stdout.trim().is_empty())
 }
 
 /// Check if a worktree has an in-progress merge. Returns the source branch
@@ -223,7 +189,7 @@ pub fn merge_branch(worktree_path: &Path, source_branch: &str) -> Result<MergeRe
 
     if !output.status.success() {
         if stderr.contains("CONFLICT") || stdout.contains("CONFLICT") {
-            return Ok(MergeResult::Conflict(combined));
+            return Ok(MergeResult::Conflict);
         }
         anyhow::bail!("git merge failed: {}", combined);
     }
@@ -233,42 +199,14 @@ pub fn merge_branch(worktree_path: &Path, source_branch: &str) -> Result<MergeRe
 
 /// Abort an in-progress merge.
 pub fn merge_abort(worktree_path: &Path) -> Result<()> {
-    let output = Command::new("git")
-        .args(["merge", "--abort"])
-        .current_dir(worktree_path)
-        .output()
-        .context("Failed to run git merge --abort")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git merge --abort failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
+    run_git(&["merge", "--abort"], worktree_path, "git merge --abort")?;
     Ok(())
 }
 
 /// Force-remove a worktree (even if dirty).
 pub fn force_remove_worktree(bare_repo_path: &Path, worktree_path: &Path) -> Result<()> {
-    let output = Command::new("git")
-        .args([
-            "worktree",
-            "remove",
-            "--force",
-            &worktree_path.to_string_lossy(),
-        ])
-        .current_dir(bare_repo_path)
-        .output()
-        .context("Failed to run git worktree remove --force")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git worktree remove --force failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
+    let wt_str = worktree_path.to_string_lossy();
+    run_git(&["worktree", "remove", "--force", &wt_str], bare_repo_path, "git worktree remove --force")?;
     Ok(())
 }
 
@@ -279,18 +217,7 @@ pub fn init_bare_repo(dir: &Path, initial_branch: &str) -> Result<()> {
     let bare_dir = dir.join(".bare");
 
     // git init --bare .bare
-    let output = Command::new("git")
-        .args(["init", "--bare", ".bare"])
-        .current_dir(dir)
-        .output()
-        .context("Failed to run git init --bare")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git init --bare failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    run_git(&["init", "--bare", ".bare"], dir, "git init --bare")?;
 
     // Create .git file pointing to .bare
     std::fs::write(dir.join(".git"), "gitdir: ./.bare\n")
@@ -433,68 +360,50 @@ pub fn detect_bare_repo(start: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Get commits that are ahead of the upstream (unpushed).
+/// Returns empty vec if no upstream is set (e.g. local-only branch).
+pub fn unpushed_commits(worktree_path: &Path) -> Vec<String> {
+    let output = Command::new("git")
+        .args(["log", "--oneline", "@{u}..HEAD"])
+        .current_dir(worktree_path)
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Get recent commits as one-line summaries ("hash subject").
 pub fn log_oneline(worktree_path: &Path, count: usize) -> Result<Vec<String>> {
-    let output = Command::new("git")
-        .args(["log", "--oneline", &format!("-{}", count)])
-        .current_dir(worktree_path)
-        .output()
-        .context("Failed to run git log --oneline")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git log --oneline failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let count_arg = format!("-{}", count);
+    let stdout = run_git(&["log", "--oneline", &count_arg], worktree_path, "git log --oneline")?;
     Ok(stdout.lines().map(|l| l.to_string()).filter(|l| !l.is_empty()).collect())
 }
 
 /// Get the subject line of the HEAD commit.
 pub fn head_subject(worktree_path: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .args(["log", "-1", "--format=%s"])
-        .current_dir(worktree_path)
-        .output()
-        .context("Failed to run git log -1 --format=%s")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git log --format=%s failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let stdout = run_git(&["log", "-1", "--format=%s"], worktree_path, "git log --format=%s")?;
+    Ok(stdout.trim().to_string())
 }
 
 /// Get the short hash + subject of a specific branch or ref (e.g. "abc1234 Fix something").
 /// `repo_path` can be any worktree or the bare repo — git resolves the ref from there.
 pub fn branch_head_oneline(repo_path: &Path, branch: &str) -> Result<String> {
-    let output = Command::new("git")
-        .args(["log", "--oneline", "-1", branch])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to run git log --oneline for branch")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git log --oneline -1 {} failed: {}",
-            branch,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let desc = format!("git log --oneline -1 {}", branch);
+    let stdout = run_git(&["log", "--oneline", "-1", branch], repo_path, &desc)?;
+    Ok(stdout.trim().to_string())
 }
 
 /// Result of a pull operation.
-#[allow(dead_code)]
 pub enum PullResult {
     /// Pull completed successfully (fast-forward or clean merge).
-    Success(String),
+    Success,
     /// Pull resulted in merge conflicts.
     Conflict(String),
 }
@@ -514,12 +423,7 @@ pub fn pull_branch(worktree_path: &Path) -> Result<PullResult> {
     let combined = format!("{}{}", stdout, stderr);
 
     if output.status.success() {
-        let msg = if combined.trim().is_empty() {
-            "Already up to date.".to_string()
-        } else {
-            combined
-        };
-        return Ok(PullResult::Success(msg));
+        return Ok(PullResult::Success);
     }
 
     // Detect merge conflicts
@@ -593,105 +497,36 @@ pub fn parse_status_porcelain(output: &str) -> Vec<FileChange> {
 
 /// Get file status using `git status --porcelain`.
 pub fn status_porcelain(worktree_path: &Path) -> Result<Vec<FileChange>> {
-    let output = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(worktree_path)
-        .output()
-        .context("Failed to run git status --porcelain")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git status --porcelain failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = run_git(&["status", "--porcelain"], worktree_path, "git status --porcelain")?;
     Ok(parse_status_porcelain(&stdout))
 }
 
 /// Stage a single file.
 pub fn stage_file(worktree_path: &Path, file: &str) -> Result<()> {
-    let output = Command::new("git")
-        .args(["add", "--", file])
-        .current_dir(worktree_path)
-        .output()
-        .context("Failed to run git add")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git add failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    run_git(&["add", "--", file], worktree_path, "git add")?;
     Ok(())
 }
 
 /// Unstage a single file.
 pub fn unstage_file(worktree_path: &Path, file: &str) -> Result<()> {
-    let output = Command::new("git")
-        .args(["restore", "--staged", "--", file])
-        .current_dir(worktree_path)
-        .output()
-        .context("Failed to run git restore --staged")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git restore --staged failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    run_git(&["restore", "--staged", "--", file], worktree_path, "git restore --staged")?;
     Ok(())
 }
 
 /// Stage all files.
 pub fn stage_all(worktree_path: &Path) -> Result<()> {
-    let output = Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(worktree_path)
-        .output()
-        .context("Failed to run git add -A")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git add -A failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    run_git(&["add", "-A"], worktree_path, "git add -A")?;
     Ok(())
 }
 
 /// Get the diff of staged changes.
 pub fn diff_staged(worktree_path: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .args(["diff", "--staged"])
-        .current_dir(worktree_path)
-        .output()
-        .context("Failed to run git diff --staged")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git diff --staged failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    run_git(&["diff", "--staged"], worktree_path, "git diff --staged")
 }
 
 /// Commit staged changes with a message.
 pub fn commit(worktree_path: &Path, message: &str) -> Result<()> {
-    let output = Command::new("git")
-        .args(["commit", "-m", message])
-        .current_dir(worktree_path)
-        .output()
-        .context("Failed to run git commit")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git commit failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    run_git(&["commit", "-m", message], worktree_path, "git commit")?;
     Ok(())
 }
 
@@ -713,20 +548,8 @@ pub fn detect_regular_repo(start: &Path) -> Option<PathBuf> {
 
 /// Get the current branch name of a repo.
 pub fn current_branch_name(repo_path: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to run git rev-parse --abbrev-ref HEAD")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git rev-parse failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let stdout = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_path, "git rev-parse")?;
+    Ok(stdout.trim().to_string())
 }
 
 /// Check for in-progress operations (rebase, merge, cherry-pick) in a repo.
@@ -742,6 +565,28 @@ fn has_in_progress_operation(repo_path: &Path) -> Option<&'static str> {
         return Some("cherry-pick");
     }
     None
+}
+
+/// Recursively move files/directories from `src` into `dst` that don't
+/// already exist in `dst`.  Used to preserve .gitignore'd files during
+/// conversion (build outputs, .env, IDE configs, etc.).
+fn move_missing_entries(src: &Path, dst: &Path) {
+    let entries = match std::fs::read_dir(src) {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name();
+        let dst_path = dst.join(&name);
+        if !dst_path.exists() {
+            // Not in the checkout — move it over (ignored file)
+            let _ = std::fs::rename(entry.path(), &dst_path);
+        } else if entry.path().is_dir() && dst_path.is_dir() {
+            // Both exist as dirs — recurse to catch nested ignored files
+            move_missing_entries(&entry.path(), &dst_path);
+        }
+        // If both exist as files, the checkout version wins — skip
+    }
 }
 
 /// Convert a regular git repo to bare worktree layout **in-place**.
@@ -768,12 +613,23 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
     let stashed = stash_output.status.success()
         && !String::from_utf8_lossy(&stash_output.stdout).contains("No local changes");
 
-    // 4. Collect all root entries except .git
-    let root_entries: Vec<_> = std::fs::read_dir(repo_path)
+    // 4. Move all root entries (except .git) into a temp holding dir so
+    //    `git worktree add` runs against a clean root and can't collide
+    //    with existing directories/files.
+    let holding = repo_path.join(".clawtree_convert_tmp");
+    std::fs::create_dir_all(&holding)
+        .context("Failed to create temp holding directory")?;
+
+    for entry in std::fs::read_dir(repo_path)
         .context("Failed to read repo directory")?
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name() != ".git")
-        .collect();
+    {
+        let name = entry.file_name();
+        if name == ".git" || name == ".clawtree_convert_tmp" {
+            continue;
+        }
+        let _ = std::fs::rename(entry.path(), holding.join(&name));
+    }
 
     // 5. Rename .git/ directory to .bare/
     let dot_git = repo_path.join(".git");
@@ -820,34 +676,47 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
         }
     }
 
-    // 10. Verify worktree was created before removing old files
+    // 10. Verify worktree was created — if not, roll back everything
     let wt_path = repo_path.join(&branch);
     if !wt_path.is_dir() {
+        // Undo bare conversion: remove .git file, rename .bare back to .git
+        let _ = std::fs::remove_file(repo_path.join(".git"));
+        let _ = std::fs::rename(&dot_bare, &dot_git);
+
+        // Restore working tree files from the holding dir
+        for entry in std::fs::read_dir(&holding)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+        {
+            let _ = std::fs::rename(entry.path(), repo_path.join(entry.file_name()));
+        }
+        let _ = std::fs::remove_dir_all(&holding);
+
+        // Pop stash back so uncommitted changes aren't lost
+        if stashed {
+            let _ = Command::new("git")
+                .args(["stash", "pop"])
+                .current_dir(repo_path)
+                .output();
+        }
+
         anyhow::bail!(
-            "Failed to create worktree directory '{}'. Repo was converted to bare layout but files remain at the root.",
+            "Failed to create worktree for branch '{}'. The repo has been restored to its original state.",
             branch
         );
     }
 
-    // 11. Remove the leftover working tree files from root
-    for entry in root_entries {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        // Don't remove .bare, .git, or the new worktree directory
-        if name_str == ".bare" || name_str == ".git" || name_str == branch {
-            continue;
-        }
-        let path = entry.path();
-        if path.is_dir() {
-            let _ = std::fs::remove_dir_all(&path);
-        } else {
-            let _ = std::fs::remove_file(&path);
-        }
-    }
+    // 11. Move ignored files from the holding dir into the worktree.
+    //     Committed files are already checked out by `git worktree add`,
+    //     and staged/unstaged/untracked changes are in the stash.
+    //     But .gitignore'd files (build outputs, .env, IDE configs, etc.)
+    //     are only in the holding dir — move them so they aren't lost.
+    move_missing_entries(&holding, &wt_path);
+    let _ = std::fs::remove_dir_all(&holding);
 
     // 12. Pop stash in the new worktree if one was saved
     if stashed {
-        let wt_path = repo_path.join(&branch);
         if wt_path.is_dir() {
             let _ = Command::new("git")
                 .args(["stash", "pop"])

@@ -183,7 +183,7 @@ main() {
     ensure_path
 
     echo
-    info "Done! Run 'clawtree /path/to/bare/repo' to get started."
+    info "Done! cd into your project and run 'clawtree' to get started."
 }
 
 main "$@"

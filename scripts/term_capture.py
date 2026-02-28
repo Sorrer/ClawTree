@@ -3,9 +3,9 @@
 Terminal screenshot capture tool for ClawTree.
 Captures TUI app screens from tmux sessions and renders them to PNG images.
 
-Approach: Uses tmux pipe-pane to capture raw PTY output during a forced redraw,
-then replays through pyte (terminal emulator) to build the screen buffer,
-and renders the result to a PNG with Pillow.
+Approach: Uses tmux capture-pane -e -p to synchronously capture the current
+screen with ANSI escape sequences, replays through pyte to build the screen
+buffer, and renders the result to a PNG with Pillow.
 """
 
 import subprocess
@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 FONT_BOLD_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"
 FONT_SIZE = 14
-PADDING = 16
+PADDING = 24
 SCALE = 2  # Render at 2x for retina-quality screenshots
 
 # macOS-style window chrome
@@ -143,60 +143,45 @@ def replay_typescript(filepath, cols=140, rows=40):
 
 def capture_tmux_session(session_name, cols=140, rows=40, wait_secs=3):
     """
-    Capture a tmux session's screen by:
-    1. Starting pipe-pane to record raw PTY output
-    2. Resizing the pane to force a full redraw
-    3. Stopping pipe-pane
-    4. Replaying through pyte
+    Capture a tmux session's screen using capture-pane -e -p which
+    synchronously dumps the current pane content with ANSI escape codes.
+    Each line is fed to pyte with explicit cursor positioning.
     """
-    logfile = tempfile.mktemp(suffix=".log")
+    # Force the tmux window and pane to the exact target size.
+    # resize-window sets the window dimensions (overriding client size),
+    # then resize-pane ensures the pane fills it.
+    subprocess.run(
+        ["tmux", "resize-window", "-t", session_name,
+         "-x", str(cols), "-y", str(rows)],
+        check=False,
+    )
+    subprocess.run(
+        ["tmux", "resize-pane", "-t", session_name,
+         "-x", str(cols), "-y", str(rows)],
+        check=False,
+    )
+    time.sleep(wait_secs)
 
-    try:
-        # Ensure pipe is stopped
-        subprocess.run(["tmux", "pipe-pane", "-t", session_name], check=False)
+    # Capture current pane content with escape sequences
+    result = subprocess.run(
+        ["tmux", "capture-pane", "-t", session_name, "-e", "-p"],
+        capture_output=True, text=True,
+    )
 
-        # Clear and start pipe
-        with open(logfile, "w") as f:
-            f.truncate(0)
-        subprocess.run(
-            ["tmux", "pipe-pane", "-t", session_name, "-o", f"cat >> {logfile}"],
-            check=True
-        )
+    data = result.stdout
+    if not data.strip():
+        print("Warning: No data captured from capture-pane.")
+        return None
 
-        # Force full redraw by resizing to different dims then back
-        subprocess.run(["tmux", "resize-pane", "-t", session_name, "-x", str(cols - 10), "-y", str(rows - 5)], check=False)
-        time.sleep(1)
+    # Feed each line with explicit cursor positioning since capture-pane
+    # outputs lines without cursor-move sequences
+    screen = pyte.Screen(cols, rows)
+    stream = pyte.Stream(screen)
+    lines = data.split("\n")
+    for row_idx, line in enumerate(lines[:rows]):
+        stream.feed(f"\033[{row_idx + 1};1H{line}")
 
-        # Clear the log (we want just the final frame)
-        with open(logfile, "w") as f:
-            f.truncate(0)
-
-        # Resize back to target
-        subprocess.run(["tmux", "resize-pane", "-t", session_name, "-x", str(cols), "-y", str(rows)], check=True)
-        time.sleep(wait_secs)
-
-        # Stop pipe
-        subprocess.run(["tmux", "pipe-pane", "-t", session_name], check=True)
-
-        # Read the captured data
-        with open(logfile, "r", errors="replace") as f:
-            data = f.read()
-
-        if not data.strip():
-            print("Warning: No data captured from pipe-pane. The session may not be rendering.")
-            return None
-
-        # Replay through pyte
-        screen = pyte.Screen(cols, rows)
-        stream = pyte.Stream(screen)
-        stream.feed(data)
-        return screen
-
-    finally:
-        try:
-            os.unlink(logfile)
-        except OSError:
-            pass
+    return screen
 
 
 def render_screen_to_image(screen, title="ClawTree", output_path="screenshot.png"):
@@ -217,7 +202,7 @@ def render_screen_to_image(screen, title="ClawTree", output_path="screenshot.png
     corner_radius = 10 * SCALE
 
     img_w = content_w + pad * 2
-    img_h = content_h + titlebar_h + pad
+    img_h = content_h + titlebar_h + pad * 2
 
     # Create image
     img = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
@@ -263,8 +248,8 @@ def render_screen_to_image(screen, title="ClawTree", output_path="screenshot.png
         title_y = (titlebar_h - (title_bbox[3] - title_bbox[1])) // 2
         draw.text((title_x, title_y), title, fill=(150, 150, 170, 255), font=title_font)
 
-    # Render each cell
-    y_offset = titlebar_h
+    # Render each cell (pad below titlebar so row 0 doesn't clip into chrome)
+    y_offset = titlebar_h + pad
     x_offset = pad
 
     for row in range(screen.lines):
@@ -290,6 +275,16 @@ def render_screen_to_image(screen, title="ClawTree", output_path="screenshot.png
             if ch and ch.strip():
                 use_font = font_bold if char.bold else font
                 draw.text((x, y), ch, fill=fg + (255,), font=use_font)
+
+    # Clip to rounded rectangle so cell backgrounds don't spill past corners
+    mask = Image.new("L", (img_w, img_h), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle(
+        [0, 0, img_w - 1, img_h - 1],
+        radius=corner_radius,
+        fill=255,
+    )
+    img.putalpha(mask)
 
     # Save
     img.save(output_path, "PNG")

@@ -3,14 +3,17 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::AppEvent;
 
+/// Startup delay before checking for updates (seconds).
+const UPDATE_CHECK_DELAY_SECS: u64 = 5;
+
 /// Spawn a background thread that checks GitHub Releases for a newer version.
-/// One-shot: sleeps 5s, checks once, sends an event if newer, then exits.
+/// One-shot: sleeps, checks once, sends an event if newer, then exits.
 pub fn spawn_update_checker(event_tx: UnboundedSender<AppEvent>) {
     std::thread::Builder::new()
         .name("update-checker".into())
         .spawn(move || {
             // Let the TUI start up first
-            std::thread::sleep(Duration::from_secs(5));
+            std::thread::sleep(Duration::from_secs(UPDATE_CHECK_DELAY_SECS));
 
             if let Some(latest) = fetch_latest_version() {
                 let current = env!("CARGO_PKG_VERSION");

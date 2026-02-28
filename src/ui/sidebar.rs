@@ -109,6 +109,13 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) 
         Span::styled(format!("{} {}", icon, wt.branch), branch_style),
     ];
 
+    // Show yellow asterisk if worktree has uncommitted or unpushed changes
+    if let Some(status) = app.worktree_statuses.get(&wt.path) {
+        if !status.files.is_empty() || !status.unpushed_commits.is_empty() {
+            spans.push(Span::styled("*", Style::default().fg(Color::Yellow).bg(bg)));
+        }
+    }
+
     if total > 0 {
         // Alive (non-exited) count in gray — how many instances spawned
         spans.push(Span::styled(

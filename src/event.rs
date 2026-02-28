@@ -10,8 +10,8 @@ use crate::worktree::WorktreeStatus;
 pub enum AppEvent {
     /// A crossterm input event (key press, mouse, resize).
     Input(CrosstermEvent),
-    /// PTY output is available for the given session.
-    PtyOutput { _session_id: u64 },
+    /// PTY output is available.
+    PtyOutput,
     /// PTY process has exited for the given session.
     PtyExited { session_id: u64 },
     /// Periodic tick for UI refresh.

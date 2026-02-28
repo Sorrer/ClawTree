@@ -94,7 +94,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         match sev {
             StatusSeverity::Info => Style::default().fg(theme::STATUS_INFO),
             StatusSeverity::Success => Style::default().fg(theme::STATUS_SUCCESS),
-            StatusSeverity::Warning => Style::default().fg(theme::STATUS_WARNING).add_modifier(Modifier::BOLD),
             StatusSeverity::Error => Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
         }
     };

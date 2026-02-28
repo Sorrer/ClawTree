@@ -558,7 +558,7 @@ fn setup_pty_threads(
                         if let Ok(mut t) = reader_last_output.write() {
                             *t = Instant::now();
                         }
-                        let _ = reader_tx.send(AppEvent::PtyOutput { _session_id: session_id });
+                        let _ = reader_tx.send(AppEvent::PtyOutput);
                     }
                     Err(_) => {
                         reader_exited.store(true, Ordering::SeqCst);

@@ -109,8 +109,9 @@ pub fn draw(f: &mut Frame, app: &App) {
             branch_name,
             focused_field,
             source_repo_path,
+            confirmed,
         } => {
-            draw_convert_repo(f, app, source_repo_path, *mode, target_path_input, branch_name, *focused_field);
+            draw_convert_repo(f, app, source_repo_path, *mode, target_path_input, branch_name, *focused_field, *confirmed);
         }
     }
 }
@@ -1338,7 +1339,88 @@ fn draw_convert_repo(
     target_path: &str,
     branch: &str,
     focused: usize,
+    confirmed: bool,
 ) {
+    // Confirmation screen: show warning and ask user to press Enter again
+    if confirmed {
+        let area = centered_rect(60, 11, f.area());
+        app.areas.dialog.set(area);
+        f.render_widget(Clear, area);
+
+        let block = Block::default()
+            .title(" Confirm Conversion ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let warn_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        let text_style = Style::default().fg(Color::Gray);
+        let key_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // warning icon + title
+                Constraint::Length(1), // spacer
+                Constraint::Length(1), // line 1
+                Constraint::Length(1), // line 2
+                Constraint::Length(1), // line 3
+                Constraint::Length(1), // spacer
+                Constraint::Length(1), // line 4
+                Constraint::Length(1), // spacer
+                Constraint::Length(1), // help
+            ])
+            .split(inner);
+
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "WARNING: This will restructure your project files.",
+                warn_style,
+            ))),
+            chunks[0],
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Your working tree will be moved into a subdirectory",
+                text_style,
+            ))),
+            chunks[2],
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("and checked out as a worktree at ./{}/", branch),
+                text_style,
+            ))),
+            chunks[3],
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Make sure to backup your project or push your changes.",
+                text_style,
+            ))),
+            chunks[4],
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Source: ", text_style),
+                Span::styled(source_path.display().to_string(), Style::default().fg(Color::White)),
+            ])),
+            chunks[6],
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Enter", key_style),
+                Span::styled(":confirm  ", text_style),
+                Span::styled("Esc", key_style),
+                Span::styled(":cancel", text_style),
+            ])),
+            chunks[8],
+        );
+
+        return;
+    }
+
     let height: u16 = if mode == 1 { 15 } else { 12 };
     let area = centered_rect(60, height, f.area());
     app.areas.dialog.set(area);
@@ -1396,30 +1478,26 @@ fn draw_convert_repo(
     );
     idx += 2; // skip spacer
 
+    let label_style = Style::default().fg(Color::Gray);
+    let value_style = Style::default().fg(Color::Cyan);
+    let cursor = "> ";
+    let no_cursor = "  ";
+
     // Mode selector
-    let mode_label_style = if focused == 0 {
-        Style::default().fg(Color::White)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
+    let mode_prefix = if focused == 0 { cursor } else { no_cursor };
     f.render_widget(
-        Paragraph::new("Conversion mode (Left/Right to toggle):")
-            .style(mode_label_style),
+        Paragraph::new(format!("{}Conversion mode (Left/Right to toggle):", mode_prefix))
+            .style(label_style),
         chunks[idx],
     );
     idx += 1;
 
     let inplace_marker = if mode == 0 { "[x]" } else { "[ ]" };
     let location_marker = if mode == 1 { "[x]" } else { "[ ]" };
-    let mode_style = if focused == 0 {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Cyan)
-    };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            format!("{} In-place    {} Different location", inplace_marker, location_marker),
-            mode_style,
+            format!("{}{} In-place    {} Different location", no_cursor, inplace_marker, location_marker),
+            value_style,
         ))),
         chunks[idx],
     );
@@ -1427,60 +1505,48 @@ fn draw_convert_repo(
 
     // Target path (only if mode == 1)
     if mode == 1 {
-        let target_label_style = if focused == 1 {
-            Style::default().fg(Color::White)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
+        let target_prefix = if focused == 1 { cursor } else { no_cursor };
         f.render_widget(
-            Paragraph::new("Target directory:")
-                .style(target_label_style),
+            Paragraph::new(format!("{}Target directory:", target_prefix))
+                .style(label_style),
             chunks[idx],
         );
         idx += 1;
 
-        let target_style = if focused == 1 {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Cyan)
-        };
         let target_display = if focused == 1 {
             if target_path.is_empty() { "_".to_string() } else { format!("{}_", target_path) }
         } else {
             target_path.to_string()
         };
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(target_display, target_style))),
+            Paragraph::new(Line::from(Span::styled(
+                format!("{}{}", no_cursor, target_display),
+                value_style,
+            ))),
             chunks[idx],
         );
         idx += 2; // skip spacer
     }
 
     // Branch name
-    let branch_label_style = if focused == 2 {
-        Style::default().fg(Color::White)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
+    let branch_prefix = if focused == 2 { cursor } else { no_cursor };
     f.render_widget(
-        Paragraph::new("Branch name:")
-            .style(branch_label_style),
+        Paragraph::new(format!("{}Branch name:", branch_prefix))
+            .style(label_style),
         chunks[idx],
     );
     idx += 1;
 
-    let branch_style = if focused == 2 {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Cyan)
-    };
     let branch_display = if focused == 2 {
         format!("{}_", branch)
     } else {
         branch.to_string()
     };
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(branch_display, branch_style))),
+        Paragraph::new(Line::from(Span::styled(
+            format!("{}{}", no_cursor, branch_display),
+            value_style,
+        ))),
         chunks[idx],
     );
     idx += 2; // skip spacer

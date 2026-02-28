@@ -193,11 +193,8 @@ const INFO_PANEL_KEYS: &[KeyEntry] = &[
     ("k / Up",                  "Navigate files"),
     ("Tab",                     "Switch unstaged/staged section"),
     ("Esc",                     "Back to sidebar"),
-    section("Staging"),
-    ("Space / Enter",           "Stage/unstage selected file"),
-    ("a",                       "Stage all files"),
-    ("c",                       "Enter commit message mode"),
     section("Git Operations"),
+    ("s",                       "Stage & commit"),
     ("Shift + c",               "claude"),
     ("n",                       "New worktree"),
     ("d",                       "Delete worktree"),
@@ -280,8 +277,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
 
     // ? — toggle help overlay (Normal mode only, not in dialogs/terminal)
     if key.modifiers.is_empty() && key.code == KeyCode::Char('?') && app.input_mode == InputMode::Normal {
-        // Don't open help if we're typing in prompt queue or info panel commit message
-        if !app.prompt_queue_focused() && app.info_panel_commit_msg.is_none() {
+        // Don't open help if we're typing in prompt queue
+        if !app.prompt_queue_focused() {
             app.show_help = true;
             app.help_tab = 0;
             return;
@@ -383,6 +380,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         branch_name: branch,
                         focused_field: 0,
                         source_repo_path: source,
+                        confirmed: false,
                     });
                 }
             }
@@ -521,41 +519,6 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
 }
 
 fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
-    // If typing a commit message, handle text input
-    if app.info_panel_commit_msg.is_some() {
-        match key.code {
-            KeyCode::Esc => {
-                app.info_panel_commit_msg = None;
-            }
-            KeyCode::Enter => {
-                let msg = app.info_panel_commit_msg.take().unwrap_or_default();
-                if msg.is_empty() {
-                    app.set_status("Commit message cannot be empty");
-                    app.info_panel_commit_msg = Some(msg);
-                    return;
-                }
-                if let Some(wi) = app.active_worktree_idx {
-                    app.queue_action("Committing...", PendingAction::Commit {
-                        worktree_idx: wi,
-                        message: msg,
-                    });
-                }
-            }
-            KeyCode::Char(c) => {
-                if let Some(ref mut msg) = app.info_panel_commit_msg {
-                    msg.push(c);
-                }
-            }
-            KeyCode::Backspace => {
-                if let Some(ref mut msg) = app.info_panel_commit_msg {
-                    msg.pop();
-                }
-            }
-            _ => {}
-        }
-        return;
-    }
-
     let (unstaged, staged) = app.info_panel_file_lists();
 
     match key.code {
@@ -587,39 +550,8 @@ fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)
         KeyCode::Esc => {
             app.escape_to_sidebar();
         }
-        // Space or Enter — stage/unstage selected file
-        KeyCode::Char(' ') | KeyCode::Enter => {
-            if let Some(wi) = app.active_worktree_idx {
-                if app.info_panel_section == 0 {
-                    if let Some((_, path)) = unstaged.get(app.info_panel_cursor) {
-                        app.queue_action("Staging...", PendingAction::StageFile {
-                            worktree_idx: wi,
-                            file: path.clone(),
-                        });
-                    }
-                } else {
-                    if let Some((_, path)) = staged.get(app.info_panel_cursor) {
-                        app.queue_action("Unstaging...", PendingAction::UnstageFile {
-                            worktree_idx: wi,
-                            file: path.clone(),
-                        });
-                    }
-                }
-            }
-        }
-        // a — stage all
-        KeyCode::Char('a') => {
-            if let Some(wi) = app.active_worktree_idx {
-                app.queue_action("Staging all...", PendingAction::StageAll { worktree_idx: wi });
-            }
-        }
-        // c — enter commit message mode (matching GitCommit dialog)
-        KeyCode::Char('c') => {
-            if staged.is_empty() {
-                app.set_status("No staged files to commit");
-            } else {
-                app.info_panel_commit_msg = Some(String::new());
-            }
+        KeyCode::Char('s') => {
+            handle_stage_commit(app);
         }
         KeyCode::Char('C') if key.modifiers == KeyModifiers::SHIFT => {
             spawn_claude_for_selected(app, terminal_size, true);
@@ -870,7 +802,7 @@ fn handle_pull(app: &mut App) {
                 .name("git-pull".into())
                 .spawn(move || {
                     match worktree::git::pull_branch(&path) {
-                        Ok(worktree::git::PullResult::Success(_)) => {
+                        Ok(worktree::git::PullResult::Success) => {
                             let _ = tx.send(crate::event::AppEvent::PullComplete {
                                 branch,
                                 worktree_idx: wi,
@@ -1175,20 +1107,6 @@ pub fn handle_paste(app: &mut App, data: String) {
 pub(crate) const SCROLL_LINES: usize = 3;
 const SCROLL_PAGE: usize = 20;
 
-/// Handle mouse wheel scroll events. Works regardless of focus.
-#[allow(dead_code)]
-pub fn handle_scroll(app: &mut App, up: bool) {
-    if app.active_session_id.is_none() {
-        return;
-    }
-    if up {
-        app.terminal_scroll = app.terminal_scroll.saturating_add(SCROLL_LINES);
-        clamp_terminal_scroll(app);
-    } else {
-        app.terminal_scroll = app.terminal_scroll.saturating_sub(SCROLL_LINES);
-    }
-}
-
 /// Clamp terminal_scroll to the actual tmux history size so it can't
 /// overshoot past the top, which would cause a "lag" when scrolling back down.
 fn clamp_terminal_scroll(app: &mut App) {
@@ -1330,7 +1248,25 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         })
                         .ok();
                 }
-                Some(Dialog::ConvertRepo { mode, target_path_input, branch_name, source_repo_path, .. }) => {
+                Some(Dialog::ConvertRepo { mode, target_path_input, branch_name, source_repo_path, confirmed, .. }) => {
+                    // First Enter press: show warning and ask for confirmation
+                    if !confirmed {
+                        if mode == 1 && target_path_input.is_empty() {
+                            app.set_status("Target path cannot be empty");
+                            app.dialog = Some(Dialog::ConvertRepo {
+                                mode, target_path_input, branch_name,
+                                focused_field: 1, source_repo_path, confirmed: false,
+                            });
+                            return;
+                        }
+                        app.dialog = Some(Dialog::ConvertRepo {
+                            mode, target_path_input, branch_name,
+                            focused_field: 0, source_repo_path, confirmed: true,
+                        });
+                        return;
+                    }
+
+                    // Second Enter press: user confirmed, proceed with conversion
                     let tx = app.event_tx.clone();
                     let branch = branch_name;
                     if mode == 0 {
@@ -1352,14 +1288,6 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             .ok();
                     } else {
                         // Different location
-                        if target_path_input.is_empty() {
-                            app.set_status("Target path cannot be empty");
-                            app.dialog = Some(Dialog::ConvertRepo {
-                                mode, target_path_input, branch_name: branch,
-                                focused_field: 1, source_repo_path,
-                            });
-                            return;
-                        }
                         let target = std::path::PathBuf::from(&target_path_input);
                         let source = source_repo_path;
                         let bare_path = target.clone();

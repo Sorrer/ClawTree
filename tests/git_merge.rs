@@ -73,7 +73,7 @@ fn test_merge_conflict() {
     test_helpers::git_commit(&feature_wt, "Feature changes to conflict.txt");
 
     let result = git::merge_branch(&main_wt, "feature").unwrap();
-    assert!(matches!(result, git::MergeResult::Conflict(_)));
+    assert!(matches!(result, git::MergeResult::Conflict));
 }
 
 #[test]

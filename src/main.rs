@@ -26,6 +26,11 @@ use tracing_subscriber::EnvFilter;
 use crate::app::{App, PendingAction, CommitPhase, Dialog, ScreenMode, StatusSeverity};
 use crate::event::AppEvent;
 
+/// Watchdog thread poll interval in milliseconds.
+const WATCHDOG_POLL_MS: u64 = 50;
+/// Tick rate for UI refresh (~30fps).
+const TICK_RATE_MS: u64 = 33;
+
 /// Global flag set by the signal handler, read by the watchdog thread.
 static SIGNAL_RECEIVED: AtomicBool = AtomicBool::new(false);
 
@@ -71,7 +76,7 @@ fn main() -> Result<()> {
         .name("watchdog".into())
         .spawn(move || {
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(std::time::Duration::from_millis(WATCHDOG_POLL_MS));
 
                 if !alive_watchdog.load(Ordering::Relaxed) {
                     return; // app exited cleanly
@@ -80,7 +85,7 @@ fn main() -> Result<()> {
                 if SIGNAL_RECEIVED.load(Ordering::SeqCst) {
                     restore_terminal();
                     eprintln!("\nSignal received, exiting.");
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    std::thread::sleep(std::time::Duration::from_millis(WATCHDOG_POLL_MS));
                     std::process::exit(130);
                 }
             }
@@ -97,7 +102,9 @@ fn main() -> Result<()> {
 
     // Set up file logging (to file, never stdout)
     let log_file = std::fs::File::create("worktree-claude-tui.log")
-        .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
+        .or_else(|_| std::fs::File::create("/dev/null"))
+        .or_else(|_| std::fs::File::open("/dev/null"))
+        .expect("Cannot open any log target");
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
         .with_writer(std::sync::Mutex::new(log_file))
@@ -196,7 +203,7 @@ fn main() -> Result<()> {
             .unwrap_or(false);
     tracing::info!("wt.exe available: {}", wt_available);
 
-    let result = rt.block_on(async_main(bare_repo_path, repo_detected, regular_repo_path, tmux_available, wt_available));
+    let result = rt.block_on(async_main(target_dir, bare_repo_path, repo_detected, regular_repo_path, tmux_available, wt_available));
 
     // Clean exit — tell watchdog to stop, restore terminal
     alive.store(false, Ordering::Relaxed);
@@ -205,7 +212,7 @@ fn main() -> Result<()> {
     result
 }
 
-async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, regular_repo_path: Option<std::path::PathBuf>, tmux_available: bool, wt_available: bool) -> Result<()> {
+async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::PathBuf, repo_detected: bool, regular_repo_path: Option<std::path::PathBuf>, tmux_available: bool, wt_available: bool) -> Result<()> {
     // Initialize terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
@@ -254,7 +261,7 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
         .name("tick-timer".into())
         .spawn(move || {
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(33));
+                std::thread::sleep(std::time::Duration::from_millis(TICK_RATE_MS));
                 if tick_tx.send(AppEvent::Tick).is_err() {
                     break;
                 }
@@ -269,20 +276,29 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
             app.set_status(format!("Failed to load worktrees: {}", e));
         }
 
-        // Reconnect existing tmux sessions from a previous TUI run
-        let size = terminal.size()?;
-        let reconnected = session::reconnect_tmux_sessions(&mut app, (size.width, size.height));
-        if reconnected > 0 {
-            // Sync tmux window sizes to the current terminal dimensions —
-            // the sessions may have been created on a different-sized monitor.
-            session::resize_all(&app, size.height, size.width);
-            app.set_status(format!("Reconnected {} tmux session(s)", reconnected));
-            // Restore persisted prompt queues for reconnected sessions
-            app.load_prompt_queues();
-        }
+        // If the bare repo has no worktrees, fall back to the welcome screen
+        // (this can happen after a failed conversion left a .bare/ behind).
+        if app.worktrees.is_empty() {
+            app.repo_detected = false;
+            // Search from the original target dir (not bare_repo_path, which
+            // may be a parent directory where detect_bare_repo found .bare/).
+            app.regular_repo_path = worktree::git::detect_regular_repo(&target_dir);
+        } else {
+            // Reconnect existing tmux sessions from a previous TUI run
+            let size = terminal.size()?;
+            let reconnected = session::reconnect_tmux_sessions(&mut app, (size.width, size.height));
+            if reconnected > 0 {
+                // Sync tmux window sizes to the current terminal dimensions —
+                // the sessions may have been created on a different-sized monitor.
+                session::resize_all(&app, size.height, size.width);
+                app.set_status(format!("Reconnected {} tmux session(s)", reconnected));
+                // Restore persisted prompt queues for reconnected sessions
+                app.load_prompt_queues();
+            }
 
-        // Load saved prompt templates for mini mode
-        app.load_saved_prompts();
+            // Load saved prompt templates for mini mode
+            app.load_saved_prompts();
+        }
     }
 
     // ── Tmux title poller — background thread ──────────────────────
@@ -583,7 +599,7 @@ async fn async_main(bare_repo_path: std::path::PathBuf, repo_detected: bool, reg
                         needs_redraw = true;
                     }
                     AppEvent::Input(_) => {}
-                    AppEvent::PtyOutput { .. } => {
+                    AppEvent::PtyOutput => {
                         app.url_cache_dirty = true;
                         needs_redraw = true;
                     }
@@ -1002,10 +1018,6 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
         PendingAction::RefreshWorktreeStatus => {
             app.refresh_worktree_status();
         }
-        PendingAction::FetchWorktreeStatus { worktree_idx } => {
-            app.worktree_status = worktree::fetch_worktree_status(app, worktree_idx).ok();
-            app.clamp_info_panel_cursor();
-        }
         PendingAction::OpenStageCommit { worktree_idx } => {
             match worktree::status_porcelain(app, worktree_idx) {
                 Ok(changes) => {
@@ -1148,7 +1160,7 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                         message: msg,
                     });
                 }
-                Ok(worktree::git::MergeResult::Conflict(_)) => {
+                Ok(worktree::git::MergeResult::Conflict) => {
                     app.set_status(format!(
                         "Merge conflict: '{}' into '{}'",
                         source_name, target_branch

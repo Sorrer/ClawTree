@@ -16,6 +16,7 @@ pub struct WorktreeStatus {
     pub files: Vec<git::FileChange>,
     pub recent_commits: Vec<String>,
     pub head_subject: String,
+    pub unpushed_commits: Vec<String>,
 }
 
 /// A worktree with its associated sessions.
@@ -149,7 +150,8 @@ pub fn fetch_worktree_status(app: &App, worktree_idx: usize) -> Result<WorktreeS
     let files = git::status_porcelain(&wt.path)?;
     let recent_commits = git::log_oneline(&wt.path, 10).unwrap_or_default();
     let head_subject = git::head_subject(&wt.path).unwrap_or_default();
-    Ok(WorktreeStatus { files, recent_commits, head_subject })
+    let unpushed_commits = git::unpushed_commits(&wt.path);
+    Ok(WorktreeStatus { files, recent_commits, head_subject, unpushed_commits })
 }
 
 /// Fetch worktree status by path (no App reference needed).
@@ -158,7 +160,8 @@ pub fn fetch_worktree_status_by_path(path: &Path) -> Result<WorktreeStatus> {
     let files = git::status_porcelain(path)?;
     let recent_commits = git::log_oneline(path, 10).unwrap_or_default();
     let head_subject = git::head_subject(path).unwrap_or_default();
-    Ok(WorktreeStatus { files, recent_commits, head_subject })
+    let unpushed_commits = git::unpushed_commits(path);
+    Ok(WorktreeStatus { files, recent_commits, head_subject, unpushed_commits })
 }
 
 /// Background refresh interval for worktree status polling.

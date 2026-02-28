@@ -23,7 +23,7 @@ Built for the **bare repository** workflow where a project uses a `.bare/` direc
 >
 >As I have been embracing AI assisted programming, I found myself pushing parallel AI development to the extreme.
 >With this, I am stuck cloning repositories for different feature paths, and context swapping between multiple terminal tabs. All in the goal to utilize multiple claude instances and contexts to their fullest extent.
->This has been a rough process that I've been trying to optimize, and I think this has solved the issue for me.
+>This has been a rough process that I've been trying to optimize, and this tool has solved my issue.
 >You should now be granted with the power of multi-clauding with this toolset!
 
 
@@ -36,10 +36,10 @@ Built for the **bare repository** workflow where a project uses a `.bare/` direc
   - [Git Operations](#git-operations)
   - [Claude Code Sessions](#claude-code-sessions)
   - [Prompt Queue](#prompt-queue)
-  - [Mini Mode (WIP)](#mini-mode-wip)
+  - [Mini Mode](#mini-mode)
   - [Terminal & UI](#terminal--ui)
 - [Requirements](#requirements)
-- [Building from Source](#building-from-source)
+- [Future Goals](#future-goals)
 
 ## Install
 
@@ -62,7 +62,7 @@ gh api repos/Sorrer/ClawTree/contents/install.sh \
 Install a specific version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Sorrer/ClawTree/main/install.sh | bash -s -- v0.1.0
+curl -fsSL https://raw.githubusercontent.com/Sorrer/ClawTree/main/install.sh | bash -s -- v0.1.2
 ```
 
 Install to a custom directory:
@@ -77,10 +77,11 @@ CLAWTREE_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com
 
 > Make sure claude is installed and accessible
 
-After installation, point clawtree at a directory:
+After installation, navigate to your project and run clawtree:
 
 ```bash
-clawtree /path/to/your/project
+cd your-project
+clawtree
 ```
 
 If the directory does not contain a `.bare` repo layout, clawtree opens a **welcome screen** with setup options:
@@ -103,31 +104,28 @@ Once initialized, clawtree opens the main interface where you can browse your wo
 ## Features
 
 ### Worktree Management
-- Browse, create, and delete git worktrees from a sidebar tree view
+- Browse, create, and delete worktrees from a sidebar tree view
 - Initialize new bare repos or clone from a remote URL
-- Convert existing regular git repos to the bare worktree layout (in-place or to a new location)
-- Background git status polling with per-worktree caching (auto-refreshes every 10s)
+- Convert existing repos to the bare worktree layout
+- Live git status updates per worktree
 
 <p align="center">
   <img src="docs/screenshots/worktree-management.png" alt="Worktree management" width="800">
 </p>
 
 ### Git Operations
-- Interactive file staging/unstaging (single file, stage all)
-- Inline commit message input
-- Branch merging with automatic dirty-worktree detection and pre-merge commit prompts
-- Merge conflict resolution dialog — open in VS Code, JetBrains, Claude, or abort
-- Push to remote with automatic upstream setup (`-u origin`)
+- Stage, unstage, and commit with AI-generated commit messages
+- Branch merging with conflict detection and resolution (VS Code, JetBrains, Claude)
+- Push to remote with automatic upstream setup
 
 <p align="center">
   <img src="docs/screenshots/git-operations.png" alt="Git operations" width="800">
 </p>
 
 ### Claude Code Sessions
-- Spawn multiple concurrent Claude Code sessions per worktree
-- tmux-backed sessions persist across TUI restarts with automatic reconnection
-- Session renaming/nicknames
-- Optional `--dangerously-skip-permissions` mode
+- Run multiple concurrent Claude Code sessions per worktree
+- Sessions persist across restarts with automatic reconnection
+- Session renaming and optional yolo mode (`--dangerously-skip-permissions`)
 
 <p align="center">
   <img src="docs/screenshots/claude-sessions.png" alt="Claude Code sessions" width="800">
@@ -135,36 +133,31 @@ Once initialized, clawtree opens the main interface where you can browse your wo
 
 ### Prompt Queue
 
-> Personal Feature:
->
-> After completing a big feature, I find that there is a lot of work to be cleaned up, all easily one shotted. By utilizing a prompt queue, you can have claude one-shot bug fixes one at a time instead of all at once.
+Queue up one-shot tasks for Claude to handle sequentially while you focus on other work — great for knocking out a batch of bug fixes or cleanup tasks after completing a big feature.
 
-- Per-session prompt queues that auto-send when Claude is idle (5s cooldown)
+- Per-session queues that auto-send prompts when Claude is idle
 - Add, edit, and delete queued prompts
-- Queues persist to `.prompt_queues.json` and survive restarts
+- Queues persist across restarts
 
 <p align="center">
   <img src="docs/screenshots/prompt-queue.png" alt="Prompt queue" width="800">
 </p>
 
-### Mini Mode (WIP)
+### Mini Mode
 
-> **Note:** Mini Mode is a work in progress and may change significantly.
-
-- Compact agent management view (toggle with F2)
+- Compact agent management view with status badges (toggle with `F2`)
 - Drilldown into a single agent's terminal full-screen
-- Agent status badges: Working, Idle, Needs Input, Exited
-- Saved prompt templates (`.agent_prompts.json`) for quick agent creation
-- Auto-captured agent summaries on Working-to-Idle transitions
+- Saved prompt templates for quick agent creation
+- Auto-captured agent summaries when agents finish working
+
+*Mini Mode is a work in progress and may change significantly.*
 
 ### Terminal & UI
-- Three screen modes: Normal, Mini, Mini Drilldown
-- Keyboard-driven with vim-style navigation (j/k, Home/End, etc.)
-- Mouse scroll support (3 lines per tick) with click-to-select text
-- Scrollback browsing with scrollbar and `[+N]` offset indicator
-- Context-sensitive help overlay with 6 tabs (press `?`)
-- Status bar with auto-fading messages and mode badges
-- Background Claude context usage tracking via debug log parsing
+- Keyboard-driven with vim-style navigation (`j`/`k`, `?` for help)
+- Click-and-drag text selection with clipboard support
+- URL detection — click to open, `u` to copy
+- Scrollback browsing with scrollbar
+- Auto update notifications
 
 <p align="center">
   <img src="docs/screenshots/help-overlay.png" alt="Help overlay" width="800">
@@ -184,7 +177,10 @@ Once initialized, clawtree opens the main interface where you can browse your wo
 | **tmux** | Yes | Session persistence and reconnection across restarts |
 | **wt.exe** | Optional | Windows Terminal tab integration (WSL only) |
 
-## Building from Source
+<details>
+<summary><strong>Development</strong></summary>
+
+### Building from Source
 
 Everything from the requirements above, plus Rust (edition 2021, 1.56+) and a C compiler.
 
@@ -195,14 +191,27 @@ cargo build --release
 ```
 
 ```bash
-./run.sh [optional-directory]
+./run.sh
 # or manually:
-./target/release/clawtree [optional-directory]
+./target/release/clawtree
 ```
 
+### Testing
+
+Clawtree includes unit tests, integration tests for git operations, and an end-to-end test suite. CI runs automatically on push and PRs via GitHub Actions (unit/integration tests, E2E tests, and clippy lints).
+
+```bash
+# Run all tests
+cargo test
+
+# Run E2E tests (requires tmux and a release build)
+cargo build --release
+tests/e2e_test.sh
+```
+
+</details>
 
 ## Future Goals
 
-- Enahnce UI/UX to support **Everyone's** usages
-- Incorporate more AI-enhanced flows (commit message generation)
-- Support other agentic CLIs like Codex and gemini CLI
+- Enhance UI/UX to support **everyone's** workflows
+- Support other agentic CLIs like Codex and Gemini CLI

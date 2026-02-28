@@ -282,6 +282,21 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
 
         lines.push(Line::raw(""));
 
+        // Unpushed commits section
+        if !status.unpushed_commits.is_empty() {
+            lines.push(Line::styled(
+                format!("  ── Unpushed Commits ({}) ", status.unpushed_commits.len()),
+                Style::default().fg(Color::Yellow),
+            ));
+            for commit in &status.unpushed_commits {
+                lines.push(Line::styled(
+                    format!("  {}", commit),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            lines.push(Line::raw(""));
+        }
+
         // Recent commits section
         if !status.recent_commits.is_empty() {
             lines.push(Line::styled(
@@ -297,39 +312,23 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
         }
     }
 
-    // Commit message input (when active)
-    if let Some(ref msg) = app.info_panel_commit_msg {
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(
-            "  ── Commit Message ──",
-            Style::default().fg(Color::Yellow),
-        ));
-        lines.push(Line::from(vec![
-            Span::styled("  > ", Style::default().fg(Color::Yellow)),
-            Span::raw(msg.as_str()),
-            Span::styled("_", Style::default().fg(Color::Yellow)),
-        ]));
-        lines.push(Line::styled(
-            "  Enter: commit  Esc: cancel",
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-
     // Keybinding hints at bottom
-    let hints = if focused && app.info_panel_commit_msg.is_none() {
+    let hints = if focused {
         Line::from(vec![
-            Span::styled("  Space/Enter", Style::default().fg(Color::Cyan)),
-            Span::styled(": stage/unstage  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("a", Style::default().fg(Color::Cyan)),
-            Span::styled(": stage all  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("c", Style::default().fg(Color::Cyan)),
-            Span::styled(": commit  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  j/k", Style::default().fg(Color::Cyan)),
+            Span::styled(": navigate  ", Style::default().fg(Color::DarkGray)),
             Span::styled("Tab", Style::default().fg(Color::Cyan)),
             Span::styled(": section  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("s", Style::default().fg(Color::Cyan)),
+            Span::styled(": stage/commit  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("p", Style::default().fg(Color::Cyan)),
+            Span::styled(": push  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("P", Style::default().fg(Color::Cyan)),
+            Span::styled(": pull  ", Style::default().fg(Color::DarkGray)),
             Span::styled("Esc", Style::default().fg(Color::Cyan)),
             Span::styled(": back", Style::default().fg(Color::DarkGray)),
         ])
-    } else if app.info_panel_commit_msg.is_none() {
+    } else {
         Line::from(vec![
             Span::styled("  c", Style::default().fg(Color::Cyan)),
             Span::styled(": claude  ", Style::default().fg(Color::DarkGray)),
@@ -346,8 +345,6 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
             Span::styled("d", Style::default().fg(Color::Cyan)),
             Span::styled(": delete", Style::default().fg(Color::DarkGray)),
         ])
-    } else {
-        Line::raw("") // hints already shown inline with commit message
     };
 
     // Place hints at the bottom of the area

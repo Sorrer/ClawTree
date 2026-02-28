@@ -13,7 +13,6 @@ use crate::app::{AgentStatus, App};
 pub struct ClaudeUsage {
     pub tokens_used: usize,
     pub effective_window: usize,
-    pub _threshold: usize,
 }
 
 impl ClaudeUsage {
@@ -30,7 +29,6 @@ impl ClaudeUsage {
 }
 
 /// A session running in a PTY — either Claude Code or a plain terminal shell.
-#[allow(dead_code)]
 pub struct Session {
     pub id: u64,
     pub worktree_path: PathBuf,
@@ -44,9 +42,6 @@ pub struct Session {
     pub tmux_session_name: Option<String>,
     /// User-assigned nickname, displayed instead of terminal title when set.
     pub nickname: Option<String>,
-    /// The prompt used to create this agent (None for reconnected sessions).
-    #[allow(dead_code)]
-    pub initial_prompt: Option<String>,
     /// Whether the agent was active on the previous tick (for transition detection).
     pub was_active: bool,
     /// True if this is a plain terminal session (not Claude Code).
@@ -499,7 +494,6 @@ pub fn spawn_session(app: &mut App, worktree_idx: usize, terminal_size: (u16, u1
         last_output: handle.last_output,
         tmux_session_name: handle.tmux_session_name,
         nickname: None,
-        initial_prompt: initial_prompt.map(|s| s.to_string()),
         was_active: false,
         is_terminal: false,
     };
@@ -553,7 +547,6 @@ pub fn spawn_terminal_session(app: &mut App, worktree_idx: usize, terminal_size:
         last_output: handle.last_output,
         tmux_session_name: handle.tmux_session_name,
         nickname: None,
-        initial_prompt: None,
         was_active: false,
         is_terminal: true,
     };
@@ -851,7 +844,6 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
             last_output: handle.last_output,
             tmux_session_name: handle.tmux_session_name,
             nickname: None,
-            initial_prompt: None,
             was_active: false,
             is_terminal,
         };
@@ -1268,14 +1260,11 @@ fn parse_autocompact_line(line: &str) -> Option<ClaudeUsage> {
     let after = line.split("autocompact:").nth(1)?;
 
     let mut tokens = None;
-    let mut threshold = None;
     let mut effective_window = None;
 
     for part in after.split_whitespace() {
         if let Some(val) = part.strip_prefix("tokens=") {
             tokens = val.parse().ok();
-        } else if let Some(val) = part.strip_prefix("threshold=") {
-            threshold = val.parse().ok();
         } else if let Some(val) = part.strip_prefix("effectiveWindow=") {
             effective_window = val.parse().ok();
         }
@@ -1284,7 +1273,6 @@ fn parse_autocompact_line(line: &str) -> Option<ClaudeUsage> {
     Some(ClaudeUsage {
         tokens_used: tokens?,
         effective_window: effective_window?,
-        _threshold: threshold?,
     })
 }
 

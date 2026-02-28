@@ -17,8 +17,8 @@ BINARY="$PROJECT_DIR/target/release/clawtree"
 CAPTURE="$SCRIPT_DIR/term_capture.py"
 OUTPUT_DIR="$PROJECT_DIR/docs/screenshots"
 TMUX_SESSION="clawtree-capture"
-COLS=140
-ROWS=40
+COLS=245
+ROWS=70
 WAIT=3  # seconds to wait after each action for TUI to settle
 
 # ── Helpers ──────────────────────────────────────────────────────────────
