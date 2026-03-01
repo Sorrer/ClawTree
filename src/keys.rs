@@ -1262,8 +1262,8 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             app.close_dialog();
         }
         KeyCode::Enter => {
-            // Alt+Enter: insert newline in commit message
-            if key.modifiers.contains(KeyModifiers::ALT) {
+            // Alt+Enter or Shift+Enter: insert newline in commit message
+            if key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) {
                 if let Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) = app.dialog {
                     if *phase == CommitPhase::Message {
                         let byte_pos = commit_message.char_indices()
