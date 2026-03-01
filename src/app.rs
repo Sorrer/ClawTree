@@ -315,6 +315,7 @@ pub enum PendingAction {
     UnstageFile { worktree_idx: usize, file: String },
     StageAll { worktree_idx: usize },
     Commit { worktree_idx: usize, message: String },
+    CommitAndPush { worktree_idx: usize, message: String },
     RefreshWorktreeStatus,
     OpenStageCommit { worktree_idx: usize },
     StageAllAndCommitClaude { worktree_idx: usize },

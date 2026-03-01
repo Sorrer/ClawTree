@@ -1215,6 +1215,15 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         }
     }
 
+    // GitCommit message phase: Ctrl+P to commit and push
+    if let Some(Dialog::GitCommit { ref phase, .. }) = app.dialog {
+        if *phase == CommitPhase::Message
+            && key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
+            handle_git_commit_and_push(app);
+            return;
+        }
+    }
+
     // ── Text input priority ──────────────────────────────────────────
     // Dialogs with text input fields must receive all character keys
     // (including j/k) before navigation handlers can intercept them.
@@ -2231,6 +2240,24 @@ fn clean_commit_message(msg: &str) -> String {
         result.pop();
     }
     result.join("\n")
+}
+
+/// Commit with the current message and push to remote.
+fn handle_git_commit_and_push(app: &mut App) {
+    let (worktree_idx, commit_message) = match &app.dialog {
+        Some(Dialog::GitCommit { worktree_idx, commit_message, phase, .. })
+            if *phase == CommitPhase::Message => (*worktree_idx, commit_message.clone()),
+        _ => return,
+    };
+    if commit_message.is_empty() {
+        app.set_status("Commit message cannot be empty");
+        return;
+    }
+    app.close_dialog();
+    app.queue_action("Committing & pushing...", PendingAction::CommitAndPush {
+        worktree_idx,
+        message: commit_message,
+    });
 }
 
 /// Switch to commit message phase if staged files exist.

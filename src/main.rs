@@ -1025,6 +1025,34 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                 }
             }
         }
+        PendingAction::CommitAndPush { worktree_idx, message } => {
+            match worktree::commit(app, worktree_idx, &message) {
+                Ok(()) => {
+                    let _ = worktree::refresh_worktrees(app);
+                    app.refresh_worktree_status();
+                    app.set_status_with(StatusSeverity::Success, "Committed — pushing...");
+                    // Trigger push on a background thread
+                    if let Some(wt) = app.worktrees.get(worktree_idx) {
+                        let path = wt.path.clone();
+                        let branch = wt.branch.clone();
+                        let tx = app.event_tx.clone();
+                        let git_lock = std::sync::Arc::clone(&app.git_lock);
+                        std::thread::Builder::new()
+                            .name("git-push".into())
+                            .spawn(move || {
+                                let _guard = git_lock.lock().unwrap_or_else(|e| e.into_inner());
+                                let result = worktree::git::push_branch(&path, &branch);
+                                let error = result.err().map(|e| format!("{}", e));
+                                let _ = tx.send(AppEvent::PushComplete { branch, error });
+                            })
+                            .ok();
+                    }
+                }
+                Err(e) => {
+                    app.set_status_with(StatusSeverity::Error, format!("Commit failed: {}", e));
+                }
+            }
+        }
         PendingAction::RefreshWorktreeStatus => {
             app.refresh_worktree_status();
         }
