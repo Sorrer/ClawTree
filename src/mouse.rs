@@ -211,8 +211,10 @@ pub fn url_at_position(app: &App, col: u16, row: u16) -> Option<usize> {
     let rel_row = row - inner.y;
 
     for (i, url) in app.url_cache.urls.iter().enumerate() {
-        if url.row == rel_row && rel_col >= url.col_start && rel_col < url.col_end {
-            return Some(i);
+        for span in &url.spans {
+            if span.row == rel_row && rel_col >= span.col_start && rel_col < span.col_end {
+                return Some(i);
+            }
         }
     }
     None

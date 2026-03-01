@@ -325,7 +325,7 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
         if let Ok(mut paths) = status_poller_paths.lock() {
             *paths = worktree::collect_worktree_paths(&app);
         }
-        worktree::spawn_status_poller(event_tx.clone(), std::sync::Arc::clone(&status_poller_paths));
+        worktree::spawn_status_poller(event_tx.clone(), std::sync::Arc::clone(&status_poller_paths), std::sync::Arc::clone(&app.git_lock));
     }
 
     // ── Main event loop ────────────────────────────────────────────
@@ -366,6 +366,8 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
         // Execute pending actions after drawing the loading overlay
         if let Some(action) = app.pending_action.take() {
             let wt_count_before = app.worktrees.len();
+            let git_lock = std::sync::Arc::clone(&app.git_lock);
+            let _git_guard = git_lock.lock().unwrap_or_else(|e| e.into_inner());
             execute_pending_action(&mut app, action);
             // Only clear loading if the action didn't chain another action
             // (e.g. Commit → MergeExecute sets a new loading_message via queue_action)
@@ -435,13 +437,17 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                             let tx = event_tx.clone();
                             let next_refresh = app.next_status_refresh
                                 .unwrap_or_else(|| Instant::now() + worktree::STATUS_REFRESH_INTERVAL);
+                            let git_lock = std::sync::Arc::clone(&app.git_lock);
                             tokio::task::spawn_blocking(move || {
-                                if let Ok(status) = worktree::fetch_worktree_status_by_path(&path) {
-                                    let _ = tx.send(AppEvent::WorktreeStatusReady {
-                                        worktree_path: path,
-                                        status,
-                                        next_refresh_at: next_refresh,
-                                    });
+                                // Use try_lock to avoid blocking if a user operation is running
+                                if let Ok(_guard) = git_lock.try_lock() {
+                                    if let Ok(status) = worktree::fetch_worktree_status_by_path(&path) {
+                                        let _ = tx.send(AppEvent::WorktreeStatusReady {
+                                            worktree_path: path,
+                                            status,
+                                            next_refresh_at: next_refresh,
+                                        });
+                                    }
                                 }
                             });
                         }
@@ -642,6 +648,7 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                             }
                             None => {
                                 app.set_status_with(StatusSeverity::Success, format!("Pushed '{}'", branch));
+                                app.refresh_worktree_status();
                             }
                         }
                         needs_redraw = true;
@@ -717,6 +724,7 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                                 worktree::spawn_status_poller(
                                     event_tx.clone(),
                                     std::sync::Arc::clone(&status_poller_paths),
+                                    std::sync::Arc::clone(&app.git_lock),
                                 );
                             }
                         }
@@ -738,6 +746,7 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                                 worktree::spawn_status_poller(
                                     event_tx.clone(),
                                     std::sync::Arc::clone(&status_poller_paths),
+                                    std::sync::Arc::clone(&app.git_lock),
                                 );
                             }
                         }
@@ -775,8 +784,9 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                         if applies {
                             match message {
                                 Ok(msg) => {
-                                    if let Some(Dialog::GitCommit { ref mut commit_message, ref mut phase, .. }) = app.dialog {
+                                    if let Some(Dialog::GitCommit { ref mut commit_message, ref mut phase, ref mut cursor_pos, .. }) = app.dialog {
                                         *commit_message = msg;
+                                        *cursor_pos = commit_message.chars().count();
                                         *phase = CommitPhase::Message;
                                     }
                                 }
@@ -1004,7 +1014,7 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                     app.refresh_worktree_status();
                     // If a merge was waiting on this commit, re-queue it
                     if let Some(merge_action) = app.pending_merge.take() {
-                        app.set_status("Committed — retrying merge...");
+                        app.set_status("Committed — merging...");
                         app.queue_action("Merging...", merge_action);
                     } else {
                         app.set_status_with(StatusSeverity::Success, "Changes committed successfully");
@@ -1044,7 +1054,54 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                         selected: 0,
                         phase: CommitPhase::Staging,
                         commit_message: String::new(),
+                        cursor_pos: 0,
                     });
+                }
+                Err(e) => {
+                    app.set_status(format!("Failed to get status: {}", e));
+                }
+            }
+        }
+        PendingAction::StageAllAndCommitClaude { worktree_idx } => {
+            // Stage all files first
+            if let Err(e) = worktree::stage_all(app, worktree_idx) {
+                app.set_status(format!("Failed to stage all: {}", e));
+                return;
+            }
+            // Now open the commit dialog with everything staged
+            match worktree::status_porcelain(app, worktree_idx) {
+                Ok(changes) => {
+                    if changes.is_empty() {
+                        app.set_status("Working tree clean — nothing to commit");
+                        return;
+                    }
+                    let mut unstaged = Vec::new();
+                    let mut staged = Vec::new();
+                    for c in &changes {
+                        if c.index_status != ' ' && c.index_status != '?' {
+                            staged.push((c.index_status, c.path.clone()));
+                        }
+                        if c.work_status != ' ' || c.index_status == '?' {
+                            let status = if c.index_status == '?' { '?' } else { c.work_status };
+                            unstaged.push((status, c.path.clone()));
+                        }
+                    }
+                    if staged.is_empty() {
+                        app.set_status("No staged files after stage all");
+                        return;
+                    }
+                    app.open_dialog(Dialog::GitCommit {
+                        worktree_idx,
+                        unstaged,
+                        staged,
+                        section: 0,
+                        selected: 0,
+                        phase: CommitPhase::Staging,
+                        commit_message: String::new(),
+                        cursor_pos: 0,
+                    });
+                    // Immediately trigger Claude commit message generation
+                    keys::handle_git_commit_claude_message(app);
                 }
                 Err(e) => {
                     app.set_status(format!("Failed to get status: {}", e));
@@ -1057,6 +1114,64 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                 .get(source_worktree_idx)
                 .map(|w| w.branch.clone())
                 .unwrap_or_default();
+
+            // Guard: source worktree must not have an in-progress merge
+            if let Some(conflict_branch) = worktree::merge_in_progress(app, source_worktree_idx) {
+                app.set_status(format!(
+                    "'{}' has an unresolved merge — resolve or abort first",
+                    source_name
+                ));
+                app.open_dialog(Dialog::MergeConflict {
+                    worktree_idx: source_worktree_idx,
+                    source_branch: conflict_branch,
+                    selected: 0,
+                });
+                return;
+            }
+
+            // Check source worktree is clean before merging
+            match worktree::is_worktree_clean(app, source_worktree_idx) {
+                Ok(false) => {
+                    // Remember the merge so we can retry after commit
+                    app.pending_merge = Some(PendingAction::MergeExecute {
+                        source_worktree_idx,
+                        target_branch: target_branch.clone(),
+                    });
+                    // Open the commit UI for the dirty source worktree
+                    match worktree::status_porcelain(app, source_worktree_idx) {
+                        Ok(changes) => {
+                            let files: Vec<(String, String)> = changes
+                                .iter()
+                                .map(|c| {
+                                    (
+                                        format!("{}{}", c.index_status, c.work_status),
+                                        c.path.clone(),
+                                    )
+                                })
+                                .collect();
+                            app.set_status(format!(
+                                "'{}' has uncommitted changes — commit before merging",
+                                source_name
+                            ));
+                            app.open_dialog(Dialog::DirtyWorktree {
+                                worktree_idx: source_worktree_idx,
+                                files,
+                                selected: 0,
+                            });
+                        }
+                        Err(e) => {
+                            app.pending_merge = None;
+                            app.set_status(format!("Failed to get status of '{}': {}", source_name, e));
+                        }
+                    }
+                    return;
+                }
+                Err(e) => {
+                    app.set_status(format!("Failed to check status of '{}': {}", source_name, e));
+                    return;
+                }
+                Ok(true) => {}
+            }
 
             // Find or create worktree for target branch
             let target_wt_idx = match worktree::find_worktree_for_branch(app, &target_branch) {
@@ -1133,6 +1248,7 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                                 selected: 0,
                                 phase: CommitPhase::Staging,
                                 commit_message: String::new(),
+                                cursor_pos: 0,
                             });
                         }
                         Err(e) => {
@@ -1181,15 +1297,16 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
 
 /// Re-fetch file status and rebuild the GitCommit dialog lists.
 fn refresh_git_commit_dialog(app: &mut App) {
-    let (worktree_idx, old_section, old_selected, phase, commit_message) = match &app.dialog {
+    let (worktree_idx, old_section, old_selected, phase, commit_message, cursor_pos) = match &app.dialog {
         Some(Dialog::GitCommit {
             worktree_idx,
             section,
             selected,
             phase,
             commit_message,
+            cursor_pos,
             ..
-        }) => (*worktree_idx, *section, *selected, *phase, commit_message.clone()),
+        }) => (*worktree_idx, *section, *selected, *phase, commit_message.clone(), *cursor_pos),
         _ => return,
     };
 
@@ -1240,5 +1357,6 @@ fn refresh_git_commit_dialog(app: &mut App) {
         selected,
         phase,
         commit_message,
+        cursor_pos,
     });
 }

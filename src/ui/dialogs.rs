@@ -76,13 +76,14 @@ pub fn draw(f: &mut Frame, app: &App) {
             selected,
             phase,
             commit_message,
+            cursor_pos,
         } => {
             let branch_name = app
                 .worktrees
                 .get(*worktree_idx)
                 .map(|w| w.branch.as_str())
                 .unwrap_or("???");
-            draw_git_commit(f, app, branch_name, unstaged, staged, *section, *selected, *phase, commit_message);
+            draw_git_commit(f, app, branch_name, unstaged, staged, *section, *selected, *phase, commit_message, *cursor_pos);
         }
         Dialog::PullError {
             worktree_idx,
@@ -989,6 +990,7 @@ fn draw_git_commit(
     selected: usize,
     phase: CommitPhase,
     commit_message: &str,
+    cursor_pos: usize,
 ) {
     match phase {
         CommitPhase::Staging => {
@@ -998,7 +1000,7 @@ fn draw_git_commit(
             draw_git_commit_generating(f, app, branch, staged);
         }
         CommitPhase::Message => {
-            draw_git_commit_message(f, app, branch, staged, commit_message);
+            draw_git_commit_message(f, app, branch, staged, commit_message, cursor_pos);
         }
     }
 }
@@ -1160,7 +1162,7 @@ fn draw_git_commit_staging(
     f.render_widget(List::new(staged_items), chunks[3]);
 
     f.render_widget(
-        Paragraph::new("Space: stage/unstage  a: all  Tab: section  c: commit  Esc: cancel")
+        Paragraph::new("Space: stage/unstage  a: all  c: commit  ^c: AI commit  ^a: all+AI  Esc: cancel")
             .style(Style::default().fg(Color::DarkGray)),
         chunks[4],
     );
@@ -1252,10 +1254,18 @@ fn draw_git_commit_message(
     branch: &str,
     staged: &[(char, String)],
     commit_message: &str,
+    cursor_pos: usize,
 ) {
     let max_height = (f.area().height as f32 * 0.8) as u16;
-    // Count message lines (at least 1 for the cursor)
-    let msg_line_count = commit_message.lines().count().max(1) as u16;
+    // Count message lines (at least 1 for the cursor).
+    // A trailing newline means there's an empty line after it.
+    let msg_line_count = if commit_message.is_empty() {
+        1
+    } else if commit_message.ends_with('\n') {
+        commit_message.lines().count() as u16 + 1
+    } else {
+        commit_message.lines().count().max(1) as u16
+    };
     let max_msg_lines = max_height.saturating_sub(7); // reserve for header, staged, label, help, borders
     let msg_visible = msg_line_count.min(max_msg_lines).max(3); // at least 3 lines for the message area
     let fixed_rows = 5; // staged header + blank + label + help + borders
@@ -1303,23 +1313,61 @@ fn draw_git_commit_message(
     f.render_widget(List::new(staged_items), chunks[1]);
 
     f.render_widget(
-        Paragraph::new("Commit message:")
+        Paragraph::new("Commit message (Alt+Enter: newline):")
             .style(Style::default().fg(Color::Gray)),
         chunks[2],
     );
 
-    // Build message lines with cursor on the last line
-    let display_msg = format!("{}_", commit_message);
-    let msg_lines: Vec<Line> = display_msg
-        .lines()
-        .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))))
-        .collect();
-    // Scroll to keep the last line (cursor) visible
-    let scroll = msg_line_count.saturating_sub(msg_visible);
+    // Calculate cursor line and column from cursor_pos
+    let mut cursor_line: u16 = 0;
+    let mut cursor_col: u16 = 0;
+    for (i, ch) in commit_message.chars().enumerate() {
+        if i == cursor_pos {
+            break;
+        }
+        if ch == '\n' {
+            cursor_line += 1;
+            cursor_col = 0;
+        } else {
+            cursor_col += 1;
+        }
+    }
+
+    // Scroll to keep cursor visible
+    let scroll = if cursor_line >= msg_visible {
+        cursor_line - msg_visible + 1
+    } else {
+        0
+    };
+
+    // Build message lines
+    let msg_lines: Vec<Line> = if commit_message.is_empty() {
+        vec![Line::from("")]
+    } else {
+        let mut lines: Vec<Line> = commit_message
+            .split('\n')
+            .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))))
+            .collect();
+        if lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines
+    };
+
     f.render_widget(
         Paragraph::new(msg_lines).scroll((scroll, 0)),
         chunks[3],
     );
+
+    // Place the terminal cursor at the correct position
+    let msg_area = chunks[3];
+    let screen_line = cursor_line.saturating_sub(scroll);
+    if screen_line < msg_visible {
+        f.set_cursor_position((
+            msg_area.x + cursor_col.min(msg_area.width.saturating_sub(1)),
+            msg_area.y + screen_line,
+        ));
+    }
 
     f.render_widget(
         Paragraph::new("Enter: commit  Ctrl+G: AI msg  Esc: back")

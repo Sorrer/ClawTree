@@ -176,6 +176,7 @@ const STATUS_STAGGER_DELAY: Duration = Duration::from_millis(300);
 pub fn spawn_status_poller(
     event_tx: mpsc::UnboundedSender<AppEvent>,
     worktree_paths: Arc<Mutex<Vec<PathBuf>>>,
+    git_lock: Arc<Mutex<()>>,
 ) {
     std::thread::Builder::new()
         .name("status-poller".into())
@@ -195,16 +196,21 @@ pub fn spawn_status_poller(
                 let next_refresh_at = cycle_start + STATUS_REFRESH_INTERVAL;
 
                 for path in &paths {
-                    if let Ok(status) = fetch_worktree_status_by_path(path) {
-                        if event_tx
-                            .send(AppEvent::WorktreeStatusReady {
-                                worktree_path: path.clone(),
-                                status,
-                                next_refresh_at,
-                            })
-                            .is_err()
-                        {
-                            return; // channel closed, app shutting down
+                    // Use try_lock so we skip this worktree if a user-initiated
+                    // git operation (commit, merge, push, pull, etc.) is running.
+                    // This prevents "index.lock exists" errors from concurrent access.
+                    if let Ok(_guard) = git_lock.try_lock() {
+                        if let Ok(status) = fetch_worktree_status_by_path(path) {
+                            if event_tx
+                                .send(AppEvent::WorktreeStatusReady {
+                                    worktree_path: path.clone(),
+                                    status,
+                                    next_refresh_at,
+                                })
+                                .is_err()
+                            {
+                                return; // channel closed, app shutting down
+                            }
                         }
                     }
                     // Stagger between worktrees to avoid I/O burst

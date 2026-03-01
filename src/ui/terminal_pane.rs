@@ -321,6 +321,8 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
             Span::styled(": section  ", Style::default().fg(Color::DarkGray)),
             Span::styled("s", Style::default().fg(Color::Cyan)),
             Span::styled(": stage/commit  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("^s", Style::default().fg(Color::Cyan)),
+            Span::styled(": AI commit  ", Style::default().fg(Color::DarkGray)),
             Span::styled("p", Style::default().fg(Color::Cyan)),
             Span::styled(": push  ", Style::default().fg(Color::DarkGray)),
             Span::styled("P", Style::default().fg(Color::Cyan)),
@@ -338,6 +340,8 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
             Span::styled(": pull  ", Style::default().fg(Color::DarkGray)),
             Span::styled("s", Style::default().fg(Color::Cyan)),
             Span::styled(": stage/commit  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("^s", Style::default().fg(Color::Cyan)),
+            Span::styled(": AI commit  ", Style::default().fg(Color::DarkGray)),
             Span::styled("m", Style::default().fg(Color::Cyan)),
             Span::styled(": merge  ", Style::default().fg(Color::DarkGray)),
             Span::styled("n", Style::default().fg(Color::Cyan)),
@@ -534,27 +538,29 @@ fn render_vt100_screen(f: &mut Frame, screen: &vt100::Screen, block: Block, area
 
     // Overlay URL highlighting on detected URLs
     for (i, detected) in url_cache.urls.iter().enumerate() {
-        let row = detected.row;
-        if row >= inner.height.min(screen_rows) {
-            continue;
-        }
         let is_hovered = url_cache.hovered == Some(i);
-        for col in detected.col_start..detected.col_end {
-            if col >= inner.width.min(screen_cols) {
-                break;
-            }
-            let buf_x = inner.x + col;
-            let buf_y = inner.y + row;
-            if buf_x >= buf.area().right() || buf_y >= buf.area().bottom() {
+        for span in &detected.spans {
+            let row = span.row;
+            if row >= inner.height.min(screen_rows) {
                 continue;
             }
-            let buf_cell = &mut buf[(buf_x, buf_y)];
-            let mut style = buf_cell.style();
-            style = style.add_modifier(Modifier::UNDERLINED);
-            if is_hovered {
-                style = style.fg(Color::Cyan).add_modifier(Modifier::BOLD);
+            for col in span.col_start..span.col_end {
+                if col >= inner.width.min(screen_cols) {
+                    break;
+                }
+                let buf_x = inner.x + col;
+                let buf_y = inner.y + row;
+                if buf_x >= buf.area().right() || buf_y >= buf.area().bottom() {
+                    continue;
+                }
+                let buf_cell = &mut buf[(buf_x, buf_y)];
+                let mut style = buf_cell.style();
+                style = style.add_modifier(Modifier::UNDERLINED);
+                if is_hovered {
+                    style = style.fg(Color::Cyan).add_modifier(Modifier::BOLD);
+                }
+                buf_cell.set_style(style);
             }
-            buf_cell.set_style(style);
         }
     }
 

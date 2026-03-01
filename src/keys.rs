@@ -131,6 +131,7 @@ const SIDEBAR_KEYS: &[KeyEntry] = &[
     section("Git Operations"),
     ("m",                       "Merge branch"),
     ("s",                       "Stage & commit"),
+    ("Ctrl + s",                "Stage all & commit with Claude"),
     ("p",                       "Push branch to remote"),
     ("Shift + p",               "Pull branch from remote"),
     section("URLs"),
@@ -195,6 +196,7 @@ const INFO_PANEL_KEYS: &[KeyEntry] = &[
     ("Esc",                     "Back to sidebar"),
     section("Git Operations"),
     ("s",                       "Stage & commit"),
+    ("Ctrl + s",                "Stage all & commit with Claude"),
     ("Shift + c",               "claude"),
     ("n",                       "New worktree"),
     ("d",                       "Delete worktree"),
@@ -459,6 +461,11 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             handle_merge(app);
         }
 
+        // Ctrl+S — stage all + generate commit message with Claude
+        (KeyModifiers::CONTROL, KeyCode::Char('s')) => {
+            handle_stage_all_commit_claude(app);
+        }
+
         // s — stage/commit (open GitCommit dialog for selected worktree)
         (_, KeyCode::Char('s')) => {
             handle_stage_commit(app);
@@ -549,6 +556,9 @@ fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)
         }
         KeyCode::Esc => {
             app.escape_to_sidebar();
+        }
+        KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
+            handle_stage_all_commit_claude(app);
         }
         KeyCode::Char('s') => {
             handle_stage_commit(app);
@@ -770,17 +780,25 @@ fn handle_stage_commit(app: &mut App) {
     }
 }
 
+fn handle_stage_all_commit_claude(app: &mut App) {
+    if let Some(wi) = selected_worktree_idx(app) {
+        app.queue_action("Staging all & generating commit message...", PendingAction::StageAllAndCommitClaude { worktree_idx: wi });
+    }
+}
+
 fn handle_push(app: &mut App) {
     if let Some(wi) = selected_worktree_idx(app) {
         if let Some(wt) = app.worktrees.get(wi) {
             let path = wt.path.clone();
             let branch = wt.branch.clone();
             let tx = app.event_tx.clone();
+            let git_lock = std::sync::Arc::clone(&app.git_lock);
             app.set_status(format!("Pushing '{}'...", branch));
 
             std::thread::Builder::new()
                 .name("git-push".into())
                 .spawn(move || {
+                    let _guard = git_lock.lock().unwrap_or_else(|e| e.into_inner());
                     let result = worktree::git::push_branch(&path, &branch);
                     let error = result.err().map(|e| format!("{}", e));
                     let _ = tx.send(crate::event::AppEvent::PushComplete { branch, error });
@@ -796,11 +814,13 @@ fn handle_pull(app: &mut App) {
             let path = wt.path.clone();
             let branch = wt.branch.clone();
             let tx = app.event_tx.clone();
+            let git_lock = std::sync::Arc::clone(&app.git_lock);
             app.set_status(format!("Pulling '{}'...", branch));
 
             std::thread::Builder::new()
                 .name("git-pull".into())
                 .spawn(move || {
+                    let _guard = git_lock.lock().unwrap_or_else(|e| e.into_inner());
                     match worktree::git::pull_branch(&path) {
                         Ok(worktree::git::PullResult::Success) => {
                             let _ = tx.send(crate::event::AppEvent::PullComplete {
@@ -1083,8 +1103,13 @@ pub fn handle_paste(app: &mut App, data: String) {
                 Some(Dialog::RenameSession { ref mut input, .. }) => {
                     input.push_str(&data);
                 }
-                Some(Dialog::GitCommit { ref mut commit_message, phase: CommitPhase::Message, .. }) => {
-                    commit_message.push_str(&data);
+                Some(Dialog::GitCommit { ref mut commit_message, phase: CommitPhase::Message, ref mut cursor_pos, .. }) => {
+                    let byte_pos = commit_message.char_indices()
+                        .nth(*cursor_pos)
+                        .map(|(i, _)| i)
+                        .unwrap_or(commit_message.len());
+                    commit_message.insert_str(byte_pos, &data);
+                    *cursor_pos += data.chars().count();
                 }
                 _ => {}
             }
@@ -1152,16 +1177,27 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     // because Space, 'a', 'c' have special meaning in staging phase
     if let Some(Dialog::GitCommit { ref phase, .. }) = app.dialog {
         if *phase == CommitPhase::Staging {
-            match key.code {
-                KeyCode::Char(' ') => {
+            match (key.modifiers, key.code) {
+                // Ctrl+C — generate commit message with Claude (skips manual message phase)
+                (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+                    handle_git_commit_claude_message(app);
+                    return;
+                }
+                // Ctrl+A — stage all + generate commit message with Claude
+                (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
+                    handle_git_commit_stage_all(app);
+                    handle_git_commit_claude_message(app);
+                    return;
+                }
+                (_, KeyCode::Char(' ')) => {
                     handle_git_commit_space(app);
                     return;
                 }
-                KeyCode::Char('a') => {
+                (_, KeyCode::Char('a')) => {
                     handle_git_commit_stage_all(app);
                     return;
                 }
-                KeyCode::Char('c') => {
+                (_, KeyCode::Char('c')) => {
                     handle_git_commit_enter_message(app);
                     return;
                 }
@@ -1217,6 +1253,20 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             app.close_dialog();
         }
         KeyCode::Enter => {
+            // Alt+Enter: insert newline in commit message
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                if let Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) = app.dialog {
+                    if *phase == CommitPhase::Message {
+                        let byte_pos = commit_message.char_indices()
+                            .nth(*cursor_pos)
+                            .map(|(i, _)| i)
+                            .unwrap_or(commit_message.len());
+                        commit_message.insert(byte_pos, '\n');
+                        *cursor_pos += 1;
+                        return;
+                    }
+                }
+            }
             let dialog = app.dialog.take();
             match dialog {
                 Some(Dialog::InitRepo { url_input, branch_input, .. }) => {
@@ -1231,9 +1281,11 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     app.close_dialog();
 
                     // Run in background thread so UI stays responsive
+                    let git_lock = std::sync::Arc::clone(&app.git_lock);
                     std::thread::Builder::new()
                         .name("init-repo".into())
                         .spawn(move || {
+                            let _guard = git_lock.lock().unwrap_or_else(|e| e.into_inner());
                             let result = if url_input.is_empty() {
                                 worktree::git::init_bare_repo(&bare_path, &branch)
                             } else {
@@ -1267,6 +1319,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     // Second Enter press: user confirmed, proceed with conversion
                     let tx = app.event_tx.clone();
                     let branch = branch_name;
+                    let git_lock = std::sync::Arc::clone(&app.git_lock);
                     if mode == 0 {
                         // In-place conversion
                         let repo_path = source_repo_path.clone();
@@ -1276,6 +1329,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         std::thread::Builder::new()
                             .name("convert-repo".into())
                             .spawn(move || {
+                                let _guard = git_lock.lock().unwrap_or_else(|e| e.into_inner());
                                 let result = worktree::git::convert_repo_in_place(&repo_path, &branch);
                                 let error = result.err().map(|e| format!("{}", e));
                                 let _ = tx.send(crate::event::AppEvent::ConvertRepoComplete {
@@ -1294,6 +1348,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         std::thread::Builder::new()
                             .name("convert-repo".into())
                             .spawn(move || {
+                                let _guard = git_lock.lock().unwrap_or_else(|e| e.into_inner());
                                 let result = worktree::git::convert_repo_to_location(&source, &target, &branch);
                                 let error = result.err().map(|e| format!("{}", e));
                                 let _ = tx.send(crate::event::AppEvent::ConvertRepoComplete {
@@ -1314,9 +1369,11 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         app.close_dialog();
 
                         // Run in background thread so UI stays responsive
+                        let git_lock = std::sync::Arc::clone(&app.git_lock);
                         std::thread::Builder::new()
                             .name("create-worktree".into())
                             .spawn(move || {
+                                let _guard = git_lock.lock().unwrap_or_else(|e| e.into_inner());
                                 let path = branch.clone();
                                 let result = worktree::git::create_worktree(&bare_path, &branch, &path, &base);
                                 let error = result.err().map(|e| format!("{}", e));
@@ -1343,62 +1400,8 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             .map(|w| w.branch.clone())
                             .unwrap_or_default();
 
-                        // Guard: source worktree must not have an in-progress merge
-                        if let Some(conflict_branch) = worktree::merge_in_progress(app, source_worktree_idx) {
-                            app.set_status(format!(
-                                "'{}' has an unresolved merge — resolve or abort first",
-                                source_name
-                            ));
-                            app.dialog = Some(Dialog::MergeConflict {
-                                worktree_idx: source_worktree_idx,
-                                source_branch: conflict_branch,
-                                selected: 0,
-                            });
-                            return;
-                        }
-
-                        // Quick check: source worktree clean?
-                        match worktree::is_worktree_clean(app, source_worktree_idx) {
-                            Ok(false) => {
-                                // Remember the merge so we can retry after commit
-                                app.pending_merge = Some(PendingAction::MergeExecute {
-                                    source_worktree_idx,
-                                    target_branch: target_branch.clone(),
-                                });
-                                match worktree::status_porcelain(app, source_worktree_idx) {
-                                    Ok(changes) => {
-                                        let files: Vec<(String, String)> = changes
-                                            .iter()
-                                            .map(|c| {
-                                                (
-                                                    format!("{}{}", c.index_status, c.work_status),
-                                                    c.path.clone(),
-                                                )
-                                            })
-                                            .collect();
-                                        app.dialog = Some(Dialog::DirtyWorktree {
-                                            worktree_idx: source_worktree_idx,
-                                            files,
-                                            selected: 0,
-                                        });
-                                    }
-                                    Err(e) => {
-                                        app.pending_merge = None;
-                                        app.set_status(format!("Failed to get status: {}", e));
-                                        app.close_dialog();
-                                    }
-                                }
-                                return;
-                            }
-                            Err(e) => {
-                                app.set_status(format!("Failed to check status of '{}': {}", source_name, e));
-                                app.close_dialog();
-                                return;
-                            }
-                            Ok(true) => {}
-                        }
-
-                        // Queue the heavy merge operation (worktree creation, merge, etc.)
+                        // Queue immediately — all checks run inside execute_pending_action
+                        // behind the loading overlay to avoid UI freezes.
                         app.close_dialog();
                         app.queue_action(
                             format!("Merging '{}' into '{}'...", source_name, target_branch),
@@ -1516,35 +1519,9 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 }) => {
                     match selected {
                         0 => {
-                            // Commit changes — open GitCommit dialog
-                            match worktree::status_porcelain(app, worktree_idx) {
-                                Ok(changes) => {
-                                    let mut unstaged = Vec::new();
-                                    let mut staged = Vec::new();
-                                    for c in &changes {
-                                        if c.index_status != ' ' && c.index_status != '?' {
-                                            staged.push((c.index_status, c.path.clone()));
-                                        }
-                                        if c.work_status != ' ' || c.index_status == '?' {
-                                            let status = if c.index_status == '?' { '?' } else { c.work_status };
-                                            unstaged.push((status, c.path.clone()));
-                                        }
-                                    }
-                                    app.dialog = Some(Dialog::GitCommit {
-                                        worktree_idx,
-                                        unstaged,
-                                        staged,
-                                        section: 0,
-                                        selected: 0,
-                                        phase: CommitPhase::Staging,
-                                        commit_message: String::new(),
-                                    });
-                                }
-                                Err(e) => {
-                                    app.set_status(format!("Failed to get status: {}", e));
-                                    app.close_dialog();
-                                }
-                            }
+                            // Commit changes — use queue_action to avoid UI freeze
+                            app.close_dialog();
+                            app.queue_action("Loading status...", PendingAction::OpenStageCommit { worktree_idx });
                         }
                         1 => {
                             // Open with Claude
@@ -1645,6 +1622,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     selected,
                     phase,
                     commit_message,
+                    cursor_pos,
                 }) => {
                     match phase {
                         CommitPhase::Staging | CommitPhase::GeneratingMessage => {
@@ -1657,6 +1635,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                                 selected,
                                 phase,
                                 commit_message,
+                                cursor_pos,
                             });
                         }
                         CommitPhase::Message => {
@@ -1670,6 +1649,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                                     selected,
                                     phase,
                                     commit_message,
+                                    cursor_pos,
                                 });
                                 return;
                             }
@@ -1768,7 +1748,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         *selected -= 1;
                     }
                 }
-                Some(Dialog::GitCommit { ref phase, ref mut selected, ref unstaged, ref staged, ref section, .. }) => {
+                Some(Dialog::GitCommit { ref phase, ref mut selected, ref unstaged, ref staged, ref section, ref commit_message, ref mut cursor_pos, .. }) => {
                     if *phase == CommitPhase::Staging {
                         if *selected > 0 {
                             *selected -= 1;
@@ -1777,6 +1757,8 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         } else if *section == 1 && !staged.is_empty() {
                             // already at top of staged
                         }
+                    } else if *phase == CommitPhase::Message {
+                        *cursor_pos = commit_msg_cursor_up(commit_message, *cursor_pos);
                     }
                 }
                 _ => {}
@@ -1809,12 +1791,14 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         *selected += 1;
                     }
                 }
-                Some(Dialog::GitCommit { ref phase, ref mut selected, ref unstaged, ref staged, ref section, .. }) => {
+                Some(Dialog::GitCommit { ref phase, ref mut selected, ref unstaged, ref staged, ref section, ref commit_message, ref mut cursor_pos, .. }) => {
                     if *phase == CommitPhase::Staging {
                         let len = if *section == 0 { unstaged.len() } else { staged.len() };
                         if len > 0 && *selected + 1 < len {
                             *selected += 1;
                         }
+                    } else if *phase == CommitPhase::Message {
+                        *cursor_pos = commit_msg_cursor_down(commit_message, *cursor_pos);
                     }
                 }
                 _ => {}
@@ -1879,9 +1863,14 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 Some(Dialog::ConfirmDangerous { ref mut input, .. }) => {
                     input.push(c);
                 }
-                Some(Dialog::GitCommit { ref phase, ref mut commit_message, .. }) => {
+                Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) => {
                     if *phase == CommitPhase::Message {
-                        commit_message.push(c);
+                        let byte_pos = commit_message.char_indices()
+                            .nth(*cursor_pos)
+                            .map(|(i, _)| i)
+                            .unwrap_or(commit_message.len());
+                        commit_message.insert(byte_pos, c);
+                        *cursor_pos += 1;
                     }
                 }
                 _ => {}
@@ -1914,18 +1903,75 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 Some(Dialog::ConfirmDangerous { ref mut input, .. }) => {
                     input.pop();
                 }
-                Some(Dialog::GitCommit { ref phase, ref mut commit_message, .. }) => {
-                    if *phase == CommitPhase::Message {
-                        commit_message.pop();
+                Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) => {
+                    if *phase == CommitPhase::Message && *cursor_pos > 0 {
+                        let byte_pos = commit_message.char_indices()
+                            .nth(*cursor_pos - 1)
+                            .map(|(i, _)| i)
+                            .unwrap_or(0);
+                        commit_message.remove(byte_pos);
+                        *cursor_pos -= 1;
                     }
                 }
                 _ => {}
             }
         }
-        KeyCode::Left | KeyCode::Right => {
-            if let Some(Dialog::ConvertRepo { ref mut mode, ref mut focused_field, .. }) = app.dialog {
-                if *focused_field == 0 {
-                    *mode = if *mode == 0 { 1 } else { 0 };
+        KeyCode::Left => {
+            match &mut app.dialog {
+                Some(Dialog::ConvertRepo { ref mut mode, ref mut focused_field, .. }) => {
+                    if *focused_field == 0 {
+                        *mode = if *mode == 0 { 1 } else { 0 };
+                    }
+                }
+                Some(Dialog::GitCommit { ref phase, ref mut cursor_pos, .. }) => {
+                    if *phase == CommitPhase::Message {
+                        *cursor_pos = cursor_pos.saturating_sub(1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        KeyCode::Right => {
+            match &mut app.dialog {
+                Some(Dialog::ConvertRepo { ref mut mode, ref mut focused_field, .. }) => {
+                    if *focused_field == 0 {
+                        *mode = if *mode == 0 { 1 } else { 0 };
+                    }
+                }
+                Some(Dialog::GitCommit { ref phase, ref commit_message, ref mut cursor_pos, .. }) => {
+                    if *phase == CommitPhase::Message {
+                        let char_count = commit_message.chars().count();
+                        *cursor_pos = (*cursor_pos + 1).min(char_count);
+                    }
+                }
+                _ => {}
+            }
+        }
+        KeyCode::Home => {
+            if let Some(Dialog::GitCommit { ref phase, ref commit_message, ref mut cursor_pos, .. }) = app.dialog {
+                if *phase == CommitPhase::Message {
+                    *cursor_pos = commit_msg_line_start(commit_message, *cursor_pos);
+                }
+            }
+        }
+        KeyCode::End => {
+            if let Some(Dialog::GitCommit { ref phase, ref commit_message, ref mut cursor_pos, .. }) = app.dialog {
+                if *phase == CommitPhase::Message {
+                    *cursor_pos = commit_msg_line_end(commit_message, *cursor_pos);
+                }
+            }
+        }
+        KeyCode::Delete => {
+            if let Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref cursor_pos, .. }) = app.dialog {
+                if *phase == CommitPhase::Message {
+                    let char_count = commit_message.chars().count();
+                    if *cursor_pos < char_count {
+                        let byte_pos = commit_message.char_indices()
+                            .nth(*cursor_pos)
+                            .map(|(i, _)| i)
+                            .unwrap_or(commit_message.len());
+                        commit_message.remove(byte_pos);
+                    }
                 }
             }
         }
@@ -1966,9 +2012,14 @@ fn dialog_insert_char(app: &mut App, c: char) -> bool {
             input.push(c);
             true
         }
-        Some(Dialog::GitCommit { ref phase, ref mut commit_message, .. }) => {
+        Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) => {
             if *phase == CommitPhase::Message {
-                commit_message.push(c);
+                let byte_pos = commit_message.char_indices()
+                    .nth(*cursor_pos)
+                    .map(|(i, _)| i)
+                    .unwrap_or(commit_message.len());
+                commit_message.insert(byte_pos, c);
+                *cursor_pos += 1;
                 true
             } else {
                 false
@@ -2011,9 +2062,14 @@ fn dialog_backspace(app: &mut App) -> bool {
             input.pop();
             true
         }
-        Some(Dialog::GitCommit { ref phase, ref mut commit_message, .. }) => {
-            if *phase == CommitPhase::Message {
-                commit_message.pop();
+        Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) => {
+            if *phase == CommitPhase::Message && *cursor_pos > 0 {
+                let byte_pos = commit_message.char_indices()
+                    .nth(*cursor_pos - 1)
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                commit_message.remove(byte_pos);
+                *cursor_pos -= 1;
                 true
             } else {
                 false
@@ -2073,6 +2129,110 @@ fn handle_git_commit_stage_all(app: &mut App) {
     app.queue_action("Staging all...", PendingAction::StageAll { worktree_idx });
 }
 
+/// Move cursor up one line in a multi-line string, preserving column.
+fn commit_msg_cursor_up(text: &str, cursor_pos: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    // Find start of current line
+    let mut current_line_start = cursor_pos;
+    while current_line_start > 0 && chars[current_line_start - 1] != '\n' {
+        current_line_start -= 1;
+    }
+    if current_line_start == 0 {
+        return 0; // already on first line, go to start
+    }
+    let col = cursor_pos - current_line_start;
+    // Find start of previous line
+    let mut prev_line_start = current_line_start - 1; // skip the \n
+    while prev_line_start > 0 && chars[prev_line_start - 1] != '\n' {
+        prev_line_start -= 1;
+    }
+    let prev_line_len = current_line_start - 1 - prev_line_start;
+    prev_line_start + col.min(prev_line_len)
+}
+
+/// Move cursor down one line in a multi-line string, preserving column.
+fn commit_msg_cursor_down(text: &str, cursor_pos: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    // Find start of current line
+    let mut current_line_start = cursor_pos;
+    while current_line_start > 0 && chars[current_line_start - 1] != '\n' {
+        current_line_start -= 1;
+    }
+    let col = cursor_pos - current_line_start;
+    // Find end of current line (next \n)
+    let mut next_newline = cursor_pos;
+    while next_newline < len && chars[next_newline] != '\n' {
+        next_newline += 1;
+    }
+    if next_newline >= len {
+        return len; // no next line, go to end
+    }
+    let next_line_start = next_newline + 1;
+    // Find length of next line
+    let mut next_line_end = next_line_start;
+    while next_line_end < len && chars[next_line_end] != '\n' {
+        next_line_end += 1;
+    }
+    let next_line_len = next_line_end - next_line_start;
+    next_line_start + col.min(next_line_len)
+}
+
+/// Move cursor to start of current line.
+fn commit_msg_line_start(text: &str, cursor_pos: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let mut pos = cursor_pos;
+    while pos > 0 && chars[pos - 1] != '\n' {
+        pos -= 1;
+    }
+    pos
+}
+
+/// Move cursor to end of current line.
+fn commit_msg_line_end(text: &str, cursor_pos: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let mut pos = cursor_pos;
+    while pos < chars.len() && chars[pos] != '\n' {
+        pos += 1;
+    }
+    pos
+}
+
+/// Strip markdown code fences, Co-Authored-By/Signed-off-by trailers,
+/// and other artifacts from AI-generated commit messages.
+fn clean_commit_message(msg: &str) -> String {
+    let mut s = msg.trim().to_string();
+    // Strip leading markdown code fence (```commit, ```text, ```, etc.)
+    if s.starts_with("```") {
+        if let Some(nl) = s.find('\n') {
+            s = s[nl + 1..].to_string();
+        } else {
+            s = s[3..].to_string();
+        }
+    }
+    // Strip trailing markdown code fence
+    if s.ends_with("```") {
+        s = s[..s.len() - 3].to_string();
+    }
+    // Remove Co-Authored-By and Signed-off-by trailer lines
+    let lines: Vec<&str> = s.lines().collect();
+    let mut result: Vec<&str> = Vec::new();
+    for line in &lines {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("Co-Authored-By:") || trimmed.starts_with("Co-authored-by:")
+            || trimmed.starts_with("Signed-off-by:") || trimmed.starts_with("Signed-Off-By:")
+        {
+            continue;
+        }
+        result.push(line);
+    }
+    // Remove trailing blank lines
+    while result.last().map_or(false, |l| l.trim().is_empty()) {
+        result.pop();
+    }
+    result.join("\n")
+}
+
 /// Switch to commit message phase if staged files exist.
 fn handle_git_commit_enter_message(app: &mut App) {
     if let Some(Dialog::GitCommit { ref staged, ref mut phase, .. }) = app.dialog {
@@ -2085,7 +2245,7 @@ fn handle_git_commit_enter_message(app: &mut App) {
 }
 
 /// Generate a commit message using Claude for the staged diff.
-fn handle_git_commit_claude_message(app: &mut App) {
+pub fn handle_git_commit_claude_message(app: &mut App) {
     let (worktree_idx, staged_empty, already_generating) = match &app.dialog {
         Some(Dialog::GitCommit { worktree_idx, staged, phase, .. }) => {
             (*worktree_idx, staged.is_empty(), *phase == CommitPhase::GeneratingMessage)
@@ -2138,7 +2298,7 @@ fn handle_git_commit_claude_message(app: &mut App) {
                     "--model", "haiku",
                     "--no-session-persistence",
                     "--system-prompt",
-                    "You are a commit message generator. You will receive a git diff of staged changes. Write a commit message that accurately describes ALL the changes. Use imperative mood. Format: a summary line, then a blank line, then bullet points describing each significant change. Output ONLY the commit message, nothing else. No quotes, no prefix, no explanation.",
+                    "Your entire response must be a git commit message and nothing else. No preamble, no analysis. Focus on WHY the change was made. Imperative mood summary (max 72 chars), then a blank line and concise bullet points (- prefix) explaining the motivation. No markdown fences, no Co-Authored-By.",
                 ])
                 .env("CLAUDECODE", "")
                 .env("CLAUDE_CODE_ENTRYPOINT", "")
@@ -2158,6 +2318,7 @@ fn handle_git_commit_claude_message(app: &mut App) {
             };
 
             if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(b"Write a commit message for this diff:\n\n");
                 let _ = stdin.write_all(diff_truncated.as_bytes());
             }
 
@@ -2173,7 +2334,8 @@ fn handle_git_commit_claude_message(app: &mut App) {
             };
 
             if output.status.success() {
-                let msg = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let msg = clean_commit_message(&raw);
                 if msg.is_empty() {
                     let _ = tx.send(crate::event::AppEvent::ClaudeCommitMessageReady {
                         worktree_idx,

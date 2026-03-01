@@ -3,13 +3,20 @@ use std::time::Instant;
 
 use regex::Regex;
 
-/// A URL detected on the terminal screen, with its screen coordinates.
+/// A single row-span of a detected URL on the terminal screen.
 #[derive(Debug, Clone)]
-pub struct DetectedUrl {
-    pub url: String,
+pub struct UrlSpan {
     pub row: u16,
     pub col_start: u16,
     pub col_end: u16,
+}
+
+/// A URL detected on the terminal screen, possibly spanning multiple rows
+/// when the terminal soft-wraps a long line.
+#[derive(Debug, Clone)]
+pub struct DetectedUrl {
+    pub url: String,
+    pub spans: Vec<UrlSpan>,
 }
 
 /// Cached URL scan results to avoid re-scanning every frame.
@@ -37,18 +44,55 @@ fn url_regex() -> &'static Regex {
     })
 }
 
+/// Check if a row appears to be soft-wrapped (its content continues on the
+/// next row without a real newline).  We use two signals:
+///
+/// 1. `screen.row_wrapped(row)` — set by the vt100 parser when auto-wrapping
+///    occurs.  This is reliable for direct output but gets cleared when tmux
+///    redraws the screen with explicit cursor positioning.
+/// 2. **Content heuristic** — if the last cell of the row contains a
+///    non-whitespace character, the row filled all columns and likely wrapped.
+///    False positives are harmless for URL detection because the regex
+///    naturally stops at whitespace and non-URL characters.
+fn row_appears_wrapped(screen: &vt100::Screen, row: u16, cols: u16) -> bool {
+    if screen.row_wrapped(row) {
+        return true;
+    }
+    // Fallback: check whether the last column is non-empty / non-space.
+    if cols == 0 {
+        return false;
+    }
+    if let Some(cell) = screen.cell(row, cols - 1) {
+        let contents = cell.contents();
+        !contents.is_empty() && contents != " "
+    } else {
+        false
+    }
+}
+
 /// Scan all rows of a vt100 screen for URLs. Returns detected URLs with
-/// their screen coordinates (row, col_start, col_end).
+/// their screen coordinates. Handles URLs that span multiple rows due to
+/// terminal soft-wrapping by concatenating wrapped rows seamlessly.
 pub fn scan_urls_from_screen(screen: &vt100::Screen) -> Vec<DetectedUrl> {
     let re = url_regex();
     let (rows, cols) = screen.size();
-    let mut results = Vec::new();
+
+    // Build combined text from all rows, tracking each byte's (row, col).
+    // We use byte-indexed positions because regex returns byte offsets.
+    // Multi-byte characters get multiple entries mapping to the same (row, col).
+    //
+    // Rows that appear wrapped are concatenated without a separator so URLs
+    // that span the wrap boundary are matched as one.  Non-wrapped rows get
+    // a space separator to break URL matching at real line boundaries.
+    let mut text = String::new();
+    let mut byte_to_pos: Vec<(u16, u16)> = Vec::new();
 
     for row in 0..rows {
-        // Build the text for this row and track the mapping from char index
-        // to screen column (to handle wide characters correctly).
-        let mut text = String::new();
-        let mut char_to_col: Vec<u16> = Vec::new();
+        // Insert separator between non-wrapped rows (not before the first row)
+        if row > 0 && !row_appears_wrapped(screen, row - 1, cols) {
+            byte_to_pos.push((u16::MAX, u16::MAX));
+            text.push(' ');
+        }
 
         let mut col = 0u16;
         while col < cols {
@@ -59,51 +103,79 @@ pub fn scan_urls_from_screen(screen: &vt100::Screen) -> Vec<DetectedUrl> {
                 }
                 let contents = cell.contents();
                 for ch in contents.chars() {
-                    char_to_col.push(col);
+                    // Map every byte of this character to the same (row, col)
+                    let byte_start = text.len();
                     text.push(ch);
+                    for _ in byte_start..text.len() {
+                        byte_to_pos.push((row, col));
+                    }
                 }
-                // Advance past wide characters
                 if cell.is_wide() {
                     col += 2;
                 } else {
                     col += 1;
                 }
             } else {
-                char_to_col.push(col);
+                byte_to_pos.push((row, col));
                 text.push(' ');
                 col += 1;
             }
         }
+    }
 
-        // Find all URL matches in this row's text
-        for m in re.find_iter(&text) {
-            let start_idx = m.start();
-            let end_idx = m.end();
+    // Find all URL matches in the combined text
+    let mut results = Vec::new();
+    for m in re.find_iter(&text) {
+        let start_byte = m.start();
+        let end_byte = m.end();
 
-            // Map char indices back to screen columns
-            let col_start = char_to_col.get(start_idx).copied().unwrap_or(0);
-            let col_end = if end_idx > 0 && end_idx <= char_to_col.len() {
-                // col_end is exclusive: one past the last character
-                char_to_col.get(end_idx - 1).copied().unwrap_or(cols) + 1
-            } else {
-                col_start
-            };
+        // Strip trailing punctuation that's likely not part of the URL.
+        // These are all ASCII (1 byte each), so stripped == bytes removed.
+        let mut url = m.as_str().to_string();
+        let mut stripped = 0usize;
+        while url.ends_with('.') || url.ends_with(',') || url.ends_with(';') || url.ends_with(':') {
+            url.pop();
+            stripped += 1;
+        }
+        if url.is_empty() {
+            continue;
+        }
+        let effective_end = end_byte - stripped;
 
-            // Strip trailing punctuation that's likely not part of the URL
-            let mut url = m.as_str().to_string();
-            while url.ends_with('.') || url.ends_with(',') || url.ends_with(';') || url.ends_with(':') {
-                url.pop();
+        // Build spans by grouping consecutive bytes by row.
+        // Skip duplicate (row, col) entries from multi-byte characters.
+        let mut spans: Vec<UrlSpan> = Vec::new();
+        let mut prev_pos: Option<(u16, u16)> = None;
+        for i in start_byte..effective_end {
+            let pos = byte_to_pos[i];
+            // Skip duplicate positions from multi-byte chars
+            if prev_pos == Some(pos) {
+                continue;
             }
-
-            if !url.is_empty() {
-                let actual_end = col_start + url.len() as u16;
-                results.push(DetectedUrl {
-                    url,
-                    row,
-                    col_start,
-                    col_end: actual_end.min(col_end),
-                });
+            prev_pos = Some(pos);
+            let (r, c) = pos;
+            if r == u16::MAX {
+                continue;
             }
+            match spans.last_mut() {
+                Some(span) if span.row == r => {
+                    let new_end = c + 1;
+                    if new_end > span.col_end {
+                        span.col_end = new_end;
+                    }
+                }
+                _ => {
+                    spans.push(UrlSpan {
+                        row: r,
+                        col_start: c,
+                        col_end: c + 1,
+                    });
+                }
+            }
+        }
+
+        if !spans.is_empty() {
+            results.push(DetectedUrl { url, spans });
         }
     }
 
@@ -208,13 +280,17 @@ fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// Helper: create a vt100 parser, write text, return detected URLs.
-    fn detect(text: &str) -> Vec<DetectedUrl> {
-        let parser = vt100::Parser::new(24, 120, 0);
-        // Write the text into the parser so it appears on screen
-        let mut p = parser;
+    /// Helper: create a vt100 parser with given dimensions, write text,
+    /// return detected URLs.
+    fn detect_with_size(rows: u16, cols: u16, text: &str) -> Vec<DetectedUrl> {
+        let mut p = vt100::Parser::new(rows, cols, 0);
         p.process(text.as_bytes());
         scan_urls_from_screen(p.screen())
+    }
+
+    /// Helper: create a vt100 parser (24x120), write text, return detected URLs.
+    fn detect(text: &str) -> Vec<DetectedUrl> {
+        detect_with_size(24, 120, text)
     }
 
     #[test]
@@ -222,8 +298,9 @@ mod tests {
         let urls = detect("Visit https://example.com for info");
         assert_eq!(urls.len(), 1);
         assert_eq!(urls[0].url, "https://example.com");
-        assert_eq!(urls[0].row, 0);
-        assert_eq!(urls[0].col_start, 6);
+        assert_eq!(urls[0].spans.len(), 1);
+        assert_eq!(urls[0].spans[0].row, 0);
+        assert_eq!(urls[0].spans[0].col_start, 6);
     }
 
     #[test]
@@ -266,8 +343,9 @@ mod tests {
         // "https://x.co" starts at col 0
         let urls = detect("https://x.co rest");
         assert_eq!(urls.len(), 1);
-        assert_eq!(urls[0].col_start, 0);
-        assert_eq!(urls[0].col_end, 12); // "https://x.co" is 12 chars
+        assert_eq!(urls[0].spans.len(), 1);
+        assert_eq!(urls[0].spans[0].col_start, 0);
+        assert_eq!(urls[0].spans[0].col_end, 12); // "https://x.co" is 12 chars
     }
 
     #[test]
@@ -275,8 +353,9 @@ mod tests {
         // vt100 needs \r\n to move to column 0 of the next line
         let urls = detect("first line\r\nhttps://line2.com");
         assert_eq!(urls.len(), 1);
-        assert_eq!(urls[0].row, 1);
-        assert_eq!(urls[0].col_start, 0);
+        assert_eq!(urls[0].spans.len(), 1);
+        assert_eq!(urls[0].spans[0].row, 1);
+        assert_eq!(urls[0].spans[0].col_start, 0);
     }
 
     #[test]
@@ -285,5 +364,171 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0].url, "https://example.com");
         assert_eq!(urls[1].url, "https://other.com");
+    }
+
+    // ── Wrapped URL tests ────────────────────────────────────────────
+
+    #[test]
+    fn url_wrapping_across_two_lines() {
+        // Use a narrow terminal (40 cols) so the URL wraps.
+        // "https://example.com/very/long/path/that/wraps" is 46 chars,
+        // which will wrap at col 40 onto the next row.
+        let url_text = "https://example.com/very/long/path/that/wraps";
+        let urls = detect_with_size(5, 40, url_text);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, url_text);
+        assert_eq!(urls[0].spans.len(), 2);
+        // First span: row 0, cols 0..40
+        assert_eq!(urls[0].spans[0].row, 0);
+        assert_eq!(urls[0].spans[0].col_start, 0);
+        assert_eq!(urls[0].spans[0].col_end, 40);
+        // Second span: row 1, cols 0..6 ("wraps" = 5 chars + the 'w' starts at 0)
+        assert_eq!(urls[0].spans[1].row, 1);
+        assert_eq!(urls[0].spans[1].col_start, 0);
+        assert_eq!(urls[0].spans[1].col_end, 5); // "wraps" is 5 chars
+    }
+
+    #[test]
+    fn url_wrapping_across_three_lines() {
+        // Use a 20-col terminal. URL = "https://example.com/a/b/c/d/e/f/g/h/i/j/k"
+        // That's 42 chars, wrapping at cols 20, 40 -> 3 rows.
+        let url_text = "https://example.com/a/b/c/d/e/f/g/h/i/j/k";
+        let urls = detect_with_size(5, 20, url_text);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, url_text);
+        assert_eq!(urls[0].spans.len(), 3);
+        assert_eq!(urls[0].spans[0].row, 0);
+        assert_eq!(urls[0].spans[0].col_start, 0);
+        assert_eq!(urls[0].spans[0].col_end, 20);
+        assert_eq!(urls[0].spans[1].row, 1);
+        assert_eq!(urls[0].spans[1].col_start, 0);
+        assert_eq!(urls[0].spans[1].col_end, 20);
+        assert_eq!(urls[0].spans[2].row, 2);
+        assert_eq!(urls[0].spans[2].col_start, 0);
+        assert_eq!(urls[0].spans[2].col_end, 1); // "k" = 1 char (the "/" is on row 1)
+    }
+
+    #[test]
+    fn non_wrapped_lines_dont_merge() {
+        // Two separate lines (using \r\n) should NOT merge into a URL.
+        // Put a partial URL on line 1 and continuation on line 2.
+        let text = "https://example.com/pa\r\nth/rest";
+        let urls = detect_with_size(5, 80, text);
+        // The first line has "https://example.com/pa" which IS a valid URL
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com/pa");
+        // Should be single-span (not merged with "th/rest")
+        assert_eq!(urls[0].spans.len(), 1);
+        assert_eq!(urls[0].spans[0].row, 0);
+    }
+
+    #[test]
+    fn wrapped_url_span_coordinates() {
+        // "prefix https://example.com/long/path/here" in a 30-col terminal.
+        // "prefix " = 7 chars, URL starts at col 7.
+        // Row 0: "prefix https://example.com/lon" (30 chars, URL portion = cols 7..30)
+        // Row 1: "g/path/here" (URL portion = cols 0..11)
+        let text = "prefix https://example.com/long/path/here";
+        let urls = detect_with_size(5, 30, text);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com/long/path/here");
+        assert_eq!(urls[0].spans.len(), 2);
+        assert_eq!(urls[0].spans[0].row, 0);
+        assert_eq!(urls[0].spans[0].col_start, 7);
+        assert_eq!(urls[0].spans[0].col_end, 30);
+        assert_eq!(urls[0].spans[1].row, 1);
+        assert_eq!(urls[0].spans[1].col_start, 0);
+        assert_eq!(urls[0].spans[1].col_end, 11);
+    }
+
+    // ── Unicode / multi-byte character tests ─────────────────────────
+
+    #[test]
+    fn url_after_unicode_chars_on_same_row() {
+        // "▸ " is 2 screen columns but "▸" is 3 bytes in UTF-8.
+        // The URL should still be detected at the correct screen column.
+        let text = "▸ https://example.com";
+        let urls = detect(text);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com");
+        assert_eq!(urls[0].spans.len(), 1);
+        // "▸" at col 0, " " at col 1, URL starts at col 2
+        assert_eq!(urls[0].spans[0].row, 0);
+        assert_eq!(urls[0].spans[0].col_start, 2);
+        assert_eq!(urls[0].spans[0].col_end, 21); // 2 + 19 chars
+    }
+
+    #[test]
+    fn url_after_unicode_on_previous_row() {
+        // Unicode chars on row 0 should not affect URL detection on row 1.
+        // "│ box drawing │" has multi-byte characters.
+        let text = "│ box drawing │\r\nhttps://example.com";
+        let urls = detect(text);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com");
+        assert_eq!(urls[0].spans.len(), 1);
+        assert_eq!(urls[0].spans[0].row, 1);
+        assert_eq!(urls[0].spans[0].col_start, 0);
+        assert_eq!(urls[0].spans[0].col_end, 19);
+    }
+
+    #[test]
+    fn url_with_many_unicode_rows_before() {
+        // Multiple rows of Unicode content before a URL.
+        let text = "─── Header ───\r\n│ Content here │\r\n▸ https://example.com/path";
+        let urls = detect(text);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com/path");
+        assert_eq!(urls[0].spans.len(), 1);
+        assert_eq!(urls[0].spans[0].row, 2);
+        assert_eq!(urls[0].spans[0].col_start, 2);
+    }
+
+    // ── Cursor-positioned (tmux redraw) tests ────────────────────────
+
+    #[test]
+    fn wrapped_url_via_cursor_positioning() {
+        // Simulate tmux redrawing the screen with explicit cursor
+        // positioning (CSI row;col H).  The vt100 row_wrapped flag
+        // won't be set, but our content heuristic should still detect
+        // the wrap because the last cell of row 0 is non-whitespace.
+        let cols: u16 = 40;
+        let url_text = "https://example.com/very/long/path/that/wraps";
+        // Row 0 portion fills all 40 cols
+        let row0: &str = &url_text[..cols as usize]; // "https://example.com/very/long/path/that/"
+        let row1: &str = &url_text[cols as usize..]; // "wraps"
+
+        // Use CSI sequences to position cursor: \x1b[row;colH
+        let input = format!(
+            "\x1b[1;1H{}\x1b[2;1H{}",
+            row0, row1
+        );
+        let urls = detect_with_size(5, cols, &input);
+        assert_eq!(urls.len(), 1, "should detect one merged URL");
+        assert_eq!(urls[0].url, url_text);
+        assert_eq!(urls[0].spans.len(), 2);
+        assert_eq!(urls[0].spans[0].row, 0);
+        assert_eq!(urls[0].spans[0].col_start, 0);
+        assert_eq!(urls[0].spans[0].col_end, 40);
+        assert_eq!(urls[0].spans[1].row, 1);
+        assert_eq!(urls[0].spans[1].col_start, 0);
+        assert_eq!(urls[0].spans[1].col_end, 5);
+    }
+
+    #[test]
+    fn cursor_positioned_non_full_row_no_merge() {
+        // If a row doesn't fill all columns, it should NOT merge with the
+        // next row, even when using cursor positioning.
+        let cols: u16 = 80;
+        let input = format!(
+            "\x1b[1;1Hhttps://example.com/pa\x1b[2;1Hth/rest"
+        );
+        let urls = detect_with_size(5, cols, &input);
+        // "https://example.com/pa" is only 22 chars in an 80-col terminal,
+        // so the last cell of row 0 is whitespace → no merge
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com/pa");
+        assert_eq!(urls[0].spans.len(), 1);
+        assert_eq!(urls[0].spans[0].row, 0);
     }
 }

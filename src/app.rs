@@ -277,6 +277,7 @@ pub enum Dialog {
         selected: usize,                // index within current section
         phase: CommitPhase,
         commit_message: String,
+        cursor_pos: usize,              // character offset into commit_message
     },
 }
 
@@ -316,6 +317,7 @@ pub enum PendingAction {
     Commit { worktree_idx: usize, message: String },
     RefreshWorktreeStatus,
     OpenStageCommit { worktree_idx: usize },
+    StageAllAndCommitClaude { worktree_idx: usize },
     MergeExecute {
         source_worktree_idx: usize,
         target_branch: String,
@@ -442,6 +444,8 @@ pub struct App {
     pub areas: LayoutAreas,
     /// Latest version string from GitHub Releases, if newer than current.
     pub update_available: Option<String>,
+    /// Mutex to serialize git operations across threads (status poller, push/pull, etc.).
+    pub git_lock: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
 impl App {
@@ -508,6 +512,7 @@ impl App {
             terminal_panel_items: Vec::new(),
             areas: LayoutAreas::default(),
             update_available: None,
+            git_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
         }
     }
 
