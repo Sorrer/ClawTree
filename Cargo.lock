@@ -2290,7 +2290,7 @@ dependencies = [
 
 [[package]]
 name = "worktree-claude-tui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ansi-to-tui",
  "anyhow",

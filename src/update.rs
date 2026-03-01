@@ -16,7 +16,7 @@ pub fn spawn_update_checker(event_tx: UnboundedSender<AppEvent>) {
             std::thread::sleep(Duration::from_secs(UPDATE_CHECK_DELAY_SECS));
 
             if let Some(latest) = fetch_latest_version() {
-                let current = env!("CARGO_PKG_VERSION");
+                let current = option_env!("CLAWTREE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
                 if version_is_newer(&latest, current) {
                     let _ = event_tx.send(AppEvent::UpdateAvailable {
                         latest_version: latest,
