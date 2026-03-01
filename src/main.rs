@@ -47,6 +47,7 @@ fn restore_terminal() {
     // Clear the title we set
     set_terminal_title("");
     let _ = disable_raw_mode();
+    let _ = crossterm::execute!(io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
     let _ = crossterm::execute!(
         io::stdout(),
         LeaveAlternateScreen,
@@ -218,6 +219,14 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
     let mut stdout = io::stdout();
     crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)
         .context("Failed to enter alternate screen")?;
+    // Enable keyboard enhancement if the terminal supports it (kitty protocol).
+    // This allows detecting Shift+Enter, Ctrl+key combos, etc. Silently ignored
+    // on terminals that don't support it.
+    let _ = crossterm::execute!(io::stdout(),
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            | crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+        ));
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("Failed to create terminal")?;
 

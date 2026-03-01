@@ -1207,20 +1207,29 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     }
 
     // GitCommit message phase: Ctrl+G to generate AI commit message
+    // Crossterm may report Ctrl+G as Char('\x07') (ASCII BEL) without keyboard enhancement.
     if let Some(Dialog::GitCommit { ref phase, .. }) = app.dialog {
-        if *phase == CommitPhase::Message
-            && key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
-            handle_git_commit_claude_message(app);
-            return;
+        if *phase == CommitPhase::Message {
+            let is_ctrl_g = (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g'))
+                || key.code == KeyCode::Char('\x07');
+            if is_ctrl_g {
+                handle_git_commit_claude_message(app);
+                return;
+            }
         }
     }
 
     // GitCommit message phase: Ctrl+P to commit and push
+    // Crossterm may report Ctrl+P as Char('p') with CONTROL modifier,
+    // or as Char('\x10') (ASCII DLE control character).
     if let Some(Dialog::GitCommit { ref phase, .. }) = app.dialog {
-        if *phase == CommitPhase::Message
-            && key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
-            handle_git_commit_and_push(app);
-            return;
+        if *phase == CommitPhase::Message {
+            let is_ctrl_p = (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p'))
+                || key.code == KeyCode::Char('\x10');
+            if is_ctrl_p {
+                handle_git_commit_and_push(app);
+                return;
+            }
         }
     }
 
@@ -2022,7 +2031,7 @@ fn dialog_insert_char(app: &mut App, c: char) -> bool {
             true
         }
         Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) => {
-            if *phase == CommitPhase::Message {
+            if *phase == CommitPhase::Message && !c.is_control() {
                 let byte_pos = commit_message.char_indices()
                     .nth(*cursor_pos)
                     .map(|(i, _)| i)
