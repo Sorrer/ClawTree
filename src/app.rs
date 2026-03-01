@@ -313,7 +313,7 @@ pub enum ConfirmAction {
 pub enum PendingAction {
     StageFile { worktree_idx: usize, file: String },
     UnstageFile { worktree_idx: usize, file: String },
-    StageAll { worktree_idx: usize },
+    StageAll { worktree_idx: usize, then_claude: bool },
     Commit { worktree_idx: usize, message: String },
     CommitAndPush { worktree_idx: usize, message: String },
     RefreshWorktreeStatus,

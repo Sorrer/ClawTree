@@ -1006,12 +1006,15 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                 app.refresh_worktree_status();
             }
         }
-        PendingAction::StageAll { worktree_idx } => {
+        PendingAction::StageAll { worktree_idx, then_claude } => {
             if let Err(e) = worktree::stage_all(app, worktree_idx) {
                 app.set_status(format!("Failed to stage all: {}", e));
             }
             if matches!(app.dialog, Some(Dialog::GitCommit { .. })) {
                 refresh_git_commit_dialog(app);
+                if then_claude {
+                    keys::handle_git_commit_claude_message(app);
+                }
             } else {
                 app.refresh_worktree_status();
             }

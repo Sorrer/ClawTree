@@ -260,7 +260,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         session::resize_all(app, terminal_size.1, terminal_size.0);
         return;
     }
-    if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
+    if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') && app.dialog.is_none() {
         if app.active_session_id.is_some() {
             app.prompt_queue_visible = !app.prompt_queue_visible;
             session::resize_all(app, terminal_size.1, terminal_size.0);
@@ -1177,18 +1177,26 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     // because Space, 'a', 'c' have special meaning in staging phase
     if let Some(Dialog::GitCommit { ref phase, .. }) = app.dialog {
         if *phase == CommitPhase::Staging {
+            // Ctrl+C — generate commit message with Claude (skips manual message phase)
+            // Crossterm sends Ctrl+C as Char('\x03') without keyboard enhancement.
+            let is_ctrl_c = (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
+                || key.code == KeyCode::Char('\x03');
+            if is_ctrl_c {
+                handle_git_commit_claude_message(app);
+                return;
+            }
+            // Ctrl+A — stage all + generate commit message with Claude
+            // Crossterm sends Ctrl+A as Char('\x01') without keyboard enhancement.
+            let is_ctrl_a = (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('a'))
+                || key.code == KeyCode::Char('\x01');
+            if is_ctrl_a {
+                if let Some(Dialog::GitCommit { worktree_idx, .. }) = &app.dialog {
+                    let wi = *worktree_idx;
+                    app.queue_action("Staging all & generating commit message...", PendingAction::StageAll { worktree_idx: wi, then_claude: true });
+                }
+                return;
+            }
             match (key.modifiers, key.code) {
-                // Ctrl+C — generate commit message with Claude (skips manual message phase)
-                (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-                    handle_git_commit_claude_message(app);
-                    return;
-                }
-                // Ctrl+A — stage all + generate commit message with Claude
-                (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-                    handle_git_commit_stage_all(app);
-                    handle_git_commit_claude_message(app);
-                    return;
-                }
                 (_, KeyCode::Char(' ')) => {
                     handle_git_commit_space(app);
                     return;
@@ -1220,14 +1228,29 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     }
 
     // GitCommit message phase: Ctrl+P to commit and push
-    // Crossterm may report Ctrl+P as Char('p') with CONTROL modifier,
-    // or as Char('\x10') (ASCII DLE control character).
     if let Some(Dialog::GitCommit { ref phase, .. }) = app.dialog {
         if *phase == CommitPhase::Message {
             let is_ctrl_p = (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p'))
                 || key.code == KeyCode::Char('\x10');
             if is_ctrl_p {
                 handle_git_commit_and_push(app);
+                return;
+            }
+        }
+    }
+
+    // GitCommit message phase: Ctrl+L to insert newline
+    if let Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) = app.dialog {
+        if *phase == CommitPhase::Message {
+            let is_ctrl_l = (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('l'))
+                || key.code == KeyCode::Char('\x0c');
+            if is_ctrl_l {
+                let byte_pos = commit_message.char_indices()
+                    .nth(*cursor_pos)
+                    .map(|(i, _)| i)
+                    .unwrap_or(commit_message.len());
+                commit_message.insert(byte_pos, '\n');
+                *cursor_pos += 1;
                 return;
             }
         }
@@ -1700,7 +1723,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                                     }
                                     Err(e) => {
                                         let msg = format!("{}", e);
-                                        if msg.contains("dirty") || msg.contains("untracked") || msg.contains("changes") {
+                                        if msg.contains("dirty") || msg.contains("untracked") || msg.contains("changes") || msg.contains("submodule") {
                                             app.open_dialog(Dialog::ConfirmDangerous {
                                                 message: "Worktree is dirty. FORCE DELETE?".to_string(),
                                                 input: String::new(),
@@ -2144,7 +2167,7 @@ fn handle_git_commit_stage_all(app: &mut App) {
         _ => return,
     };
 
-    app.queue_action("Staging all...", PendingAction::StageAll { worktree_idx });
+    app.queue_action("Staging all...", PendingAction::StageAll { worktree_idx, then_claude: false });
 }
 
 /// Move cursor up one line in a multi-line string, preserving column.

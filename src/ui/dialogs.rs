@@ -1370,7 +1370,7 @@ fn draw_git_commit_message(
     }
 
     f.render_widget(
-        Paragraph::new("Enter: commit  ^p: commit+push  ^g: AI msg  Shift+Enter: new line  Esc: back")
+        Paragraph::new("Enter: commit  ^p: commit+push  ^g: AI msg  ^l: new line  Esc: back")
             .style(Style::default().fg(Color::DarkGray)),
         chunks[4],
     );
