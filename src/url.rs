@@ -146,8 +146,8 @@ pub fn scan_urls_from_screen(screen: &vt100::Screen) -> Vec<DetectedUrl> {
         // Skip duplicate (row, col) entries from multi-byte characters.
         let mut spans: Vec<UrlSpan> = Vec::new();
         let mut prev_pos: Option<(u16, u16)> = None;
-        for i in start_byte..effective_end {
-            let pos = byte_to_pos[i];
+        for pos_entry in byte_to_pos.iter().take(effective_end).skip(start_byte) {
+            let pos = *pos_entry;
             // Skip duplicate positions from multi-byte chars
             if prev_pos == Some(pos) {
                 continue;

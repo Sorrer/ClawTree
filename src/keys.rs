@@ -2227,7 +2227,7 @@ fn clean_commit_message(msg: &str) -> String {
         result.push(line);
     }
     // Remove trailing blank lines
-    while result.last().map_or(false, |l| l.trim().is_empty()) {
+    while result.last().is_some_and(|l| l.trim().is_empty()) {
         result.pop();
     }
     result.join("\n")
