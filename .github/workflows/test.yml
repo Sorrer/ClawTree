@@ -111,4 +111,4 @@ jobs:
           node-version: '22'
 
       - name: Verify Claude Code UI strings
-        run: tests/check_claude_code_strings.sh
+        run: bash tests/check_claude_code_strings.sh
