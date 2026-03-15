@@ -1616,7 +1616,7 @@ fn draw_context_menu(
     f: &mut Frame,
     app: &App,
     item: &SidebarItem,
-    selected: usize,
+    selected: Option<usize>,
     actions: &[ContextAction],
 ) {
     // Determine title from the item
@@ -1671,7 +1671,7 @@ fn draw_context_menu(
         .iter()
         .enumerate()
         .map(|(idx, action)| {
-            let is_sel = idx == selected;
+            let is_sel = selected == Some(idx);
             let is_destructive = matches!(
                 action.kind,
                 ContextActionKind::DeleteWorktree

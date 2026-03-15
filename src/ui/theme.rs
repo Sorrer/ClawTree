@@ -172,10 +172,7 @@ pub const AGENT_WORKING: Color = Color::Yellow;
 pub const AGENT_IDLE: Color = Color::Green;
 pub const AGENT_NEEDS_INPUT: Color = Color::Cyan;
 pub const AGENT_EXITED: Color = Color::DarkGray;
-pub const AGENT_PLANNING: Color = Color::Magenta;
-
-/// Icon Claude Code uses in the bottom bar when plan mode is active.
-pub const PLAN_MODE_ICON: char = '\u{23F8}'; // ⏸
+pub const AGENT_PLANNING: Color = Color::Indexed(141); // light purple
 
 // ── Brand logo (big) ────────────────────────────────────────────
 //  Three claw marks + box-drawing "CLAWTREE"

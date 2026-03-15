@@ -337,7 +337,7 @@ pub enum Dialog {
     /// Right-click / "+" context menu for sidebar items.
     ContextMenu {
         item: SidebarItem,
-        selected: usize,
+        selected: Option<usize>,
         actions: Vec<ContextAction>,
     },
     /// Interactive staging and commit UI.
@@ -449,6 +449,8 @@ pub struct App {
     pub tmux_available: bool,
     /// Whether wt.exe (Windows Terminal) is available.
     pub wt_available: bool,
+    /// Last known terminal size (cols, rows) for spawning sessions from mouse handlers.
+    pub last_terminal_size: (u16, u16),
     /// Scrollback offset for the active terminal (0 = live view, >0 = scrolled up).
     pub terminal_scroll: usize,
     /// Merge to retry after a commit completes (set when target worktree was dirty).
@@ -554,6 +556,7 @@ impl App {
             regular_repo_path: None,
             tmux_available,
             wt_available,
+            last_terminal_size: crossterm::terminal::size().unwrap_or((80, 24)),
             terminal_scroll: 0,
             pending_merge: None,
             prompt_queue_visible: false,

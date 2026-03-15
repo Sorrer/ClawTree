@@ -1173,7 +1173,7 @@ fn handle_url_open(app: &mut App) {
 }
 
 /// Execute a context menu action by dispatching to the same handlers used by hotkeys.
-fn execute_context_action(app: &mut App, item: &SidebarItem, kind: &ContextActionKind, terminal_size: (u16, u16)) {
+pub fn execute_context_action(app: &mut App, item: &SidebarItem, kind: &ContextActionKind, terminal_size: (u16, u16)) {
     // Ensure the item is selected so handlers can find it
     match item {
         SidebarItem::Worktree(_) | SidebarItem::Session(_, _) => {
@@ -1251,23 +1251,28 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(Dialog::ContextMenu { ref mut selected, ref actions, .. }) = app.dialog {
-                    if *selected + 1 < actions.len() {
-                        *selected += 1;
+                    match *selected {
+                        None => *selected = Some(0),
+                        Some(s) if s + 1 < actions.len() => *selected = Some(s + 1),
+                        _ => {}
                     }
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if let Some(Dialog::ContextMenu { ref mut selected, .. }) = app.dialog {
-                    if *selected > 0 {
-                        *selected -= 1;
+                    match *selected {
+                        Some(s) if s > 0 => *selected = Some(s - 1),
+                        _ => {}
                     }
                 }
             }
             KeyCode::Enter => {
                 if let Some(Dialog::ContextMenu { item, selected, actions }) = app.dialog.take() {
                     app.close_dialog();
-                    if let Some(action) = actions.get(selected) {
-                        execute_context_action(app, &item, &action.kind, terminal_size);
+                    if let Some(sel) = selected {
+                        if let Some(action) = actions.get(sel) {
+                            execute_context_action(app, &item, &action.kind, terminal_size);
+                        }
                     }
                 }
             }

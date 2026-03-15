@@ -4,7 +4,7 @@
 
 <br>
 
-**A terminal UI for managing git worktrees with integrated Claude Code sessions.**
+**One terminal, multiple Claude sessions — all visible at a glance.**
 
 [![Release](https://img.shields.io/github/v/release/Sorrer/ClawTree?style=flat-square&label=Release&color=blue)](https://github.com/Sorrer/ClawTree/releases/latest)
 [![Nightly](https://img.shields.io/github/actions/workflow/status/Sorrer/ClawTree/release.yml?style=flat-square&label=Nightly)](https://github.com/Sorrer/ClawTree/actions/workflows/release.yml)
@@ -16,7 +16,7 @@
 
 ---
 
-One terminal, multiple Claude sessions — all visible at a glance.
+A terminal UI for managing git worktrees with integrated Claude Code sessions.
 
 
 >Behind the Project:
@@ -32,9 +32,8 @@ One terminal, multiple Claude sessions — all visible at a glance.
 - [Install](#install)
 - [Getting Started](#getting-started)
 - [Features](#features)
-  - [Worktree Management](#worktree-management)
+  - [Worktree and Claude Code Management](#worktree-and-claude-code-management)
   - [Git Operations](#git-operations)
-  - [Claude Code Sessions](#claude-code-sessions)
   - [Prompt Queue](#prompt-queue)
   - [Mini Mode](#mini-mode)
   - [Terminal & UI](#terminal--ui)
@@ -103,7 +102,7 @@ Once initialized, clawtree opens the main interface where you can browse your wo
 
 ## Features
 
-### Worktree Management
+### Worktree and Claude Code Management
 
 <p align="center">
   <img src="docs/diagrams/no-tabs-yes-sidebar.svg" alt="No terminal tabs, yes worktree sidebar" width="700">
@@ -113,10 +112,8 @@ Once initialized, clawtree opens the main interface where you can browse your wo
 - Initialize new bare repos or clone from a remote URL
 - Convert existing repos to the bare worktree layout
 - Live git status updates per worktree
-
-<p align="center">
-  <img src="docs/screenshots/worktree-sidebar.png" alt="Worktree sidebar" width="400">
-</p>
+- Context-aware status indicators — know at a glance when Claude is waiting for input
+- Run multiple concurrent Claude Code sessions per worktree, all from a single terminal
 
 ### Git Operations
 - Stage, unstage, and commit with AI-generated commit messages
@@ -125,15 +122,6 @@ Once initialized, clawtree opens the main interface where you can browse your wo
 
 <p align="center">
   <img src="docs/screenshots/git-operations.png" alt="Git operations" width="800">
-</p>
-
-### Claude Code Sessions
-- Run multiple concurrent Claude Code sessions per worktree
-- Sessions persist across restarts with automatic reconnection
-- Session renaming and optional yolo mode (`--dangerously-skip-permissions`)
-
-<p align="center">
-  <img src="docs/screenshots/claude-sessions.png" alt="Claude Code sessions" width="800">
 </p>
 
 ### Prompt Queue
@@ -148,14 +136,6 @@ Queue up one-shot tasks for Claude to handle sequentially while you focus on oth
   <img src="docs/screenshots/prompt-queue.png" alt="Prompt queue" width="800">
 </p>
 
-### Mini Mode
-
-- Compact agent management view with status badges (toggle with `F2`)
-- Drilldown into a single agent's terminal full-screen
-- Saved prompt templates for quick agent creation
-- Auto-captured agent summaries when agents finish working
-
-*Mini Mode is a work in progress and may change significantly.*
 
 ### Terminal & UI
 - Keyboard-driven with vim-style navigation (`j`/`k`, `?` for help)

@@ -465,6 +465,7 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                         let worktree_count_before = app.worktrees.len();
                         let scroll_before = app.terminal_scroll;
                         let size = terminal.size()?;
+                        app.last_terminal_size = (size.width, size.height);
                         keys::handle_key(&mut app, key, (size.width, size.height));
                         if app.terminal_scroll != scroll_before {
                             app.url_cache_dirty = true;
@@ -661,6 +662,26 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                                     needs_redraw = true;
                                 }
 
+                                // Track context menu hover (update selected to follow mouse)
+                                if let Some(app::Dialog::ContextMenu { ref actions, ref mut selected, .. }) = app.dialog {
+                                    let dialog_area = app.areas.dialog.get();
+                                    let new_sel = if mouse::point_in_rect(mouse.column, mouse.row, dialog_area) {
+                                        let inner_y = dialog_area.y + 1;
+                                        if mouse.row >= inner_y {
+                                            let action_row = (mouse.row - inner_y) as usize;
+                                            if action_row < actions.len() { Some(action_row) } else { None }
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                    if *selected != new_sel {
+                                        *selected = new_sel;
+                                        needs_redraw = true;
+                                    }
+                                }
+
                                 // Track sidebar hover (only when no overlay is open)
                                 if !app.show_help && app.dialog.is_none() && app.screen_mode == ScreenMode::Normal {
                                     let old_sidebar_hover = app.sidebar_hovered;
@@ -706,6 +727,7 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                     }
                     AppEvent::Input(CrosstermEvent::Resize(w, h)) => {
                         tracing::info!("RESIZE-EVENT from crossterm: {}x{}", w, h);
+                        app.last_terminal_size = (w, h);
                         session::resize_all(&app, h, w);
                         app.text_selection = None;
                         needs_redraw = true;

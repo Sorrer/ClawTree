@@ -53,7 +53,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(idx, item)| {
             let is_selected = in_worktrees_panel && idx == app.sidebar_selected;
-            let is_hovered = app.sidebar_hovered == Some(idx) && !is_selected;
+            let is_hovered = app.sidebar_hovered == Some(idx);
             match item {
                 SidebarItem::Worktree(wi) => {
                     render_worktree(app, *wi, is_selected, is_hovered, inner_width)
@@ -143,7 +143,7 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, is_hovered: bool, in
     }
 
     // Pad to full width so the highlight covers the whole row
-    let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
+    let text_len: usize = spans.iter().map(|s| s.width()).sum();
     if has_bg && text_len < inner_width {
         // Reserve space for "+" button on hover
         let pad = inner_width - text_len;
@@ -153,7 +153,7 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, is_hovered: bool, in
                 Style::default().bg(bg),
             ));
             spans.push(Span::styled(
-                " +",
+                "+ ",
                 Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD),
             ));
         } else {
@@ -198,7 +198,7 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, is_hovered
     let title = session.and_then(|s| s.terminal_title());
 
     // Prefer nickname, then terminal title (stripped of Claude status chars), then label.
-    let base_name = nickname.unwrap_or_else(|| {
+    let display_name = nickname.unwrap_or_else(|| {
         title
             .unwrap_or_else(|| {
                 session
@@ -211,13 +211,6 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, is_hovered
             .trim_start()
             .to_string()
     });
-
-    // Prepend plan mode icon when Claude Code is in plan mode
-    let display_name = if in_plan_mode {
-        format!("{} {}", theme::PLAN_MODE_ICON, base_name)
-    } else {
-        base_name
-    };
 
     // Status indicator and color based on agent status
     let (status_icon, fg): (String, Color) = match status {
@@ -258,10 +251,12 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, is_hovered
         display_name
     };
 
-    let text = format!("{}{}", prefix, truncated);
+    // Tint session name purple when in plan mode
+    let name_fg = if in_plan_mode { theme::AGENT_PLANNING } else { sel_fg };
 
     let mut spans = vec![
-        Span::styled(text, Style::default().fg(sel_fg).bg(bg).add_modifier(bold)),
+        Span::styled(prefix, Style::default().fg(sel_fg).bg(bg).add_modifier(bold)),
+        Span::styled(truncated, Style::default().fg(name_fg).bg(bg).add_modifier(bold)),
     ];
 
     // Append usage indicator
@@ -273,7 +268,7 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, is_hovered
     }
 
     // Pad to full width so the highlight covers the whole row
-    let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
+    let text_len: usize = spans.iter().map(|s| s.width()).sum();
     if has_bg && text_len < inner_width {
         let pad = inner_width - text_len;
         if is_hovered && pad >= 2 {
@@ -282,7 +277,7 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, is_hovered
                 Style::default().bg(bg),
             ));
             spans.push(Span::styled(
-                " +",
+                "+ ",
                 Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD),
             ));
         } else {
@@ -359,7 +354,7 @@ fn render_terminal_session(
     ];
 
     // Pad to full width so the highlight covers the whole row
-    let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
+    let text_len: usize = spans.iter().map(|s| s.width()).sum();
     if has_bg && text_len < inner_width {
         let pad = inner_width - text_len;
         if is_hovered && pad >= 2 {
@@ -368,7 +363,7 @@ fn render_terminal_session(
                 Style::default().bg(bg),
             ));
             spans.push(Span::styled(
-                " +",
+                "+ ",
                 Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD),
             ));
         } else {
@@ -420,7 +415,7 @@ pub fn draw_terminal_panel(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(idx, item)| {
             let is_selected = in_terminal_panel && idx == app.terminal_panel_selected;
-            let is_hovered = app.terminal_panel_hovered == Some(idx) && !is_selected;
+            let is_hovered = app.terminal_panel_hovered == Some(idx);
             match item {
                 SidebarItem::Terminal(ti) => {
                     if let Some(&sid) = app.terminal_ids.get(*ti) {

@@ -189,11 +189,7 @@ fn draw_session_detail(
 
     let in_plan_mode = session.map(|s| s.is_in_plan_mode()).unwrap_or(false);
 
-    let title = if in_plan_mode {
-        format!(" {} {} ", theme::PLAN_MODE_ICON, clean_name)
-    } else {
-        format!(" {} ", clean_name)
-    };
+    let title = format!(" {} ", clean_name);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -228,15 +224,11 @@ fn draw_session_detail(
     };
 
     // Status icon
-    let status_icon: String = if in_plan_mode && status != AgentStatus::Exited {
-        format!("{}", theme::PLAN_MODE_ICON)
-    } else {
-        match status {
-            AgentStatus::Exited => "✗".to_string(),
-            AgentStatus::Working => spinner_char(app).to_string(),
-            AgentStatus::NeedsInput => "●".to_string(),
-            AgentStatus::Idle => "○".to_string(),
-        }
+    let status_icon: String = match status {
+        AgentStatus::Exited => "✗".to_string(),
+        AgentStatus::Working => spinner_char(app).to_string(),
+        AgentStatus::NeedsInput => "●".to_string(),
+        AgentStatus::Idle => "○".to_string(),
     };
 
     // Usage info

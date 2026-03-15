@@ -262,6 +262,32 @@ pub fn is_terminal_session_area(app: &App, col: u16, row: u16) -> bool {
 // ── Left click dispatch ──────────────────────────────────────────────
 
 fn handle_left_click(app: &mut App, col: u16, row: u16) -> bool {
+    // Context menu: click outside to close, click inside to select action
+    if matches!(app.dialog, Some(app::Dialog::ContextMenu { .. })) {
+        let dialog_area = app.areas.dialog.get();
+        if !point_in_rect(col, row, dialog_area) {
+            app.close_dialog();
+            return true;
+        }
+        // Click inside the dialog — check if it's on an action row
+        // Inner area is dialog minus borders (1 on each side)
+        let inner_y = dialog_area.y + 1;
+        if row >= inner_y {
+            let action_row = (row - inner_y) as usize;
+            if let Some(app::Dialog::ContextMenu { item, actions, .. }) = app.dialog.take() {
+                if action_row < actions.len() {
+                    app.close_dialog();
+                    keys::execute_context_action(app, &item, &actions[action_row].kind, app.last_terminal_size);
+                } else {
+                    // Clicked footer or padding — put the dialog back
+                    app.open_dialog(app::Dialog::ContextMenu { item, selected: None, actions });
+                }
+                return true;
+            }
+        }
+        return true;
+    }
+
     // Overlays consume clicks — require keyboard to dismiss
     if app.show_help || app.dialog.is_some() {
         return true;
@@ -314,7 +340,7 @@ fn handle_sidebar_click(app: &mut App, col: u16, row: u16) -> bool {
                     let actions = app::context_actions_for_item(&item, app.wt_available);
                     app.open_dialog(app::Dialog::ContextMenu {
                         item,
-                        selected: 0,
+                        selected: None,
                         actions,
                     });
                     return true;
@@ -360,7 +386,7 @@ fn handle_sidebar_click(app: &mut App, col: u16, row: u16) -> bool {
                 let actions = app::context_actions_for_item(&item, app.wt_available);
                 app.open_dialog(app::Dialog::ContextMenu {
                     item,
-                    selected: 0,
+                    selected: None,
                     actions,
                 });
                 return true;
@@ -642,7 +668,7 @@ pub fn handle_sidebar_right_click(app: &mut App, col: u16, row: u16) -> bool {
                 let actions = app::context_actions_for_item(&item, app.wt_available);
                 app.open_dialog(app::Dialog::ContextMenu {
                     item,
-                    selected: 0,
+                    selected: None,
                     actions,
                 });
                 return true;
@@ -665,7 +691,7 @@ pub fn handle_sidebar_right_click(app: &mut App, col: u16, row: u16) -> bool {
             let actions = app::context_actions_for_item(&item, app.wt_available);
             app.open_dialog(app::Dialog::ContextMenu {
                 item,
-                selected: 0,
+                selected: None,
                 actions,
             });
             return true;

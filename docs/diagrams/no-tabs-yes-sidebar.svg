@@ -1,12 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 200">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 230">
   <defs>
     <style>
-      text { font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+      text { font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', Consolas, monospace; }
     </style>
+    <clipPath id="sidebar-clip">
+      <rect x="10" y="40" width="100" height="130"/>
+    </clipPath>
   </defs>
 
   <!-- Background -->
-  <rect width="720" height="200" rx="12" fill="#1a1b26"/>
+  <rect width="720" height="230" rx="12" fill="#1a1b26"/>
 
   <!-- LEFT: No terminal tabs -->
   <g transform="translate(30, 20)">
@@ -14,10 +17,11 @@
     <text x="140" y="24" text-anchor="middle" fill="#f7768e" font-size="15" font-weight="700" letter-spacing="0.5">NO TERMINAL TABS</text>
 
     <!-- Tab bar mockup -->
-    <rect x="10" y="40" width="260" height="120" rx="6" fill="#24283b" stroke="#3b4261" stroke-width="1"/>
-    <!-- Tabs -->
+    <rect x="10" y="40" width="260" height="130" rx="6" fill="#24283b" stroke="#3b4261" stroke-width="1"/>
+    <!-- Tab row background -->
     <rect x="10" y="40" width="260" height="28" rx="6" fill="#1f2335"/>
     <rect x="10" y="54" width="260" height="14" fill="#1f2335"/>
+    <!-- Individual tabs -->
     <rect x="16" y="44" width="56" height="20" rx="4" fill="#3b4261"/>
     <text x="44" y="58" text-anchor="middle" fill="#787c99" font-size="9">main</text>
     <rect x="76" y="44" width="56" height="20" rx="4" fill="#3b4261"/>
@@ -27,64 +31,72 @@
     <rect x="196" y="44" width="56" height="20" rx="4" fill="#3b4261"/>
     <text x="224" y="58" text-anchor="middle" fill="#787c99" font-size="9">fix-3</text>
     <!-- Terminal content lines -->
-    <rect x="20" y="76" width="120" height="6" rx="2" fill="#3b4261" opacity="0.5"/>
-    <rect x="20" y="88" width="180" height="6" rx="2" fill="#3b4261" opacity="0.4"/>
-    <rect x="20" y="100" width="90" height="6" rx="2" fill="#3b4261" opacity="0.3"/>
-    <rect x="20" y="112" width="150" height="6" rx="2" fill="#3b4261" opacity="0.3"/>
-    <rect x="20" y="124" width="60" height="6" rx="2" fill="#3b4261" opacity="0.2"/>
-    <text x="200" y="120" fill="#565f89" font-size="10" font-style="italic">lost context...</text>
-
+    <rect x="20" y="78" width="120" height="6" rx="2" fill="#3b4261" opacity="0.5"/>
+    <rect x="20" y="90" width="180" height="6" rx="2" fill="#3b4261" opacity="0.4"/>
+    <rect x="20" y="102" width="90" height="6" rx="2" fill="#3b4261" opacity="0.3"/>
+    <rect x="20" y="114" width="150" height="6" rx="2" fill="#3b4261" opacity="0.3"/>
+    <rect x="20" y="126" width="60" height="6" rx="2" fill="#3b4261" opacity="0.2"/>
+    <rect x="20" y="138" width="110" height="6" rx="2" fill="#3b4261" opacity="0.2"/>
     <!-- Red X overlay -->
-    <line x1="40" y1="60" x2="250" y2="140" stroke="#f7768e" stroke-width="4" stroke-linecap="round" opacity="0.85"/>
-    <line x1="250" y1="60" x2="40" y2="140" stroke="#f7768e" stroke-width="4" stroke-linecap="round" opacity="0.85"/>
+    <line x1="40" y1="60" x2="250" y2="150" stroke="#f7768e" stroke-width="4" stroke-linecap="round" opacity="0.85"/>
+    <line x1="250" y1="60" x2="40" y2="150" stroke="#f7768e" stroke-width="4" stroke-linecap="round" opacity="0.85"/>
   </g>
 
   <!-- Divider -->
-  <line x1="360" y1="30" x2="360" y2="170" stroke="#3b4261" stroke-width="1" stroke-dasharray="4,4"/>
+  <line x1="360" y1="30" x2="360" y2="180" stroke="#3b4261" stroke-width="1" stroke-dasharray="4,4"/>
 
   <!-- RIGHT: Yes worktree sidebar -->
   <g transform="translate(390, 20)">
     <!-- Title -->
     <text x="150" y="24" text-anchor="middle" fill="#9ece6a" font-size="15" font-weight="700" letter-spacing="0.5">YES WORKTREE SIDEBAR</text>
 
-    <!-- App mockup -->
-    <rect x="10" y="40" width="280" height="120" rx="6" fill="#24283b" stroke="#3b4261" stroke-width="1"/>
+    <!-- App mockup with cyan border like the real app -->
+    <rect x="10" y="40" width="280" height="130" rx="6" fill="#24283b" stroke="#3b4261" stroke-width="1"/>
 
-    <!-- Sidebar -->
-    <rect x="10" y="40" width="90" height="120" rx="6" fill="#1f2335" stroke="#3b4261" stroke-width="1"/>
-    <rect x="100" y="40" width="1" height="120" fill="#1f2335"/>
+    <!-- Sidebar with cyan/teal left border like the real app -->
+    <rect x="10" y="40" width="100" height="130" rx="6" fill="#1a1b26"/>
+    <rect x="10" y="40" width="3" height="130" rx="1" fill="#2ac3de"/>
 
-    <!-- Sidebar header -->
-    <text x="20" y="56" fill="#7aa2f7" font-size="9" font-weight="600">Worktrees</text>
+    <!-- Sidebar content clipped to sidebar bounds -->
+    <g clip-path="url(#sidebar-clip)">
+      <!-- Sidebar header -->
+      <text x="22" y="58" fill="#7dcfff" font-size="10" font-weight="600">Worktrees</text>
 
-    <!-- Tree items -->
-    <text x="20" y="72" fill="#c0caf5" font-size="9">&#9662; feature/auth</text>
-    <text x="28" y="84" fill="#9ece6a" font-size="8">&#9679; Claude Code</text>
-    <text x="20" y="98" fill="#c0caf5" font-size="9">&#9662; fix/login</text>
-    <text x="28" y="110" fill="#9ece6a" font-size="8">&#9679; Claude Code</text>
-    <text x="20" y="124" fill="#787c99" font-size="9">&#9656; main</text>
+      <!-- Tree items matching real sidebar -->
+      <!-- feature/auth - expanded, selected (highlight bar) -->
+      <rect x="13" y="62" width="94" height="14" rx="2" fill="#283457"/>
+      <text x="20" y="73" fill="#c0caf5" font-size="9" font-weight="600">&#9660; feature/auth*</text>
+      <!-- Claude Code child sessions -->
+      <text x="24" y="87" fill="#9ece6a" font-size="8">&#9679; Fixing Bug 1</text>
+      <text x="24" y="99" fill="#9ece6a" font-size="8">&#9679; Refactoring Code</text>
 
-    <!-- Status dots -->
-    <circle cx="86" cy="69" r="3" fill="#9ece6a"/>
-    <circle cx="86" cy="95" r="3" fill="#e0af68"/>
-    <circle cx="86" cy="121" r="3" fill="#565f89"/>
+      <!-- fix/logging - collapsed -->
+      <text x="20" y="115" fill="#a9b1d6" font-size="9">&#9654; fix/logging*</text>
 
-    <!-- Terminal area -->
-    <rect x="105" y="44" width="180" height="6" rx="2" fill="#3b4261" opacity="0.5"/>
-    <rect x="105" y="56" width="140" height="6" rx="2" fill="#3b4261" opacity="0.4"/>
-    <rect x="105" y="68" width="170" height="6" rx="2" fill="#9ece6a" opacity="0.3"/>
-    <rect x="105" y="80" width="100" height="6" rx="2" fill="#3b4261" opacity="0.3"/>
-    <rect x="105" y="92" width="160" height="6" rx="2" fill="#3b4261" opacity="0.3"/>
-    <rect x="105" y="104" width="80" height="6" rx="2" fill="#3b4261" opacity="0.2"/>
-    <rect x="105" y="116" width="130" height="6" rx="2" fill="#7aa2f7" opacity="0.3"/>
-    <rect x="105" y="128" width="50" height="6" rx="2" fill="#3b4261" opacity="0.2"/>
-    <text x="170" y="148" text-anchor="middle" fill="#9ece6a" font-size="9" font-style="italic">all sessions visible</text>
+      <!-- main - collapsed, inactive -->
+      <text x="20" y="131" fill="#565f89" font-size="9">&#9654; main</text>
+    </g>
+
+    <!-- Divider line between sidebar and terminal -->
+    <line x1="113" y1="40" x2="113" y2="170" stroke="#2ac3de" stroke-width="1" opacity="0.5"/>
+
+    <!-- Terminal area content -->
+    <rect x="120" y="48" width="160" height="6" rx="2" fill="#3b4261" opacity="0.5"/>
+    <rect x="120" y="60" width="120" height="6" rx="2" fill="#3b4261" opacity="0.4"/>
+    <rect x="120" y="72" width="150" height="6" rx="2" fill="#9ece6a" opacity="0.3"/>
+    <rect x="120" y="84" width="80" height="6" rx="2" fill="#3b4261" opacity="0.3"/>
+    <rect x="120" y="96" width="140" height="6" rx="2" fill="#3b4261" opacity="0.3"/>
+    <rect x="120" y="108" width="60" height="6" rx="2" fill="#3b4261" opacity="0.2"/>
+    <rect x="120" y="120" width="110" height="6" rx="2" fill="#7aa2f7" opacity="0.3"/>
+    <rect x="120" y="132" width="90" height="6" rx="2" fill="#3b4261" opacity="0.2"/>
+    <rect x="120" y="144" width="130" height="6" rx="2" fill="#3b4261" opacity="0.2"/>
+    <text x="195" y="162" text-anchor="middle" fill="#9ece6a" font-size="9" font-style="italic">all sessions visible</text>
 
     <!-- Green checkmark -->
-    <circle cx="280" cy="50" r="12" fill="#9ece6a" opacity="0.15"/>
-    <polyline points="273,50 278,55 287,44" fill="none" stroke="#9ece6a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="278" cy="50" r="12" fill="#9ece6a" opacity="0.15"/>
+    <polyline points="271,50 276,55 285,44" fill="none" stroke="#9ece6a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 
-  <!-- Bottom tagline -->
-  <text x="360" y="190" text-anchor="middle" fill="#565f89" font-size="11" font-style="italic">Stop juggling tabs. See everything in one place.</text>
+  <!-- Bottom tagline with more padding -->
+  <text x="360" y="218" text-anchor="middle" fill="#565f89" font-size="11" font-style="italic">Stop juggling tabs and losing context. Manage everything in one place.</text>
 </svg>
