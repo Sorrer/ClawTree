@@ -119,9 +119,11 @@ fn main() -> Result<()> {
         original_hook(panic_info);
     }));
 
-    // Parse CLI arguments: supports --color-mode <mode> and a positional directory
+    // Parse CLI arguments: supports --color-mode <mode>, --cleanup, --cleanup-all, and a positional directory
     let mut color_mode_override: Option<ui::theme::ColorMode> = None;
     let mut positional_dir: Option<String> = None;
+    let mut do_cleanup = false;
+    let mut do_cleanup_all = false;
     {
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -137,10 +139,57 @@ fn main() -> Result<()> {
                         }
                     };
                 }
+            } else if arg == "--cleanup-all" {
+                do_cleanup_all = true;
+            } else if arg == "--cleanup" {
+                do_cleanup = true;
             } else if positional_dir.is_none() {
                 positional_dir = Some(arg);
             }
         }
+    }
+
+    // Handle --cleanup / --cleanup-all: kill clawtree tmux sessions and exit
+    if do_cleanup || do_cleanup_all {
+        let session_names: Vec<String> = if do_cleanup_all {
+            // Kill ALL clawtree tmux sessions globally
+            session::pty::list_tmux_session_names()
+        } else {
+            // Scope to the current project: resolve the project root, then
+            // only kill sessions whose worktree path lives under it.
+            let target = match &positional_dir {
+                Some(arg) => {
+                    let p = std::path::PathBuf::from(arg);
+                    if p.is_absolute() { p } else {
+                        std::env::current_dir().unwrap_or_default().join(p)
+                    }
+                }
+                None => std::env::current_dir().unwrap_or_default(),
+            };
+            let project_root = worktree::git::detect_bare_repo(&target)
+                .or_else(|| worktree::git::detect_regular_repo(&target))
+                .unwrap_or_else(|| target.clone());
+
+            session::pty::list_tmux_sessions()
+                .into_iter()
+                .filter(|(_name, wt_path)| wt_path.starts_with(&project_root))
+                .map(|(name, _)| name)
+                .collect()
+        };
+
+        let scope = if do_cleanup_all { "global" } else { "project" };
+        if session_names.is_empty() {
+            println!("No clawtree tmux sessions found ({}).", scope);
+        } else {
+            println!("Killing {} clawtree tmux session(s) ({}):", session_names.len(), scope);
+            for name in &session_names {
+                let ok = session::pty::kill_tmux_session(name);
+                let status = if ok { "killed" } else { "failed" };
+                println!("  {} ... {}", name, status);
+            }
+        }
+        alive.store(false, Ordering::Relaxed);
+        return Ok(());
     }
 
     // Initialize theme before any UI code runs
@@ -569,9 +618,27 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                                     needs_redraw = true;
                                 }
                             }
-                            MouseEventKind::Down(MouseButton::Middle)
-                            | MouseEventKind::Down(MouseButton::Right) => {
-                                // Middle/Right click → native text selection
+                            MouseEventKind::Down(MouseButton::Right) => {
+                                app.text_selection = None;
+                                // Right-click in sidebar → context menu
+                                let sidebar_area = app.areas.sidebar.get();
+                                if !app.show_help && app.dialog.is_none()
+                                    && app.screen_mode == ScreenMode::Normal
+                                    && mouse::point_in_rect(mouse.column, mouse.row, sidebar_area)
+                                {
+                                    app.focus = app::FocusTarget::Sidebar;
+                                    app.input_mode = app::InputMode::Normal;
+                                    mouse::handle_sidebar_right_click(&mut app, mouse.column, mouse.row);
+                                } else {
+                                    // Elsewhere → escape hatch for native text selection
+                                    app.mouse_captured = false;
+                                    app.mouse_capture_disabled_at = Some(Instant::now());
+                                    let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
+                                }
+                                needs_redraw = true;
+                            }
+                            MouseEventKind::Down(MouseButton::Middle) => {
+                                // Middle click → escape hatch for native text selection
                                 app.text_selection = None;
                                 app.mouse_captured = false;
                                 app.mouse_capture_disabled_at = Some(Instant::now());
@@ -591,6 +658,36 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                                 let old_hovered = app.url_cache.hovered;
                                 app.url_cache.hovered = mouse::url_at_position(&app, mouse.column, mouse.row);
                                 if app.url_cache.hovered != old_hovered {
+                                    needs_redraw = true;
+                                }
+
+                                // Track sidebar hover (only when no overlay is open)
+                                if !app.show_help && app.dialog.is_none() && app.screen_mode == ScreenMode::Normal {
+                                    let old_sidebar_hover = app.sidebar_hovered;
+                                    let old_tp_hover = app.terminal_panel_hovered;
+
+                                    let sidebar_inner = app.areas.sidebar_inner.get();
+                                    let tp_inner = app.areas.sidebar_terminal_panel_inner.get();
+
+                                    if mouse::point_in_rect(mouse.column, mouse.row, sidebar_inner) {
+                                        let item_row = (mouse.row - sidebar_inner.y) as usize;
+                                        app.sidebar_hovered = if item_row < app.sidebar_items.len() { Some(item_row) } else { None };
+                                        app.terminal_panel_hovered = None;
+                                    } else if mouse::point_in_rect(mouse.column, mouse.row, tp_inner) {
+                                        let item_row = (mouse.row - tp_inner.y) as usize;
+                                        app.terminal_panel_hovered = if item_row < app.terminal_panel_items.len() { Some(item_row) } else { None };
+                                        app.sidebar_hovered = None;
+                                    } else {
+                                        app.sidebar_hovered = None;
+                                        app.terminal_panel_hovered = None;
+                                    }
+
+                                    if app.sidebar_hovered != old_sidebar_hover || app.terminal_panel_hovered != old_tp_hover {
+                                        needs_redraw = true;
+                                    }
+                                } else if app.sidebar_hovered.is_some() || app.terminal_panel_hovered.is_some() {
+                                    app.sidebar_hovered = None;
+                                    app.terminal_panel_hovered = None;
                                     needs_redraw = true;
                                 }
                             }

@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, CommitPhase, ConfirmAction, Dialog, FocusTarget, InputMode, MiniModeFocus, PendingAction, ScreenMode, SidebarItem, SavedPrompt, StatusSeverity};
+use crate::app::{App, CommitPhase, ConfirmAction, ContextActionKind, Dialog, FocusTarget, InputMode, MiniModeFocus, PendingAction, ScreenMode, SidebarItem, SavedPrompt, StatusSeverity};
 use crate::session;
 use crate::ui::terminal_pane;
 use crate::url;
@@ -1172,7 +1172,110 @@ fn handle_url_open(app: &mut App) {
     }
 }
 
+/// Execute a context menu action by dispatching to the same handlers used by hotkeys.
+fn execute_context_action(app: &mut App, item: &SidebarItem, kind: &ContextActionKind, terminal_size: (u16, u16)) {
+    // Ensure the item is selected so handlers can find it
+    match item {
+        SidebarItem::Worktree(_) | SidebarItem::Session(_, _) => {
+            if let Some(idx) = app.sidebar_items.iter().position(|i| i == item) {
+                app.sidebar_panel = crate::app::SidebarPanel::Worktrees;
+                app.sidebar_selected = idx;
+            }
+        }
+        SidebarItem::Terminal(ti) => {
+            app.sidebar_panel = crate::app::SidebarPanel::Terminals;
+            app.terminal_panel_selected = *ti;
+        }
+    }
+
+    match kind {
+        ContextActionKind::NewClaude => spawn_claude_for_selected(app, terminal_size, false),
+        ContextActionKind::NewClaudeYolo => spawn_claude_for_selected(app, terminal_size, true),
+        ContextActionKind::NewTerminal => spawn_terminal_for_selected(app, terminal_size),
+        ContextActionKind::StageCommit => handle_stage_commit(app),
+        ContextActionKind::StageAllClaudeCommit => handle_stage_all_commit_claude(app),
+        ContextActionKind::Push => handle_push(app),
+        ContextActionKind::Pull => handle_pull(app),
+        ContextActionKind::MergeBranch => handle_merge(app),
+        ContextActionKind::NewWorktree => {
+            let base = selected_worktree_branch(app);
+            app.open_dialog(Dialog::CreateWorktree {
+                branch_input: String::new(),
+                base_branch: base,
+                focused_field: 0,
+            });
+        }
+        ContextActionKind::DeleteWorktree | ContextActionKind::DeleteSession => handle_delete(app),
+        ContextActionKind::ForceDeleteWorktree => handle_force_delete(app),
+        ContextActionKind::RenameSession => {
+            let sid = match app.selected_sidebar_item() {
+                Some(SidebarItem::Session(wi, si)) => {
+                    app.worktrees.get(wi).and_then(|wt| wt.session_ids.get(si).copied())
+                }
+                Some(SidebarItem::Terminal(ti)) => {
+                    app.terminal_ids.get(ti).copied()
+                }
+                _ => None,
+            };
+            if let Some(sid) = sid {
+                let current = app.sessions.get(&sid)
+                    .and_then(|s| s.nickname.clone())
+                    .unwrap_or_default();
+                app.open_dialog(Dialog::RenameSession {
+                    session_id: sid,
+                    input: current,
+                });
+            }
+        }
+        ContextActionKind::CopyLastUrl => handle_url_copy(app),
+        ContextActionKind::OpenLastUrl => handle_url_open(app),
+        ContextActionKind::OpenWindowsTerminal => {
+            if app.wt_available {
+                open_wsl_window(app, false);
+            }
+        }
+        ContextActionKind::OpenWindowsTerminalClaude => {
+            if app.wt_available {
+                open_wsl_window(app, true);
+            }
+        }
+    }
+}
+
 fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
+    // ── Context Menu ─────────────────────────────────────────────────
+    if let Some(Dialog::ContextMenu { .. }) = &app.dialog {
+        match key.code {
+            KeyCode::Esc => {
+                app.close_dialog();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(Dialog::ContextMenu { ref mut selected, ref actions, .. }) = app.dialog {
+                    if *selected + 1 < actions.len() {
+                        *selected += 1;
+                    }
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(Dialog::ContextMenu { ref mut selected, .. }) = app.dialog {
+                    if *selected > 0 {
+                        *selected -= 1;
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(Dialog::ContextMenu { item, selected, actions }) = app.dialog.take() {
+                    app.close_dialog();
+                    if let Some(action) = actions.get(selected) {
+                        execute_context_action(app, &item, &action.kind, terminal_size);
+                    }
+                }
+            }
+            _ => {} // consume all other keys
+        }
+        return;
+    }
+
     // GitCommit-specific keys need to be handled before the general match
     // because Space, 'a', 'c' have special meaning in staging phase
     if let Some(Dialog::GitCommit { ref phase, .. }) = app.dialog {
@@ -1754,6 +1857,9 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         // Put the dialog back — user hasn't typed "yes" yet
                         app.dialog = Some(Dialog::ConfirmDangerous { input, on_confirm, message });
                     }
+                }
+                Some(Dialog::ContextMenu { .. }) => {
+                    // Handled in the early return above
                 }
                 None => {
                     app.close_dialog();

@@ -53,12 +53,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(idx, item)| {
             let is_selected = in_worktrees_panel && idx == app.sidebar_selected;
+            let is_hovered = app.sidebar_hovered == Some(idx) && !is_selected;
             match item {
                 SidebarItem::Worktree(wi) => {
-                    render_worktree(app, *wi, is_selected, inner_width)
+                    render_worktree(app, *wi, is_selected, is_hovered, inner_width)
                 }
                 SidebarItem::Session(wi, si) => {
-                    render_session(app, *wi, *si, is_selected, inner_width)
+                    render_session(app, *wi, *si, is_selected, is_hovered, inner_width)
                 }
                 SidebarItem::Terminal(_) => {
                     // Terminals are rendered in the terminal panel, not here
@@ -75,7 +76,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
-fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) -> ListItem<'static> {
+fn render_worktree(app: &App, wi: usize, is_selected: bool, is_hovered: bool, inner_width: usize) -> ListItem<'static> {
     let wt = &app.worktrees[wi];
     let icon = if wt.expanded { "▼" } else { "▶" };
 
@@ -96,8 +97,9 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) 
             .unwrap_or(false)
     }).count();
 
+    let has_bg = is_selected || is_hovered;
     let t = theme::get();
-    let bg = if is_selected { t.sidebar_sel_bg } else { Color::Reset };
+    let bg = if is_selected { t.sidebar_sel_bg } else if is_hovered { t.sidebar_hover_bg } else { Color::Reset };
     let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
 
     let branch_style = Style::default()
@@ -142,46 +144,61 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) 
 
     // Pad to full width so the highlight covers the whole row
     let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
-    if is_selected && text_len < inner_width {
-        spans.push(Span::styled(
-            " ".repeat(inner_width - text_len),
-            Style::default().bg(bg),
-        ));
+    if has_bg && text_len < inner_width {
+        // Reserve space for "+" button on hover
+        let pad = inner_width - text_len;
+        if is_hovered && pad >= 2 {
+            spans.push(Span::styled(
+                " ".repeat(pad - 2),
+                Style::default().bg(bg),
+            ));
+            spans.push(Span::styled(
+                " +",
+                Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(
+                " ".repeat(pad),
+                Style::default().bg(bg),
+            ));
+        }
     }
 
     ListItem::new(Line::from(spans))
 }
 
-fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_width: usize) -> ListItem<'static> {
+fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, is_hovered: bool, inner_width: usize) -> ListItem<'static> {
     let wt = &app.worktrees[wi];
     let sid = wt.session_ids[si];
     let session = app.sessions.get(&sid);
     let is_active_session = app.active_session_id == Some(sid);
     let is_terminal = session.map(|s| s.is_terminal).unwrap_or(false);
 
-    // Background: selection highlight and active session highlight are independent
-    let has_bg = is_selected || is_active_session;
+    // Background: selection highlight, active session highlight, and hover are independent
+    let has_bg = is_selected || is_active_session || is_hovered;
     let t = theme::get();
-    let bg = match (is_selected, is_active_session) {
-        (true, true) => t.sidebar_sel_active_bg,
-        (true, false) => t.sidebar_sel_bg,
-        (false, true) => t.sidebar_active_bg,
-        (false, false) => Color::Reset,
+    let bg = match (is_selected, is_active_session, is_hovered) {
+        (true, true, _) => t.sidebar_sel_active_bg,
+        (true, false, _) => t.sidebar_sel_bg,
+        (false, true, _) => t.sidebar_active_bg,
+        (false, false, true) => t.sidebar_hover_bg,
+        (false, false, false) => Color::Reset,
     };
     let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
 
     if is_terminal {
-        return render_terminal_session(app, session, sid, has_bg, bg, bold, inner_width);
+        return render_terminal_session(app, session, sid, has_bg, is_hovered, bg, bold, inner_width);
     }
 
     let status = session
         .map(|s| s.agent_status())
         .unwrap_or(AgentStatus::Exited);
+    let in_plan_mode = session.map(|s| s.is_in_plan_mode()).unwrap_or(false);
     let nickname = session.and_then(|s| s.nickname.clone());
     let title = session.and_then(|s| s.terminal_title());
 
     // Prefer nickname, then terminal title (stripped of Claude status chars), then label.
-    let display_name = nickname.unwrap_or_else(|| {
+    let base_name = nickname.unwrap_or_else(|| {
         title
             .unwrap_or_else(|| {
                 session
@@ -194,6 +211,13 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
             .trim_start()
             .to_string()
     });
+
+    // Prepend plan mode icon when Claude Code is in plan mode
+    let display_name = if in_plan_mode {
+        format!("{} {}", theme::PLAN_MODE_ICON, base_name)
+    } else {
+        base_name
+    };
 
     // Status indicator and color based on agent status
     let (status_icon, fg): (String, Color) = match status {
@@ -251,21 +275,35 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
     // Pad to full width so the highlight covers the whole row
     let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
     if has_bg && text_len < inner_width {
-        spans.push(Span::styled(
-            " ".repeat(inner_width - text_len),
-            Style::default().bg(bg),
-        ));
+        let pad = inner_width - text_len;
+        if is_hovered && pad >= 2 {
+            spans.push(Span::styled(
+                " ".repeat(pad - 2),
+                Style::default().bg(bg),
+            ));
+            spans.push(Span::styled(
+                " +",
+                Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(
+                " ".repeat(pad),
+                Style::default().bg(bg),
+            ));
+        }
     }
 
     ListItem::new(Line::from(spans))
 }
 
 /// Render a plain terminal session item with [terminal] tag and cwd as the name.
+#[allow(clippy::too_many_arguments)]
 fn render_terminal_session(
     _app: &App,
     session: Option<&crate::session::Session>,
     _sid: u64,
     has_bg: bool,
+    is_hovered: bool,
     bg: Color,
     bold: Modifier,
     inner_width: usize,
@@ -323,10 +361,22 @@ fn render_terminal_session(
     // Pad to full width so the highlight covers the whole row
     let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
     if has_bg && text_len < inner_width {
-        spans.push(Span::styled(
-            " ".repeat(inner_width - text_len),
-            Style::default().bg(bg),
-        ));
+        let pad = inner_width - text_len;
+        if is_hovered && pad >= 2 {
+            spans.push(Span::styled(
+                " ".repeat(pad - 2),
+                Style::default().bg(bg),
+            ));
+            spans.push(Span::styled(
+                " +",
+                Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(
+                " ".repeat(pad),
+                Style::default().bg(bg),
+            ));
+        }
     }
 
     ListItem::new(Line::from(spans))
@@ -370,21 +420,23 @@ pub fn draw_terminal_panel(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(idx, item)| {
             let is_selected = in_terminal_panel && idx == app.terminal_panel_selected;
+            let is_hovered = app.terminal_panel_hovered == Some(idx) && !is_selected;
             match item {
                 SidebarItem::Terminal(ti) => {
                     if let Some(&sid) = app.terminal_ids.get(*ti) {
                         let session = app.sessions.get(&sid);
                         let is_active_session = app.active_session_id == Some(sid);
-                        let has_bg = is_selected || is_active_session;
+                        let has_bg = is_selected || is_active_session || is_hovered;
                         let t = theme::get();
-                        let bg = match (is_selected, is_active_session) {
-                            (true, true) => t.sidebar_sel_active_bg,
-                            (true, false) => t.sidebar_sel_bg,
-                            (false, true) => t.sidebar_active_bg,
-                            (false, false) => Color::Reset,
+                        let bg = match (is_selected, is_active_session, is_hovered) {
+                            (true, true, _) => t.sidebar_sel_active_bg,
+                            (true, false, _) => t.sidebar_sel_bg,
+                            (false, true, _) => t.sidebar_active_bg,
+                            (false, false, true) => t.sidebar_hover_bg,
+                            (false, false, false) => Color::Reset,
                         };
                         let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
-                        render_terminal_session(app, session, sid, has_bg, bg, bold, inner_width)
+                        render_terminal_session(app, session, sid, has_bg, is_hovered, bg, bold, inner_width)
                     } else {
                         ListItem::new(Line::from(vec![]))
                     }

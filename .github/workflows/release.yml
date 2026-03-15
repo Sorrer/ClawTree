@@ -12,8 +12,6 @@ on:
         description: 'Release tag (e.g. v0.1.0). Leave empty for nightly.'
         required: false
         default: ''
-  schedule:
-    - cron: '0 4 * * *' # 4 AM UTC daily — nightly build
 
 permissions:
   contents: write
@@ -23,6 +21,20 @@ env:
   BINARY_NAME: clawtree
 
 jobs:
+  claude-code-strings:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify Claude Code UI strings
+        run: tests/check_claude_code_strings.sh
+
   build:
     strategy:
       fail-fast: false

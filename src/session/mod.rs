@@ -272,6 +272,49 @@ impl Session {
             Err(_) => false,
         }
     }
+
+    /// Returns true if Claude Code is in plan mode, detected by the ⏸ (U+23F8)
+    /// character that Claude Code displays in the bottom bar when plan mode is on.
+    /// The bottom bar shows "⏸ plan mode on" when active.
+    pub fn is_in_plan_mode(&self) -> bool {
+        if self.exited.load(Ordering::Relaxed) || self.is_terminal {
+            return false;
+        }
+
+        // For tmux sessions, capture the full visible pane content
+        if let Some(ref tmux_name) = self.tmux_session_name {
+            if let Ok(output) = std::process::Command::new("tmux")
+                .args(["capture-pane", "-t", tmux_name, "-p"])
+                .output()
+            {
+                if output.status.success() {
+                    let content = String::from_utf8_lossy(&output.stdout);
+                    return Self::content_has_plan_mode(&content);
+                }
+            }
+        }
+
+        // Fallback: scan VT100 screen contents
+        match self.parser.try_read() {
+            Ok(guard) => {
+                let screen = guard.screen();
+                let contents = screen.contents();
+                Self::content_has_plan_mode(&contents)
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Check if terminal content contains Claude Code's plan mode indicator.
+    /// Claude Code shows "⏸ plan mode on" in the bottom bar when plan mode is active.
+    fn content_has_plan_mode(content: &str) -> bool {
+        content
+            .lines()
+            .rev()
+            .filter(|l| !l.trim().is_empty())
+            .take(6)
+            .any(|line| line.contains('\u{23F8}'))
+    }
 }
 
 /// Extract a summary from the session's visible terminal output.
@@ -1127,26 +1170,38 @@ pub struct GlobalUsage {
 }
 
 /// Spawn a background thread that polls the Anthropic API for global usage data.
-/// Polls every 30 seconds. Reads OAuth token from ~/.claude/.credentials.json.
+/// Polls every 120 seconds with exponential backoff on errors (up to 10 minutes).
 /// Initial poll is deferred by 2 seconds so the TUI renders immediately without lag.
 pub fn spawn_global_usage_poller(
     event_tx: tokio::sync::mpsc::UnboundedSender<crate::event::AppEvent>,
 ) {
+    const BASE_INTERVAL_SECS: u64 = 120;
+    const MAX_BACKOFF_SECS: u64 = 600; // 10 minutes
+
     std::thread::Builder::new()
         .name("global-usage-poller".into())
         .spawn(move || {
             // Brief delay so the TUI starts up without waiting on the first curl
             std::thread::sleep(Duration::from_secs(2));
+            let mut current_interval = BASE_INTERVAL_SECS;
             loop {
-                if let Some(usage) = poll_global_usage() {
-                    if event_tx
-                        .send(crate::event::AppEvent::GlobalUsageUpdated { usage })
-                        .is_err()
-                    {
-                        break;
+                match poll_global_usage() {
+                    Ok(usage) => {
+                        current_interval = BASE_INTERVAL_SECS;
+                        if event_tx
+                            .send(crate::event::AppEvent::GlobalUsageUpdated { usage })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        // Exponential backoff: double the interval on each
+                        // consecutive failure, capped at MAX_BACKOFF_SECS.
+                        current_interval = (current_interval * 2).min(MAX_BACKOFF_SECS);
                     }
                 }
-                std::thread::sleep(Duration::from_secs(30));
+                std::thread::sleep(Duration::from_secs(current_interval));
             }
         })
         .ok();
@@ -1165,29 +1220,36 @@ fn read_oauth_token() -> Option<String> {
 }
 
 /// Poll the Anthropic API for global usage data.
-fn poll_global_usage() -> Option<GlobalUsage> {
-    let token = read_oauth_token()?;
+/// Returns `Err(())` on any failure (network, auth, rate limit, parse) so the
+/// caller can apply backoff.
+fn poll_global_usage() -> Result<GlobalUsage, ()> {
+    let token = read_oauth_token().ok_or(())?;
 
     let output = std::process::Command::new("curl")
         .args([
             "-s",
-            "--max-time", "5",
+            "--max-time", "10",
             "-H", &format!("Authorization: Bearer {}", token),
             "-H", "anthropic-beta: oauth-2025-04-20",
             "https://api.anthropic.com/api/oauth/usage",
         ])
         .output()
-        .ok()?;
+        .map_err(|_| ())?;
 
     if !output.status.success() {
-        return None;
+        return Err(());
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|_| ())?;
 
-    let five_hour = json.get("five_hour")?;
-    let seven_day = json.get("seven_day")?;
+    // Detect API-level errors (rate limits, auth failures, etc.)
+    if json.get("error").is_some() {
+        return Err(());
+    }
+
+    let five_hour = json.get("five_hour").ok_or(())?;
+    let seven_day = json.get("seven_day").ok_or(())?;
 
     // seven_day_sonnet may be null when unused
     let (sonnet_7d_pct, sonnet_7d_reset) = json.get("seven_day_sonnet")
@@ -1199,11 +1261,11 @@ fn poll_global_usage() -> Option<GlobalUsage> {
         })
         .unwrap_or((None, None));
 
-    Some(GlobalUsage {
-        five_hour_pct: five_hour.get("utilization")?.as_f64()?,
-        five_hour_reset: five_hour.get("resets_at")?.as_str()?.to_string(),
-        seven_day_pct: seven_day.get("utilization")?.as_f64()?,
-        seven_day_reset: seven_day.get("resets_at")?.as_str()?.to_string(),
+    Ok(GlobalUsage {
+        five_hour_pct: five_hour.get("utilization").and_then(|v| v.as_f64()).ok_or(())?,
+        five_hour_reset: five_hour.get("resets_at").and_then(|v| v.as_str()).ok_or(())?.to_string(),
+        seven_day_pct: seven_day.get("utilization").and_then(|v| v.as_f64()).ok_or(())?,
+        seven_day_reset: seven_day.get("resets_at").and_then(|v| v.as_str()).ok_or(())?.to_string(),
         sonnet_7d_pct,
         sonnet_7d_reset,
     })

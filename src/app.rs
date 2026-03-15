@@ -184,6 +184,72 @@ pub enum InputMode {
     Dialog,
 }
 
+/// A single action entry in the context menu.
+#[derive(Debug, Clone)]
+pub struct ContextAction {
+    pub label: String,
+    pub hotkey: String,
+    pub kind: ContextActionKind,
+}
+
+/// Action kinds for the context menu, mirroring existing sidebar hotkeys.
+#[derive(Debug, Clone)]
+pub enum ContextActionKind {
+    NewClaude,
+    NewClaudeYolo,
+    NewTerminal,
+    StageCommit,
+    StageAllClaudeCommit,
+    Push,
+    Pull,
+    MergeBranch,
+    NewWorktree,
+    DeleteWorktree,
+    ForceDeleteWorktree,
+    RenameSession,
+    DeleteSession,
+    CopyLastUrl,
+    OpenLastUrl,
+    OpenWindowsTerminal,
+    OpenWindowsTerminalClaude,
+}
+
+/// Build a list of context actions appropriate for the given sidebar item.
+pub fn context_actions_for_item(item: &SidebarItem, wt_available: bool) -> Vec<ContextAction> {
+    match item {
+        SidebarItem::Worktree(_) => {
+            let mut actions = vec![
+                ContextAction { label: "New Claude".into(), hotkey: "c".into(), kind: ContextActionKind::NewClaude },
+                ContextAction { label: "New Claude (YOLO)".into(), hotkey: "C".into(), kind: ContextActionKind::NewClaudeYolo },
+                ContextAction { label: "New Terminal".into(), hotkey: "t".into(), kind: ContextActionKind::NewTerminal },
+                ContextAction { label: "Stage & Commit".into(), hotkey: "s".into(), kind: ContextActionKind::StageCommit },
+                ContextAction { label: "Stage All + AI Commit".into(), hotkey: "^s".into(), kind: ContextActionKind::StageAllClaudeCommit },
+                ContextAction { label: "Push".into(), hotkey: "p".into(), kind: ContextActionKind::Push },
+                ContextAction { label: "Pull".into(), hotkey: "P".into(), kind: ContextActionKind::Pull },
+                ContextAction { label: "Merge Branch".into(), hotkey: "m".into(), kind: ContextActionKind::MergeBranch },
+                ContextAction { label: "New Worktree".into(), hotkey: "n".into(), kind: ContextActionKind::NewWorktree },
+                ContextAction { label: "Copy Last URL".into(), hotkey: "u".into(), kind: ContextActionKind::CopyLastUrl },
+                ContextAction { label: "Open Last URL".into(), hotkey: "U".into(), kind: ContextActionKind::OpenLastUrl },
+                ContextAction { label: "Delete Worktree".into(), hotkey: "d".into(), kind: ContextActionKind::DeleteWorktree },
+                ContextAction { label: "Force Delete Worktree".into(), hotkey: "D".into(), kind: ContextActionKind::ForceDeleteWorktree },
+            ];
+            if wt_available {
+                actions.insert(actions.len() - 2, ContextAction { label: "Windows Terminal".into(), hotkey: "w".into(), kind: ContextActionKind::OpenWindowsTerminal });
+                actions.insert(actions.len() - 2, ContextAction { label: "Win Terminal + Claude".into(), hotkey: "W".into(), kind: ContextActionKind::OpenWindowsTerminalClaude });
+            }
+            actions
+        }
+        SidebarItem::Session(_, _) | SidebarItem::Terminal(_) => {
+            vec![
+                ContextAction { label: "Rename Session".into(), hotkey: "r".into(), kind: ContextActionKind::RenameSession },
+                ContextAction { label: "Copy Last URL".into(), hotkey: "u".into(), kind: ContextActionKind::CopyLastUrl },
+                ContextAction { label: "Open Last URL".into(), hotkey: "U".into(), kind: ContextActionKind::OpenLastUrl },
+                ContextAction { label: "Delete Session".into(), hotkey: "d".into(), kind: ContextActionKind::DeleteSession },
+            ]
+        }
+    }
+}
+
 /// Dialog types.
 #[derive(Debug, Clone)]
 pub enum Dialog {
@@ -267,6 +333,12 @@ pub enum Dialog {
         operation: String,  // "push", "pull", "clone"
         message: String,    // the raw git error
         selected: usize,    // 0 = Dismiss
+    },
+    /// Right-click / "+" context menu for sidebar items.
+    ContextMenu {
+        item: SidebarItem,
+        selected: usize,
+        actions: Vec<ContextAction>,
     },
     /// Interactive staging and commit UI.
     GitCommit {
@@ -361,6 +433,8 @@ pub struct App {
     pub pending_action: Option<PendingAction>,
     pub should_quit: bool,
     pub sidebar_selected: usize,
+    pub sidebar_hovered: Option<usize>,
+    pub terminal_panel_hovered: Option<usize>,
     pub sidebar_items: Vec<SidebarItem>,
     pub event_tx: mpsc::UnboundedSender<AppEvent>,
     pub status_message: Option<String>,
@@ -468,6 +542,8 @@ impl App {
             pending_action: None,
             should_quit: false,
             sidebar_selected: 0,
+            sidebar_hovered: None,
+            terminal_panel_hovered: None,
             sidebar_items: Vec::new(),
             event_tx,
             status_message: None,

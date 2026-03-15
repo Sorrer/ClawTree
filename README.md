@@ -16,7 +16,7 @@
 
 ---
 
-Built for the **bare repository** workflow where a project uses a `.bare/` directory with multiple worktree directories for different branches.
+One terminal, multiple Claude sessions — all visible at a glance.
 
 
 >Behind the Project:
@@ -104,13 +104,18 @@ Once initialized, clawtree opens the main interface where you can browse your wo
 ## Features
 
 ### Worktree Management
+
+<p align="center">
+  <img src="docs/diagrams/no-tabs-yes-sidebar.svg" alt="No terminal tabs, yes worktree sidebar" width="700">
+</p>
+
 - Browse, create, and delete worktrees from a sidebar tree view
 - Initialize new bare repos or clone from a remote URL
 - Convert existing repos to the bare worktree layout
 - Live git status updates per worktree
 
 <p align="center">
-  <img src="docs/screenshots/worktree-management.png" alt="Worktree management" width="800">
+  <img src="docs/screenshots/worktree-sidebar.png" alt="Worktree sidebar" width="400">
 </p>
 
 ### Git Operations

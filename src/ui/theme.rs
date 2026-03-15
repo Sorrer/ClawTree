@@ -20,6 +20,7 @@ pub struct Theme {
     pub sidebar_sel_bg: Color,
     pub sidebar_active_bg: Color,
     pub sidebar_sel_active_bg: Color,
+    pub sidebar_hover_bg: Color,
     pub status_bar_bg: Color,
     pub scrollbar_track: Color,
     pub mini_drilldown_header_bg: Color,
@@ -37,6 +38,7 @@ impl Theme {
                 sidebar_sel_bg: Color::Rgb(50, 50, 60),
                 sidebar_active_bg: Color::Rgb(30, 50, 35),
                 sidebar_sel_active_bg: Color::Rgb(40, 55, 50),
+                sidebar_hover_bg: Color::Rgb(40, 40, 48),
                 status_bar_bg: Color::Rgb(30, 30, 30),
                 scrollbar_track: Color::Rgb(40, 40, 40),
                 mini_drilldown_header_bg: Color::Rgb(60, 30, 60),
@@ -49,6 +51,7 @@ impl Theme {
                 sidebar_sel_bg: Color::Indexed(236),
                 sidebar_active_bg: Color::Indexed(22),
                 sidebar_sel_active_bg: Color::Indexed(23),
+                sidebar_hover_bg: Color::Indexed(237),
                 status_bar_bg: Color::Indexed(235),
                 scrollbar_track: Color::Indexed(236),
                 mini_drilldown_header_bg: Color::Indexed(53),
@@ -61,6 +64,7 @@ impl Theme {
                 sidebar_sel_bg: Color::DarkGray,
                 sidebar_active_bg: Color::DarkGray,
                 sidebar_sel_active_bg: Color::DarkGray,
+                sidebar_hover_bg: Color::DarkGray,
                 status_bar_bg: Color::DarkGray,
                 scrollbar_track: Color::DarkGray,
                 mini_drilldown_header_bg: Color::Magenta,
@@ -168,6 +172,10 @@ pub const AGENT_WORKING: Color = Color::Yellow;
 pub const AGENT_IDLE: Color = Color::Green;
 pub const AGENT_NEEDS_INPUT: Color = Color::Cyan;
 pub const AGENT_EXITED: Color = Color::DarkGray;
+pub const AGENT_PLANNING: Color = Color::Magenta;
+
+/// Icon Claude Code uses in the bottom bar when plan mode is active.
+pub const PLAN_MODE_ICON: char = '\u{23F8}'; // ⏸
 
 // ── Brand logo (big) ────────────────────────────────────────────
 //  Three claw marks + box-drawing "CLAWTREE"

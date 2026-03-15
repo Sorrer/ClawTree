@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
-use crate::app::{App, CommitPhase, Dialog};
+use crate::app::{App, CommitPhase, ContextAction, ContextActionKind, Dialog, SidebarItem};
 use super::theme;
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -103,6 +103,13 @@ pub fn draw(f: &mut Frame, app: &App) {
             selected,
         } => {
             draw_auth_error(f, app, operation, message, *selected);
+        }
+        Dialog::ContextMenu {
+            item,
+            selected,
+            actions,
+        } => {
+            draw_context_menu(f, app, item, *selected, actions);
         }
         Dialog::ConvertRepo {
             mode,
@@ -1602,5 +1609,108 @@ fn draw_convert_repo(
         Paragraph::new("Tab:next  Left/Right:mode  Enter:convert  Esc:cancel")
             .style(Style::default().fg(Color::DarkGray)),
         chunks[idx],
+    );
+}
+
+fn draw_context_menu(
+    f: &mut Frame,
+    app: &App,
+    item: &SidebarItem,
+    selected: usize,
+    actions: &[ContextAction],
+) {
+    // Determine title from the item
+    let title = match item {
+        SidebarItem::Worktree(wi) => {
+            app.worktrees.get(*wi)
+                .map(|wt| format!(" {} ", wt.branch))
+                .unwrap_or_else(|| " Actions ".to_string())
+        }
+        SidebarItem::Session(wi, si) => {
+            app.worktrees.get(*wi)
+                .and_then(|wt| wt.session_ids.get(*si))
+                .and_then(|sid| app.sessions.get(sid))
+                .and_then(|s| s.nickname.clone().or_else(|| s.terminal_title()).or_else(|| Some(s.label.clone())))
+                .map(|n| format!(" {} ", n))
+                .unwrap_or_else(|| " Actions ".to_string())
+        }
+        SidebarItem::Terminal(ti) => {
+            app.terminal_ids.get(*ti)
+                .and_then(|sid| app.sessions.get(sid))
+                .and_then(|s| s.nickname.clone().or_else(|| Some(s.label.clone())))
+                .map(|n| format!(" {} ", n))
+                .unwrap_or_else(|| " Actions ".to_string())
+        }
+    };
+
+    // Height: borders(2) + actions + footer(1)
+    let height = (actions.len() as u16) + 4;
+    let area = centered_rect(50, height, f.area());
+    app.areas.dialog.set(area);
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::DIALOG_NEUTRAL));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),    // action list
+            Constraint::Length(1), // help
+        ])
+        .split(inner);
+
+    let inner_w = chunks[0].width as usize;
+
+    let items: Vec<ListItem> = actions
+        .iter()
+        .enumerate()
+        .map(|(idx, action)| {
+            let is_sel = idx == selected;
+            let is_destructive = matches!(
+                action.kind,
+                ContextActionKind::DeleteWorktree
+                | ContextActionKind::ForceDeleteWorktree
+                | ContextActionKind::DeleteSession
+            );
+
+            let marker = if is_sel { " > " } else { "   " };
+            let label = &action.label;
+            let hotkey = &action.hotkey;
+
+            // Right-align the hotkey hint
+            let padding = inner_w.saturating_sub(marker.len() + label.len() + hotkey.len() + 3);
+            let padded = " ".repeat(padding);
+
+            let fg = if is_destructive {
+                Color::Red
+            } else if is_sel {
+                Color::Cyan
+            } else {
+                Color::White
+            };
+            let bold_mod = if is_sel { Modifier::BOLD } else { Modifier::empty() };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(marker.to_string(), Style::default().fg(fg).add_modifier(bold_mod)),
+                Span::styled(label.clone(), Style::default().fg(fg).add_modifier(bold_mod)),
+                Span::styled(padded, Style::default()),
+                Span::styled(format!("[{}]", hotkey), Style::default().fg(Color::DarkGray)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, chunks[0]);
+
+    f.render_widget(
+        Paragraph::new("j/k: navigate  Enter: select  Esc: close")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[1],
     );
 }

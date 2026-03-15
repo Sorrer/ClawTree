@@ -240,6 +240,35 @@ pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf)> {
     results
 }
 
+/// List just the names of all tmux sessions that belong to us.
+/// Cheaper than `list_tmux_sessions()` — skips worktree path resolution.
+pub fn list_tmux_session_names() -> Vec<String> {
+    let output = match Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let prefixes = all_tmux_prefixes();
+    stdout
+        .lines()
+        .filter(|name| prefixes.iter().any(|pfx| name.starts_with(pfx)))
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Kill a tmux session by name. Returns true if the kill command succeeded.
+pub fn kill_tmux_session(name: &str) -> bool {
+    Command::new("tmux")
+        .args(["kill-session", "-t", name])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Spawn a `claude` process inside a tmux session, then attach to it via PTY.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_claude_pty_tmux(

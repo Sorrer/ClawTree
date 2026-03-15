@@ -187,7 +187,13 @@ fn draw_session_detail(
         .trim_start()
         .to_string();
 
-    let title = format!(" {} ", clean_name);
+    let in_plan_mode = session.map(|s| s.is_in_plan_mode()).unwrap_or(false);
+
+    let title = if in_plan_mode {
+        format!(" {} {} ", theme::PLAN_MODE_ICON, clean_name)
+    } else {
+        format!(" {} ", clean_name)
+    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -205,19 +211,32 @@ fn draw_session_detail(
         .map(|s| s.agent_status())
         .unwrap_or(AgentStatus::Exited);
 
-    let (status_text, status_color) = match status {
-        AgentStatus::Working => ("Working", theme::AGENT_WORKING),
-        AgentStatus::Idle => ("Idle", theme::AGENT_IDLE),
-        AgentStatus::NeedsInput => ("Needs Input", theme::AGENT_NEEDS_INPUT),
-        AgentStatus::Exited => ("Exited", theme::AGENT_EXITED),
+    let (status_text, status_color) = if in_plan_mode {
+        match status {
+            AgentStatus::Working => ("Planning", theme::AGENT_PLANNING),
+            AgentStatus::Idle => ("Plan Mode", theme::AGENT_PLANNING),
+            AgentStatus::NeedsInput => ("Plan: Needs Input", theme::AGENT_PLANNING),
+            AgentStatus::Exited => ("Exited", theme::AGENT_EXITED),
+        }
+    } else {
+        match status {
+            AgentStatus::Working => ("Working", theme::AGENT_WORKING),
+            AgentStatus::Idle => ("Idle", theme::AGENT_IDLE),
+            AgentStatus::NeedsInput => ("Needs Input", theme::AGENT_NEEDS_INPUT),
+            AgentStatus::Exited => ("Exited", theme::AGENT_EXITED),
+        }
     };
 
     // Status icon
-    let status_icon: String = match status {
-        AgentStatus::Exited => "✗".to_string(),
-        AgentStatus::Working => spinner_char(app).to_string(),
-        AgentStatus::NeedsInput => "●".to_string(),
-        AgentStatus::Idle => "○".to_string(),
+    let status_icon: String = if in_plan_mode && status != AgentStatus::Exited {
+        format!("{}", theme::PLAN_MODE_ICON)
+    } else {
+        match status {
+            AgentStatus::Exited => "✗".to_string(),
+            AgentStatus::Working => spinner_char(app).to_string(),
+            AgentStatus::NeedsInput => "●".to_string(),
+            AgentStatus::Idle => "○".to_string(),
+        }
     };
 
     // Usage info

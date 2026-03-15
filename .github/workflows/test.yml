@@ -99,3 +99,16 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy -- -D warnings
+
+  claude-code-strings:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify Claude Code UI strings
+        run: tests/check_claude_code_strings.sh
