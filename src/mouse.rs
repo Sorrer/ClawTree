@@ -562,6 +562,12 @@ fn clamp_terminal_scroll(app: &mut App) {
 }
 
 fn scroll_info_panel(app: &mut App, up: bool) {
+    if up {
+        app.info_panel_scroll = app.info_panel_scroll.saturating_sub(keys::SCROLL_LINES);
+    } else {
+        app.info_panel_scroll = app.info_panel_scroll.saturating_add(keys::SCROLL_LINES);
+    }
+    // Also move cursor within file lists for focused navigation
     let (unstaged, staged) = app.info_panel_file_lists();
     let section_len = if app.info_panel_section == 0 { unstaged.len() } else { staged.len() };
     if section_len == 0 {

@@ -527,6 +527,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
 
 fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     let (unstaged, staged) = app.info_panel_file_lists();
+    let visible_height = app.areas.terminal_pane_inner.get().height.saturating_sub(1) as usize;
 
     match key.code {
         // Navigation
@@ -535,11 +536,13 @@ fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)
             if len > 0 && app.info_panel_cursor + 1 < len {
                 app.info_panel_cursor += 1;
             }
+            app.ensure_info_cursor_visible(visible_height);
         }
         KeyCode::Char('k') | KeyCode::Up => {
             if app.info_panel_cursor > 0 {
                 app.info_panel_cursor -= 1;
             }
+            app.ensure_info_cursor_visible(visible_height);
         }
         // Switch between unstaged/staged sections
         KeyCode::Tab => {
@@ -553,6 +556,7 @@ fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)
                 // No other section to switch to — go back to sidebar
                 app.escape_to_sidebar();
             }
+            app.ensure_info_cursor_visible(visible_height);
         }
         KeyCode::Esc => {
             app.escape_to_sidebar();
@@ -2447,7 +2451,12 @@ pub fn handle_git_commit_claude_message(app: &mut App) {
 
     // Truncate to ~8000 chars to avoid overwhelming the model
     let diff_truncated = if diff.len() > 8000 {
-        format!("{}...\n[truncated]", &diff[..8000])
+        // Find the nearest char boundary at or before byte 8000
+        let mut end = 8000;
+        while !diff.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...\n[truncated]", &diff[..end])
     } else {
         diff
     };

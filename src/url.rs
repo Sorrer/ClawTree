@@ -37,10 +37,13 @@ impl Default for UrlCache {
 }
 
 /// Get the compiled URL regex (compiled once, reused forever).
+///
+/// Uses an ASCII whitelist so that Unicode punctuation (em dashes, box-drawing
+/// characters, etc.) naturally terminates URL matches instead of being consumed.
 fn url_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"https?://[^\s<>"'`\\\]|)}>]+"#).unwrap()
+        Regex::new(r#"https?://[A-Za-z0-9\-._~:/?#\[@!$&*+,;=%]+"#).unwrap()
     })
 }
 
@@ -513,6 +516,215 @@ mod tests {
         assert_eq!(urls[0].spans[1].row, 1);
         assert_eq!(urls[0].spans[1].col_start, 0);
         assert_eq!(urls[0].spans[1].col_end, 5);
+    }
+
+    // ── Unicode delimiter tests ──────────────────────────────────────
+
+    #[test]
+    fn url_stops_at_em_dash() {
+        // Em dash (U+2014) should not be consumed as part of a URL.
+        let urls = detect("Visit http://localhost:5174—navigate routes");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "http://localhost:5174");
+    }
+
+    #[test]
+    fn url_stops_at_em_dash_with_spaces() {
+        let urls = detect("http://localhost:5174 — navigate all routes");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "http://localhost:5174");
+    }
+
+    #[test]
+    fn url_stops_at_box_drawing() {
+        // Box-drawing │ (U+2502) should not be consumed as part of a URL.
+        let urls = detect("│ http://localhost:5174 │ more text");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "http://localhost:5174");
+    }
+
+    #[test]
+    fn url_not_extended_through_box_border() {
+        // Simulate a box-drawn table line where URL is followed directly
+        // by a box-drawing character (no space).
+        let urls = detect("http://localhost:8080│next cell");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "http://localhost:8080");
+    }
+
+    #[test]
+    fn box_drawn_table_with_urls_and_em_dashes() {
+        // Real-world scenario: Claude output with box-drawn table containing
+        // URLs followed by em dashes. Only the localhost URLs should be
+        // detected, not extending through the em dashes or box borders.
+        let text = concat!(
+            "│ 1. Dev mode: docker compose --profile dev up\r\n",
+            "│   - Landing at http://localhost:5174 — navigate all routes, verify styles\r\n",
+            "│   - App at http://localhost:5173 — verify auth flow still works\r\n",
+            "│ 2. Prod mode: docker compose --profile prod up --build\r\n",
+            "│   - Landing at http://localhost:8080 — verify Nginx serves SPA correctly\r\n",
+            "│   - App at http://localhost:8081 — verify Nginx SPA routing works\r\n",
+            "│ 3. Local dev (without Docker):",
+        );
+        let urls = detect(text);
+        assert_eq!(urls.len(), 4);
+        assert_eq!(urls[0].url, "http://localhost:5174");
+        assert_eq!(urls[1].url, "http://localhost:5173");
+        assert_eq!(urls[2].url, "http://localhost:8080");
+        assert_eq!(urls[3].url, "http://localhost:8081");
+    }
+
+    // ── URL character coverage tests ────────────────────────────────
+
+    #[test]
+    fn url_with_fragment() {
+        let urls = detect("See https://docs.rs/regex/latest/regex/#syntax for details");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://docs.rs/regex/latest/regex/#syntax");
+    }
+
+    #[test]
+    fn url_with_percent_encoding() {
+        let urls = detect("https://example.com/path%20with%20spaces/file.txt");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com/path%20with%20spaces/file.txt");
+    }
+
+    #[test]
+    fn url_with_port() {
+        let urls = detect("Running at http://127.0.0.1:3000/api/v1");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "http://127.0.0.1:3000/api/v1");
+    }
+
+    #[test]
+    fn url_with_auth_info() {
+        let urls = detect("http://user:pass@host.com/path");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "http://user:pass@host.com/path");
+    }
+
+    #[test]
+    fn url_with_complex_query() {
+        let urls = detect("https://search.com/q?term=foo+bar&lang=en&page=1#results");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://search.com/q?term=foo+bar&lang=en&page=1#results");
+    }
+
+    #[test]
+    fn url_with_tilde_and_underscore() {
+        let urls = detect("https://example.com/~user/my_file.html");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com/~user/my_file.html");
+    }
+
+    // ── Unicode punctuation boundary tests ──────────────────────────
+
+    #[test]
+    fn url_stops_at_en_dash() {
+        // En dash (U+2013) should not be consumed.
+        let urls = detect("http://example.com–more text");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "http://example.com");
+    }
+
+    #[test]
+    fn url_stops_at_bullet() {
+        // Bullet (U+2022) should not be consumed.
+        let urls = detect("http://example.com•next item");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "http://example.com");
+    }
+
+    #[test]
+    fn url_stops_at_arrow() {
+        // Right arrow (U+2192) should not be consumed.
+        let urls = detect("http://example.com→click here");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "http://example.com");
+    }
+
+    #[test]
+    fn url_stops_at_ellipsis() {
+        // Horizontal ellipsis (U+2026) should not be consumed.
+        let urls = detect("http://example.com/path…");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "http://example.com/path");
+    }
+
+    #[test]
+    fn url_stops_at_smart_quotes() {
+        // Curly/smart quotes (U+201C, U+201D) should not be consumed.
+        let urls = detect("\u{201c}https://example.com\u{201d}");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com");
+    }
+
+    #[test]
+    fn url_stops_at_fullwidth_chars() {
+        // Fullwidth parenthesis (U+FF08, U+FF09) should not be consumed.
+        let urls = detect("\u{ff08}https://example.com\u{ff09}");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com");
+    }
+
+    // ── Delimiter boundary tests ────────────────────────────────────
+
+    #[test]
+    fn url_stops_at_backtick() {
+        let urls = detect("`https://example.com`");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com");
+    }
+
+    #[test]
+    fn url_stops_at_pipe() {
+        let urls = detect("http://example.com|other column");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "http://example.com");
+    }
+
+    #[test]
+    fn url_stops_at_close_paren() {
+        // Markdown-style link: [text](url)
+        let urls = detect("[click](https://example.com/path)");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com/path");
+    }
+
+    #[test]
+    fn url_stops_at_close_brace() {
+        let urls = detect("{https://example.com}");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com");
+    }
+
+    #[test]
+    fn url_stops_at_close_bracket() {
+        let urls = detect("[https://example.com]");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com");
+    }
+
+    #[test]
+    fn strips_trailing_comma() {
+        let urls = detect("see https://example.com, then continue");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com");
+    }
+
+    #[test]
+    fn strips_trailing_semicolon() {
+        let urls = detect("url: https://example.com;");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com");
+    }
+
+    #[test]
+    fn strips_trailing_colon() {
+        let urls = detect("see https://example.com:");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com");
     }
 
     #[test]

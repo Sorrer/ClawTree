@@ -426,6 +426,8 @@ pub struct App {
     /// Cursor position for interactive file list in the info panel.
     pub info_panel_section: usize,  // 0=unstaged, 1=staged
     pub info_panel_cursor: usize,   // index within current section
+    /// Scroll offset for the worktree info panel content.
+    pub info_panel_scroll: usize,
     pub dialog: Option<Dialog>,
     /// Loading overlay message shown during blocking git operations.
     pub loading_message: Option<String>,
@@ -539,6 +541,7 @@ impl App {
             worktree_status: None,
             info_panel_section: 0,
             info_panel_cursor: 0,
+            info_panel_scroll: 0,
             dialog: None,
             loading_message: None,
             pending_action: None,
@@ -773,6 +776,7 @@ impl App {
                     self.active_worktree_idx = Some(wi);
                     self.info_panel_section = 0;
                     self.info_panel_cursor = 0;
+                    self.info_panel_scroll = 0;
                     self.terminal_scroll = 0;
                     // Use cached status immediately if available (no blocking)
                     self.worktree_status = self.worktree_statuses.get(&wt_path).cloned();
@@ -866,6 +870,44 @@ impl App {
             self.info_panel_cursor = 0;
         } else if self.info_panel_cursor >= len {
             self.info_panel_cursor = len - 1;
+        }
+    }
+
+    /// Compute the line index of the current cursor position in the info panel
+    /// content (matching the line vector built in `draw_worktree_info`).
+    pub fn info_panel_cursor_line(&self) -> usize {
+        let (unstaged, staged) = self.info_panel_file_lists();
+        let has_files = self.worktree_status.as_ref().map_or(false, |s| !s.files.is_empty());
+        if !has_files {
+            return 0;
+        }
+        // Fixed header: Branch, HEAD, Refresh, blank = 4 lines
+        // Then Unstaged header = line 4
+        let unstaged_start = 5; // first unstaged file line
+        if self.info_panel_section == 0 {
+            // Cursor is in the unstaged section
+            let item_count = if unstaged.is_empty() { 1 } else { unstaged.len() };
+            return unstaged_start + self.info_panel_cursor.min(item_count.saturating_sub(1));
+        }
+        // Section 1 (staged): skip unstaged items + blank + staged header
+        let unstaged_lines = if unstaged.is_empty() { 1 } else { unstaged.len() };
+        let staged_start = unstaged_start + unstaged_lines + 2; // blank + staged header
+        staged_start + self.info_panel_cursor.min(staged.len().saturating_sub(1))
+    }
+
+    /// Adjust `info_panel_scroll` so the cursor line is visible within `visible_height` rows.
+    pub fn ensure_info_cursor_visible(&mut self, visible_height: usize) {
+        if visible_height == 0 {
+            return;
+        }
+        let cursor_line = self.info_panel_cursor_line();
+        // Scroll up if cursor is above viewport
+        if cursor_line < self.info_panel_scroll {
+            self.info_panel_scroll = cursor_line;
+        }
+        // Scroll down if cursor is below viewport
+        if cursor_line >= self.info_panel_scroll + visible_height {
+            self.info_panel_scroll = cursor_line + 1 - visible_height;
         }
     }
 

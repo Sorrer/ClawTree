@@ -351,20 +351,28 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
         ])
     };
 
-    // Place hints at the bottom of the area
-    let content_len = lines.len();
-    let available = area.height as usize;
-    if available > content_len + 2 {
-        for _ in 0..(available - content_len - 1) {
-            lines.push(Line::raw(""));
-        }
-    } else {
-        lines.push(Line::raw(""));
-    }
-    lines.push(hints);
+    // Split area: content on top, hints pinned at bottom
+    let content_height = area.height.saturating_sub(1);
+    let content_area = Rect { height: content_height, ..area };
+    let hints_area = Rect {
+        y: area.y + content_height,
+        height: 1,
+        ..area
+    };
 
-    let paragraph = Paragraph::new(lines);
-    f.render_widget(paragraph, area);
+    // Render scrollable content
+    let total_lines = lines.len();
+    let visible = content_area.height as usize;
+    // Clamp scroll so we don't scroll past the content
+    let max_scroll = total_lines.saturating_sub(visible);
+    let scroll = app.info_panel_scroll.min(max_scroll);
+
+    let paragraph = Paragraph::new(lines).scroll((scroll as u16, 0));
+    f.render_widget(paragraph, content_area);
+
+    // Render hints pinned at bottom
+    let hints_paragraph = Paragraph::new(hints);
+    f.render_widget(hints_paragraph, hints_area);
 }
 
 /// Color for a file status character.
