@@ -16,7 +16,7 @@
 
 ---
 
-A terminal UI for managing git worktrees with integrated Claude Code sessions.
+A terminal UI for empowering your parallized usage of claude and git worktrees.
 
 
 >Behind the Project:
