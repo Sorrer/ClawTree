@@ -1,3 +1,7 @@
+// Key handling uses intentional `if` guards inside match arms for readability;
+// collapsing them into match guards would hurt clarity in this dense dispatch code.
+#![allow(clippy::collapsible_match)]
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, CommitPhase, ConfirmAction, ContextActionKind, Dialog, FocusTarget, InputMode, MiniModeFocus, PendingAction, ScreenMode, SidebarItem, SavedPrompt, StatusSeverity};

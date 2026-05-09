@@ -568,10 +568,14 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                                 }
                                 needs_redraw = true;
                             }
+                            #[allow(clippy::collapsible_match)]
                             MouseEventKind::Drag(MouseButton::Left) => {
                                 // Update text selection endpoint while dragging.
                                 // Use clamped variant so dragging outside the pane
                                 // extends the selection to the edge instead of freezing.
+                                // Note: split borrows intentional — mutable borrow of
+                                // text_selection cannot overlap with &app passed to
+                                // screen_to_vt100_clamped.
                                 if app.text_selection.is_some() {
                                     if let Some(pos) = mouse::screen_to_vt100_clamped(&app, mouse.column, mouse.row) {
                                         if let Some(ref mut sel) = app.text_selection {
