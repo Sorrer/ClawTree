@@ -284,6 +284,15 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
     let mut app = App::new(bare_repo_path.clone(), event_tx.clone(), repo_detected, tmux_available, wt_available);
     app.regular_repo_path = regular_repo_path;
 
+    // Auto-detect whether to open init or convert dialog
+    if !repo_detected {
+        if app.regular_repo_path.is_some() {
+            app.auto_init_pending = Some(app::AutoInitKind::Convert);
+        } else {
+            app.auto_init_pending = Some(app::AutoInitKind::Init);
+        }
+    }
+
     // Set the outer terminal title to the repo name
     let repo_name = bare_repo_path
         .file_name()
@@ -356,6 +365,10 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
 
             // Load saved prompt templates for mini mode
             app.load_saved_prompts();
+
+            // Auto-select the Project overview on startup
+            app.sidebar_selected = 0; // Project is always index 0
+            app.project_overview_active = true;
         }
     }
 
@@ -946,6 +959,34 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                         needs_redraw = true;
                     }
                     AppEvent::Tick => {
+                        // Auto-trigger init/convert dialog on first tick
+                        if let Some(kind) = app.auto_init_pending.take() {
+                            match kind {
+                                app::AutoInitKind::Convert => {
+                                    if let Some(ref repo_path) = app.regular_repo_path {
+                                        let branch = worktree::git::current_branch_name(repo_path)
+                                            .unwrap_or_else(|_| "main".to_string());
+                                        let source = repo_path.clone();
+                                        app.open_dialog(Dialog::ConvertRepo {
+                                            mode: 0,
+                                            target_path_input: String::new(),
+                                            branch_name: branch,
+                                            focused_field: 0,
+                                            source_repo_path: source,
+                                            confirmed: false,
+                                        });
+                                    }
+                                }
+                                app::AutoInitKind::Init => {
+                                    app.open_dialog(Dialog::InitRepo {
+                                        url_input: String::new(),
+                                        branch_input: "main".to_string(),
+                                        focused_field: 0,
+                                    });
+                                }
+                            }
+                        }
+
                         // Auto-re-enable mouse capture after text selection timeout.
                         if let Some(disabled_at) = app.mouse_capture_disabled_at {
                             if !app.mouse_captured && disabled_at.elapsed() > Duration::from_secs(2) {

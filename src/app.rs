@@ -217,6 +217,13 @@ pub enum ContextActionKind {
 /// Build a list of context actions appropriate for the given sidebar item.
 pub fn context_actions_for_item(item: &SidebarItem, wt_available: bool) -> Vec<ContextAction> {
     match item {
+        SidebarItem::Project => {
+            vec![
+                ContextAction { label: "New Claude".into(), hotkey: "c".into(), kind: ContextActionKind::NewClaude },
+                ContextAction { label: "New Terminal".into(), hotkey: "t".into(), kind: ContextActionKind::NewTerminal },
+                ContextAction { label: "New Worktree".into(), hotkey: "n".into(), kind: ContextActionKind::NewWorktree },
+            ]
+        }
         SidebarItem::Worktree(_) => {
             let mut actions = vec![
                 ContextAction { label: "New Claude".into(), hotkey: "c".into(), kind: ContextActionKind::NewClaude },
@@ -239,7 +246,7 @@ pub fn context_actions_for_item(item: &SidebarItem, wt_available: bool) -> Vec<C
             }
             actions
         }
-        SidebarItem::Session(_, _) | SidebarItem::Terminal(_) => {
+        SidebarItem::ProjectSession(_) | SidebarItem::Session(_, _) | SidebarItem::Terminal(_) => {
             vec![
                 ContextAction { label: "Rename Session".into(), hotkey: "r".into(), kind: ContextActionKind::RenameSession },
                 ContextAction { label: "Copy Last URL".into(), hotkey: "u".into(), kind: ContextActionKind::CopyLastUrl },
@@ -397,9 +404,22 @@ pub enum PendingAction {
     },
 }
 
+/// Whether to auto-open the init or convert dialog on first tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoInitKind {
+    /// Auto-open the convert dialog (regular .git repo detected).
+    Convert,
+    /// Auto-open the init dialog (no repo detected at all).
+    Init,
+}
+
 /// Sidebar item types for the tree view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarItem {
+    /// Global project overview (always first in the sidebar).
+    Project,
+    /// A session spawned at the project root (index into app.project_session_ids).
+    ProjectSession(usize),
     Worktree(usize),
     Session(usize, usize), // (worktree_index, session_index within worktree)
     Terminal(usize),        // index into app.terminal_ids
@@ -422,6 +442,12 @@ pub struct App {
     pub input_mode: InputMode,
     pub active_session_id: Option<u64>,
     pub active_worktree_idx: Option<usize>,
+    /// Whether the project overview panel is being displayed.
+    pub project_overview_active: bool,
+    /// Session IDs for sessions spawned at the project root.
+    pub project_session_ids: Vec<u64>,
+    /// Whether the Project entry is expanded (showing its sessions).
+    pub project_expanded: bool,
     pub worktree_status: Option<WorktreeStatus>,
     /// Cursor position for interactive file list in the info panel.
     pub info_panel_section: usize,  // 0=unstaged, 1=staged
@@ -447,6 +473,8 @@ pub struct App {
     pub repo_detected: bool,
     /// Path to a regular (non-bare) git repo detected at startup, if any.
     pub regular_repo_path: Option<PathBuf>,
+    /// Auto-open init or convert dialog on first tick (consumed once).
+    pub auto_init_pending: Option<AutoInitKind>,
     /// Whether tmux is available for session persistence.
     pub tmux_available: bool,
     /// Whether wt.exe (Windows Terminal) is available.
@@ -538,6 +566,9 @@ impl App {
             input_mode: InputMode::Normal,
             active_session_id: None,
             active_worktree_idx: None,
+            project_overview_active: false,
+            project_session_ids: Vec::new(),
+            project_expanded: true,
             worktree_status: None,
             info_panel_section: 0,
             info_panel_cursor: 0,
@@ -557,6 +588,7 @@ impl App {
             sidebar_visible: true,
             repo_detected,
             regular_repo_path: None,
+            auto_init_pending: None,
             tmux_available,
             wt_available,
             last_terminal_size: crossterm::terminal::size().unwrap_or((80, 24)),
@@ -606,9 +638,9 @@ impl App {
                 if self.active_session_id.is_some() {
                     self.focus = FocusTarget::TerminalPane;
                     self.input_mode = InputMode::Terminal;
-                } else if self.active_worktree_idx.is_some() {
+                } else if self.active_worktree_idx.is_some() || self.project_overview_active {
                     self.focus = FocusTarget::TerminalPane;
-                    // Stay in Normal mode — info panel handles keys differently
+                    // Stay in Normal mode — info/overview panel handles keys differently
                 }
             }
             FocusTarget::TerminalPane => {
@@ -636,6 +668,13 @@ impl App {
     /// Rebuild the flat sidebar_items list from worktrees and sessions.
     pub fn rebuild_sidebar_items(&mut self) {
         self.sidebar_items.clear();
+        // Project overview is always the first item
+        self.sidebar_items.push(SidebarItem::Project);
+        if self.project_expanded {
+            for (si, _sid) in self.project_session_ids.iter().enumerate() {
+                self.sidebar_items.push(SidebarItem::ProjectSession(si));
+            }
+        }
         for (wi, wt) in self.worktrees.iter().enumerate() {
             self.sidebar_items.push(SidebarItem::Worktree(wi));
             if wt.expanded {
@@ -744,18 +783,45 @@ impl App {
     }
 
     pub fn toggle_expand(&mut self) {
-        if let Some(SidebarItem::Worktree(wi)) = self.selected_sidebar_item() {
-            if let Some(wt) = self.worktrees.get_mut(wi) {
-                wt.expanded = !wt.expanded;
+        match self.selected_sidebar_item() {
+            Some(SidebarItem::Project) | Some(SidebarItem::ProjectSession(_)) => {
+                self.project_expanded = !self.project_expanded;
                 self.rebuild_sidebar_items();
             }
+            Some(SidebarItem::Worktree(wi)) => {
+                if let Some(wt) = self.worktrees.get_mut(wi) {
+                    wt.expanded = !wt.expanded;
+                    self.rebuild_sidebar_items();
+                }
+            }
+            _ => {}
         }
     }
 
     pub fn activate_selected(&mut self) {
         self.text_selection = None;
         match self.selected_sidebar_item() {
+            Some(SidebarItem::Project) => {
+                self.active_session_id = None;
+                self.active_worktree_idx = None;
+                self.worktree_status = None;
+                self.project_overview_active = true;
+                self.terminal_scroll = 0;
+            }
+            Some(SidebarItem::ProjectSession(si)) => {
+                self.project_overview_active = false;
+                if let Some(&sid) = self.project_session_ids.get(si) {
+                    self.active_session_id = Some(sid);
+                    self.active_worktree_idx = None;
+                    self.worktree_status = None;
+                    self.terminal_scroll = 0;
+                    self.focus = FocusTarget::TerminalPane;
+                    self.input_mode = InputMode::Terminal;
+                    self.url_cache_dirty = true;
+                }
+            }
             Some(SidebarItem::Session(wi, si)) => {
+                self.project_overview_active = false;
                 if let Some(wt) = self.worktrees.get(wi) {
                     if let Some(&sid) = wt.session_ids.get(si) {
                         self.active_session_id = Some(sid);
@@ -769,6 +835,7 @@ impl App {
                 }
             }
             Some(SidebarItem::Worktree(wi)) => {
+                self.project_overview_active = false;
                 if let Some(wt) = self.worktrees.get(wi) {
                     let wt_path = wt.path.clone();
                     // Show worktree info panel
@@ -793,6 +860,7 @@ impl App {
                 }
             }
             Some(SidebarItem::Terminal(ti)) => {
+                self.project_overview_active = false;
                 if let Some(&sid) = self.terminal_ids.get(ti) {
                     self.active_session_id = Some(sid);
                     self.active_worktree_idx = None;
@@ -1012,6 +1080,7 @@ impl App {
                 }
             }
         }
+        // Note: Project item is not shown in mini mode (it's a normal-mode-only feature)
         if !self.mini.items.is_empty() && self.mini.selected >= self.mini.items.len() {
             self.mini.selected = self.mini.items.len() - 1;
         }

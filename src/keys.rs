@@ -188,6 +188,31 @@ const MINI_MODE_KEYS: &[KeyEntry] = &[
     ("(detail)",                "Type + Enter: send to agent"),
 ];
 
+/// Quick-start keybindings shown on the Project overview panel.
+/// This is the single source of truth — the overview derives from here.
+pub const QUICK_START_KEYS: &[KeyEntry] = &[
+    section("Navigation"),
+    ("Up / Down",               "Move between worktrees & sessions"),
+    ("Enter",                   "Select / activate item"),
+    ("Space",                   "Expand / collapse worktree"),
+    ("Tab",                     "Switch focus: sidebar / terminal"),
+    section("Create Sessions"),
+    ("c",                       "New Claude session"),
+    ("Shift + C",               "New Claude session (YOLO mode)"),
+    ("t",                       "New terminal session"),
+    section("Worktree Management"),
+    ("n",                       "Create a new worktree"),
+    ("d",                       "Delete session / worktree"),
+    ("m",                       "Merge branch into another"),
+    section("Git"),
+    ("s",                       "Stage & commit"),
+    ("p / Shift + P",           "Push / pull"),
+    section("Other"),
+    ("?",                       "Full keybinding reference"),
+    ("F2",                      "Toggle Mini Mode"),
+    ("Ctrl + Q",                "Quit"),
+];
+
 const INFO_PANEL_KEYS: &[KeyEntry] = &[
     section("Navigation"),
     ("j / Down",                "Navigate files"),
@@ -361,10 +386,31 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         return;
     }
 
+    // Project overview focused — handle project-level keys
+    if app.focus == FocusTarget::TerminalPane && app.project_overview_active {
+        match key.code {
+            KeyCode::Char('c') => spawn_claude_for_selected(app, terminal_size, false),
+            KeyCode::Char('C') => spawn_claude_for_selected(app, terminal_size, true),
+            KeyCode::Char('t') => spawn_terminal_for_selected(app, terminal_size),
+            KeyCode::Char('n') => {
+                app.open_dialog(Dialog::CreateWorktree {
+                    branch_input: String::new(),
+                    base_branch: "main".to_string(),
+                    focused_field: 0,
+                });
+            }
+            KeyCode::Tab => app.toggle_focus(),
+            KeyCode::Esc => app.escape_to_sidebar(),
+            _ => {}
+        }
+        return;
+    }
+
     // If no repo detected, only allow init or convert
     if !app.repo_detected {
         match key.code {
             KeyCode::Char('i') => {
+                app.auto_init_pending = None;
                 app.open_dialog(Dialog::InitRepo {
                     url_input: String::new(),
                     branch_input: "main".to_string(),
@@ -372,6 +418,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 });
             }
             KeyCode::Char('c') => {
+                app.auto_init_pending = None;
                 if let Some(ref repo_path) = app.regular_repo_path {
                     let branch = worktree::git::current_branch_name(repo_path)
                         .unwrap_or_else(|_| "main".to_string());
@@ -610,6 +657,8 @@ fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)
 /// For Terminal items, resolves via the session's worktree_path.
 fn selected_worktree_idx(app: &App) -> Option<usize> {
     match app.selected_sidebar_item() {
+        Some(SidebarItem::Project) => None,
+        Some(SidebarItem::ProjectSession(_)) => None,
         Some(SidebarItem::Worktree(wi)) => Some(wi),
         Some(SidebarItem::Session(wi, _)) => Some(wi),
         Some(SidebarItem::Terminal(ti)) => {
@@ -681,6 +730,23 @@ fn open_wsl_window(app: &mut App, with_claude: bool) {
 }
 
 fn spawn_claude_for_selected(app: &mut App, terminal_size: (u16, u16), skip_permissions: bool) {
+    // When Project is selected, spawn at the repo root
+    if matches!(app.selected_sidebar_item(), Some(SidebarItem::Project)) {
+        match session::spawn_root_session(app, terminal_size, skip_permissions) {
+            Ok(sid) => {
+                app.active_session_id = Some(sid);
+                app.project_overview_active = false;
+                app.focus = FocusTarget::TerminalPane;
+                app.input_mode = InputMode::Terminal;
+                app.rebuild_sidebar_items();
+            }
+            Err(e) => {
+                app.set_status(format!("Failed to spawn session: {}", e));
+            }
+        }
+        return;
+    }
+
     if let Some(wi) = selected_worktree_idx(app) {
         match session::spawn_session(app, wi, terminal_size, skip_permissions, None) {
             Ok(sid) => {
@@ -697,6 +763,23 @@ fn spawn_claude_for_selected(app: &mut App, terminal_size: (u16, u16), skip_perm
 }
 
 fn spawn_terminal_for_selected(app: &mut App, terminal_size: (u16, u16)) {
+    // When Project is selected, spawn at the repo root
+    if matches!(app.selected_sidebar_item(), Some(SidebarItem::Project)) {
+        match session::spawn_root_terminal_session(app, terminal_size) {
+            Ok(sid) => {
+                app.active_session_id = Some(sid);
+                app.project_overview_active = false;
+                app.focus = FocusTarget::TerminalPane;
+                app.input_mode = InputMode::Terminal;
+                app.rebuild_sidebar_items();
+            }
+            Err(e) => {
+                app.set_status(format!("Failed to spawn terminal: {}", e));
+            }
+        }
+        return;
+    }
+
     if let Some(wi) = selected_worktree_idx(app) {
         match session::spawn_terminal_session(app, wi, terminal_size) {
             Ok(sid) => {
@@ -714,6 +797,9 @@ fn spawn_terminal_for_selected(app: &mut App, terminal_size: (u16, u16)) {
 
 fn handle_delete(app: &mut App) {
     match app.selected_sidebar_item() {
+        Some(SidebarItem::Project) => {
+            // No delete action for the project entry
+        }
         Some(SidebarItem::Session(wi, si)) => {
             if let Some(wt) = app.worktrees.get(wi) {
                 if let Some(&sid) = wt.session_ids.get(si) {
@@ -722,6 +808,14 @@ fn handle_delete(app: &mut App) {
                         on_confirm: ConfirmAction::DeleteSession(sid),
                     });
                 }
+            }
+        }
+        Some(SidebarItem::ProjectSession(si)) => {
+            if let Some(&sid) = app.project_session_ids.get(si) {
+                app.open_dialog(Dialog::Confirm {
+                    message: format!("Kill session {}?", session::session_label(app, sid)),
+                    on_confirm: ConfirmAction::DeleteSession(sid),
+                });
             }
         }
         Some(SidebarItem::Terminal(ti)) => {
@@ -1180,7 +1274,7 @@ fn handle_url_open(app: &mut App) {
 pub fn execute_context_action(app: &mut App, item: &SidebarItem, kind: &ContextActionKind, terminal_size: (u16, u16)) {
     // Ensure the item is selected so handlers can find it
     match item {
-        SidebarItem::Worktree(_) | SidebarItem::Session(_, _) => {
+        SidebarItem::Project | SidebarItem::ProjectSession(_) | SidebarItem::Worktree(_) | SidebarItem::Session(_, _) => {
             if let Some(idx) = app.sidebar_items.iter().position(|i| i == item) {
                 app.sidebar_panel = crate::app::SidebarPanel::Worktrees;
                 app.sidebar_selected = idx;
@@ -2627,7 +2721,7 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
             let target_wi = match app.mini.items.get(app.mini.selected).copied() {
                 Some(SidebarItem::Worktree(wi)) => wi,
                 Some(SidebarItem::Session(wi, _)) => wi,
-                Some(SidebarItem::Terminal(_)) | None => 0,
+                Some(SidebarItem::Project) | Some(SidebarItem::ProjectSession(_)) | Some(SidebarItem::Terminal(_)) | None => 0,
             };
             app.mini.target_worktree_idx = target_wi;
             // If only one worktree, skip selection and go straight to prompt
@@ -2667,7 +2761,15 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
                         });
                     }
                 }
-                Some(SidebarItem::Terminal(_)) | None => {}
+                Some(SidebarItem::ProjectSession(si)) => {
+                    if let Some(&sid) = app.project_session_ids.get(si) {
+                        app.open_dialog(Dialog::Confirm {
+                            message: format!("Kill agent {}?", session::session_label(app, sid)),
+                            on_confirm: ConfirmAction::DeleteSession(sid),
+                        });
+                    }
+                }
+                Some(SidebarItem::Project) | Some(SidebarItem::Terminal(_)) | None => {}
             }
         }
         KeyCode::Char('r') => {

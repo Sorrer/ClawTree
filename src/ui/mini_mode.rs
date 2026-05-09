@@ -107,6 +107,8 @@ fn draw_tree_sidebar(f: &mut Frame, app: &App, area: Rect) {
         .map(|(idx, item)| {
             let is_selected = idx == app.mini.selected;
             match item {
+                SidebarItem::Project => ListItem::new(Line::from(vec![])),
+                SidebarItem::ProjectSession(_) => ListItem::new(Line::from(vec![])),
                 SidebarItem::Worktree(wi) => render_worktree(app, *wi, is_selected, inner_width),
                 SidebarItem::Session(wi, si) => render_session(app, *wi, *si, is_selected, inner_width),
                 SidebarItem::Terminal(_) => ListItem::new(Line::from(vec![])),
@@ -138,7 +140,7 @@ fn draw_detail_pane(f: &mut Frame, app: &App, area: Rect) {
         Some(SidebarItem::Worktree(wi)) => {
             draw_worktree_detail(f, app, area, wi, border_style, border_type);
         }
-        Some(SidebarItem::Terminal(_)) | None => {
+        Some(SidebarItem::Project) | Some(SidebarItem::ProjectSession(_)) | Some(SidebarItem::Terminal(_)) | None => {
             let block = Block::default()
                 .title(" Details ")
                 .borders(Borders::ALL)

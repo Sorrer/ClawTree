@@ -9,6 +9,7 @@ use super::theme;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let has_regular_repo = app.regular_repo_path.is_some();
+    let auto_pending = app.auto_init_pending.is_some();
 
     let block = Block::default()
         .title(" clawtree ")
@@ -19,7 +20,14 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     // Logo (3 lines) + blank + content
-    let content_height = if has_regular_repo { 20u16 } else { 18u16 };
+    // When auto-init is pending, we hide the manual key prompts (fewer lines)
+    let content_height = if auto_pending {
+        16u16
+    } else if has_regular_repo {
+        20u16
+    } else {
+        18u16
+    };
     let v_pad = inner.height.saturating_sub(content_height) / 2;
 
     let chunks = Layout::default()
@@ -35,7 +43,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     let dir_display = app.bare_repo_path.display().to_string();
 
-    let header = if has_regular_repo {
+    let header = if auto_pending {
+        match app.auto_init_pending {
+            Some(crate::app::AutoInitKind::Convert) => "Converting existing repo...",
+            Some(crate::app::AutoInitKind::Init) => "Setting up new repository...",
+            None => "No git bare repo detected",
+        }
+    } else if has_regular_repo {
         "Regular git repo detected"
     } else {
         "No git bare repo detected"
@@ -103,20 +117,24 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         )));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("Press ", Style::default().fg(Color::Gray)),
-        Span::styled("i", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled(" to initialize a new bare repo workflow", Style::default().fg(Color::Gray)),
-    ]));
 
-    if has_regular_repo {
+    // Only show manual key prompts when auto-init is NOT pending
+    if !auto_pending {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("Press ", Style::default().fg(Color::Gray)),
-            Span::styled("c", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            Span::styled(" to convert existing repo to bare worktree layout", Style::default().fg(Color::Gray)),
+            Span::styled("i", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(" to initialize a new bare repo workflow", Style::default().fg(Color::Gray)),
         ]));
+
+        if has_regular_repo {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("Press ", Style::default().fg(Color::Gray)),
+                Span::styled("c", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(" to convert existing repo to bare worktree layout", Style::default().fg(Color::Gray)),
+            ]));
+        }
     }
 
     let paragraph = Paragraph::new(lines).alignment(Alignment::Center);

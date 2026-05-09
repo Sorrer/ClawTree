@@ -55,7 +55,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         match app.input_mode {
             InputMode::Normal => {
                 match app.selected_sidebar_item() {
-                    Some(crate::app::SidebarItem::Session(_, _)) => {
+                    Some(crate::app::SidebarItem::Session(_, _)) | Some(crate::app::SidebarItem::ProjectSession(_)) => {
                         if wide {
                             "c:claude  Shift+c:claude (YOLO)  n:new worktree  Ctrl+P:prompt queue  d:delete  ?:help  Ctrl+Q:quit"
                         } else {
@@ -67,6 +67,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                             "c:claude  Shift+c:claude (YOLO)  n:new worktree  m:merge branch  d:delete  ?:help  Ctrl+Q:quit"
                         } else {
                             "c:claude Shift+c:claude (YOLO) n:new-wt m:merge d:del ?:help"
+                        }
+                    }
+                    Some(crate::app::SidebarItem::Project) => {
+                        if wide {
+                            "c:claude  t:terminal  n:new worktree  ?:help  Ctrl+Q:quit"
+                        } else {
+                            "c:claude t:term n:new-wt ?:help ^q:quit"
                         }
                     }
                     Some(crate::app::SidebarItem::Terminal(_)) | None => {

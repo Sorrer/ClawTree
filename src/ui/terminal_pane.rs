@@ -139,7 +139,24 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    // Priority 2: Worktree info panel
+    // Priority 2: Project overview panel
+    if app.project_overview_active {
+        let project_name = app.bare_repo_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Project".to_string());
+        let block = Block::default()
+            .title(format!("{} {} ", focus_indicator, project_name))
+            .borders(Borders::ALL)
+            .border_type(border_type)
+            .border_style(border_style);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        draw_project_overview(f, app, inner);
+        return;
+    }
+
+    // Priority 3: Worktree info panel
     if let Some(wi) = app.active_worktree_idx {
         if let Some(wt) = app.worktrees.get(wi) {
             let branch = &wt.branch;
@@ -159,6 +176,86 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .style(Style::default().fg(Color::DarkGray))
         .block(block);
     f.render_widget(help, area);
+}
+
+/// Draw the project overview panel showing repo-wide stats and quick-start guide.
+fn draw_project_overview(f: &mut Frame, app: &App, area: Rect) {
+    use crate::keys::QUICK_START_KEYS;
+    use crate::worktree::git;
+    use std::sync::atomic::Ordering;
+
+    let project_name = app.bare_repo_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Project".to_string());
+
+    let label_style = Style::default().fg(Color::Gray);
+    let value_style = Style::default().fg(Color::White);
+    let header_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let dim_style = Style::default().fg(Color::DarkGray);
+    let section_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let key_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Project name and path
+    lines.push(Line::from(vec![
+        Span::styled("◆ ", header_style),
+        Span::styled(&project_name, header_style),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(app.bare_repo_path.display().to_string(), dim_style),
+    ]));
+    lines.push(Line::from(""));
+
+    // Compact stats line
+    let wt_count = app.worktrees.len();
+    let active_sessions = app.sessions.values()
+        .filter(|s| !s.exited.load(Ordering::Relaxed))
+        .count();
+    let total_sessions = app.sessions.len();
+    let mut stats_spans = vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(format!("{}", wt_count), value_style),
+        Span::styled(" worktrees  ", label_style),
+        Span::styled(format!("{}/{}", active_sessions, total_sessions), value_style),
+        Span::styled(" sessions", label_style),
+    ];
+    if let Some(url) = git::remote_url(&app.bare_repo_path) {
+        stats_spans.push(Span::styled("  ", Style::default()));
+        stats_spans.push(Span::styled(url, dim_style));
+    }
+    lines.push(Line::from(stats_spans));
+    lines.push(Line::from(""));
+
+    // Quick start guide from shared key registry
+    lines.push(Line::from(Span::styled("  Quick Start", header_style)));
+    lines.push(Line::from(""));
+
+    let mut first_section = true;
+    for entry in QUICK_START_KEYS {
+        if entry.0.is_empty() {
+            // Section header
+            if !first_section {
+                lines.push(Line::from(""));
+            }
+            first_section = false;
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(entry.1.to_string(), section_style),
+            ]));
+        } else {
+            // Key entry
+            lines.push(Line::from(vec![
+                Span::styled(format!("    {:16}", entry.0), key_style),
+                Span::styled(entry.1.to_string(), label_style),
+            ]));
+        }
+    }
+
+    let paragraph = Paragraph::new(lines);
+    f.render_widget(paragraph, area);
 }
 
 /// Draw the worktree info panel content.

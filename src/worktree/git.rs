@@ -138,6 +138,14 @@ pub fn list_branches(bare_repo_path: &Path) -> Result<Vec<String>> {
     Ok(stdout.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
 }
 
+/// Get the remote origin URL for a bare repo (if configured).
+pub fn remote_url(bare_repo_path: &Path) -> Option<String> {
+    run_git(&["config", "--get", "remote.origin.url"], bare_repo_path, "git remote url")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Result of a merge operation.
 pub enum MergeResult {
     /// Merge completed successfully.

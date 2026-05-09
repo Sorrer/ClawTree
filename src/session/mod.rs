@@ -602,6 +602,98 @@ pub fn spawn_terminal_session(app: &mut App, worktree_idx: usize, terminal_size:
     Ok(session_id)
 }
 
+/// Spawn a Claude session at the bare repo root (for the Project overview).
+pub fn spawn_root_session(app: &mut App, terminal_size: (u16, u16), skip_permissions: bool) -> anyhow::Result<u64> {
+    if !app.tmux_available {
+        anyhow::bail!("tmux is required for root sessions");
+    }
+
+    let session_id = app.next_session_id;
+    app.next_session_id += 1;
+
+    let (rows, cols) = calculate_pane_size(app, terminal_size.1, terminal_size.0);
+
+    let tmux_name = pty::tmux_session_name("root", session_id);
+    let handle = pty::spawn_claude_pty_tmux(
+        &app.bare_repo_path,
+        session_id,
+        app.event_tx.clone(),
+        rows,
+        cols,
+        skip_permissions,
+        &tmux_name,
+        None,
+    )?;
+
+    let label = "root".to_string();
+
+    let session = Session {
+        id: session_id,
+        worktree_path: app.bare_repo_path.clone(),
+        label,
+        parser: handle.parser,
+        write_tx: handle.write_tx,
+        master_pty: handle.master_pty,
+        exited: handle.exited,
+        last_output: handle.last_output,
+        tmux_session_name: handle.tmux_session_name,
+        nickname: None,
+        was_active: false,
+        is_terminal: false,
+    };
+
+    app.sessions.insert(session_id, session);
+    app.project_session_ids.push(session_id);
+    app.project_expanded = true;
+
+    Ok(session_id)
+}
+
+/// Spawn a plain terminal at the bare repo root (for the Project overview).
+pub fn spawn_root_terminal_session(app: &mut App, terminal_size: (u16, u16)) -> anyhow::Result<u64> {
+    if !app.tmux_available {
+        anyhow::bail!("tmux is required for terminal sessions");
+    }
+
+    let session_id = app.next_session_id;
+    app.next_session_id += 1;
+
+    let (rows, cols) = calculate_pane_size(app, terminal_size.1, terminal_size.0);
+
+    let tmux_name = pty::tmux_terminal_session_name("root", session_id);
+    let handle = pty::spawn_terminal_pty_tmux(
+        &app.bare_repo_path,
+        session_id,
+        app.event_tx.clone(),
+        rows,
+        cols,
+        &tmux_name,
+    )?;
+
+    let label = "root-terminal".to_string();
+
+    let session = Session {
+        id: session_id,
+        worktree_path: app.bare_repo_path.clone(),
+        label,
+        parser: handle.parser,
+        write_tx: handle.write_tx,
+        master_pty: handle.master_pty,
+        exited: handle.exited,
+        last_output: handle.last_output,
+        tmux_session_name: handle.tmux_session_name,
+        nickname: None,
+        was_active: false,
+        is_terminal: true,
+    };
+
+    app.sessions.insert(session_id, session);
+    app.project_session_ids.push(session_id);
+    app.project_expanded = true;
+
+    Ok(session_id)
+}
+
 /// Kill a session and clean up. Also kills the tmux session if applicable.
 pub fn kill_session(app: &mut App, session_id: u64) {
     if let Some(session) = app.sessions.get(&session_id) {
@@ -620,6 +712,7 @@ pub fn kill_session(app: &mut App, session_id: u64) {
     for wt in &mut app.worktrees {
         wt.session_ids.retain(|&id| id != session_id);
     }
+    app.project_session_ids.retain(|&id| id != session_id);
     app.terminal_ids.retain(|&id| id != session_id);
 
     if app.active_session_id == Some(session_id) {
@@ -844,10 +937,12 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
             wt.path == wt_path || wt_path.starts_with(&wt.path)
         });
 
-        let wt_idx = match wt_idx {
-            Some(i) => i,
-            None => continue, // Orphaned tmux session, skip
-        };
+        // Check if this is a root/project session (path matches bare repo)
+        let is_root = wt_idx.is_none() && (wt_path == app.bare_repo_path || wt_path.starts_with(&app.bare_repo_path));
+
+        if wt_idx.is_none() && !is_root {
+            continue; // Orphaned tmux session, skip
+        }
 
         let session_id = app.next_session_id;
         app.next_session_id += 1;
@@ -892,10 +987,14 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
 
         app.sessions.insert(session_id, session);
 
-        if is_terminal {
+        if is_root {
+            // Root sessions go under the Project entry
+            app.project_session_ids.push(session_id);
+            app.project_expanded = true;
+        } else if is_terminal {
             // Terminals go into the dedicated terminal panel
             app.terminal_ids.push(session_id);
-        } else if let Some(wt) = app.worktrees.get_mut(wt_idx) {
+        } else if let Some(wt) = app.worktrees.get_mut(wt_idx.unwrap()) {
             wt.session_ids.push(session_id);
             wt.expanded = true;
         }

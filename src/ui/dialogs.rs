@@ -1619,8 +1619,11 @@ fn draw_context_menu(
     selected: Option<usize>,
     actions: &[ContextAction],
 ) {
+    let is_project = matches!(item, SidebarItem::Project);
+
     // Determine title from the item
     let title = match item {
+        SidebarItem::Project => " clawtree ".to_string(),
         SidebarItem::Worktree(wi) => {
             app.worktrees.get(*wi)
                 .map(|wt| format!(" {} ", wt.branch))
@@ -1629,6 +1632,13 @@ fn draw_context_menu(
         SidebarItem::Session(wi, si) => {
             app.worktrees.get(*wi)
                 .and_then(|wt| wt.session_ids.get(*si))
+                .and_then(|sid| app.sessions.get(sid))
+                .and_then(|s| s.nickname.clone().or_else(|| s.terminal_title()).or_else(|| Some(s.label.clone())))
+                .map(|n| format!(" {} ", n))
+                .unwrap_or_else(|| " Actions ".to_string())
+        }
+        SidebarItem::ProjectSession(si) => {
+            app.project_session_ids.get(*si)
                 .and_then(|sid| app.sessions.get(sid))
                 .and_then(|s| s.nickname.clone().or_else(|| s.terminal_title()).or_else(|| Some(s.label.clone())))
                 .map(|n| format!(" {} ", n))
@@ -1643,29 +1653,83 @@ fn draw_context_menu(
         }
     };
 
-    // Height: borders(2) + actions + footer(1)
-    let height = (actions.len() as u16) + 4;
-    let area = centered_rect(50, height, f.area());
+    // Description lines shown only for the Project menu
+    let desc_height: u16 = if is_project { 8 } else { 0 };
+
+    // Height: borders(2) + description + actions + footer(1)
+    let height = (actions.len() as u16) + desc_height + 4;
+    let width_pct = if is_project { 60 } else { 50 };
+    let area = centered_rect(width_pct, height, f.area());
     app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
+    let border_color = if is_project { theme::get().brand_claw } else { theme::DIALOG_NEUTRAL };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::DIALOG_NEUTRAL));
+        .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(1),    // action list
-            Constraint::Length(1), // help
-        ])
-        .split(inner);
+    let chunks = if is_project {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(desc_height), // description
+                Constraint::Min(1),              // action list
+                Constraint::Length(1),            // help
+            ])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(1),    // action list
+                Constraint::Length(1), // help
+            ])
+            .split(inner)
+    };
 
-    let inner_w = chunks[0].width as usize;
+    // Render description for the Project menu
+    if is_project {
+        let desc_style = Style::default().fg(Color::Gray);
+        let bullet_style = Style::default().fg(Color::DarkGray);
+        let desc_lines = vec![
+            Line::from(Span::styled(
+                "Manage parallel Claude agents across git worktrees",
+                Style::default().fg(Color::White),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  - ", bullet_style),
+                Span::styled("Run Claude on multiple branches at once", desc_style),
+            ]),
+            Line::from(vec![
+                Span::styled("  - ", bullet_style),
+                Span::styled("Merge, commit, push & pull per branch", desc_style),
+            ]),
+            Line::from(vec![
+                Span::styled("  - ", bullet_style),
+                Span::styled("AI-generated commit messages via Claude", desc_style),
+            ]),
+            Line::from(vec![
+                Span::styled("  - ", bullet_style),
+                Span::styled("Spawn terminals in any worktree directory", desc_style),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Right-click a branch for full git operations.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+        f.render_widget(Paragraph::new(desc_lines), chunks[0]);
+    }
+
+    let actions_chunk = if is_project { chunks[1] } else { chunks[0] };
+    let help_chunk = if is_project { chunks[2] } else { chunks[1] };
+
+    let inner_w = actions_chunk.width as usize;
 
     let items: Vec<ListItem> = actions
         .iter()
@@ -1706,11 +1770,11 @@ fn draw_context_menu(
         .collect();
 
     let list = List::new(items);
-    f.render_widget(list, chunks[0]);
+    f.render_widget(list, actions_chunk);
 
     f.render_widget(
         Paragraph::new("j/k: navigate  Enter: select  Esc: close")
             .style(Style::default().fg(Color::DarkGray)),
-        chunks[1],
+        help_chunk,
     );
 }
