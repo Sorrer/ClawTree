@@ -115,7 +115,7 @@ echo "Test 1: Welcome screen appears when no repo detected"
 TEMP_DIR=$(mktemp -d)
 EMPTY_DIR=$(mktemp -d)
 start_clawtree "$EMPTY_DIR"
-assert_contains "Welcome screen shows" "No git bare repo detected"
+assert_contains "Welcome screen shows" "Initialize Bare Repo"
 send_keys C-q
 wait_settle 2
 tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
@@ -210,8 +210,10 @@ wait_settle 1
 
 echo ""
 echo "Test 6: Stage/commit dialog opens with 's' on dirty worktree"
-# Navigate to feature worktree (first in list, has dirty files)
+# Navigate to feature worktree (below Project item, has dirty files)
 send_keys Home
+wait_settle 0.5
+send_keys j
 wait_settle 0.5
 send_keys s
 wait_settle 2

@@ -945,7 +945,7 @@ impl App {
     /// content (matching the line vector built in `draw_worktree_info`).
     pub fn info_panel_cursor_line(&self) -> usize {
         let (unstaged, staged) = self.info_panel_file_lists();
-        let has_files = self.worktree_status.as_ref().map_or(false, |s| !s.files.is_empty());
+        let has_files = self.worktree_status.as_ref().is_some_and(|s| !s.files.is_empty());
         if !has_files {
             return 0;
         }
