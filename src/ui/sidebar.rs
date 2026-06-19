@@ -561,8 +561,11 @@ fn render_terminal_session(
         .map(|s| s.exited.load(Ordering::SeqCst))
         .unwrap_or(true);
 
-    // Get current working directory from tmux pane
-    let display_name = if is_exited {
+    // Prefer a user-assigned nickname (set via rename); otherwise show the
+    // tmux pane's current working directory, falling back to the label.
+    let display_name = if let Some(nick) = session.and_then(|s| s.nickname.clone()) {
+        nick
+    } else if is_exited {
         "[exited]".to_string()
     } else {
         session

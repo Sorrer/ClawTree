@@ -595,6 +595,9 @@ pub const AUTH_ERROR_OPTION_COUNT: usize = 1;
 /// Number of options in UpdateAvailable dialog (Prompt phase).
 pub const UPDATE_AVAILABLE_OPTION_COUNT: usize = 3;
 
+/// Number of options in UpdateAvailable dialog (Complete phase): Restart now / Later.
+pub const UPDATE_COMPLETE_OPTION_COUNT: usize = 2;
+
 /// Phase of the in-app update dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdatePhase {
@@ -604,6 +607,8 @@ pub enum UpdatePhase {
     Downloading,
     /// Replacing the current binary.
     Replacing,
+    /// Update installed — prompt the user to restart now or later.
+    Complete,
     /// An error occurred during download or replace.
     Failed(String),
 }
@@ -815,6 +820,9 @@ pub struct App {
     pub skipped_update_version: Option<String>,
     /// Whether the update dialog has already been shown this session (dismiss = don't re-show).
     pub update_dialog_shown: bool,
+    /// Set when the user chooses "Restart now" after an in-app update; the main
+    /// loop exits and re-execs the freshly installed binary.
+    pub restart_requested: bool,
     /// Mutex to serialize git operations across threads (status poller, push/pull, etc.).
     pub git_lock: std::sync::Arc<std::sync::Mutex<()>>,
     /// Extra (non-worktree) directories where the user wants to launch Claude sessions.
@@ -901,6 +909,7 @@ impl App {
             update_available: None,
             skipped_update_version: None,
             update_dialog_shown: false,
+            restart_requested: false,
             git_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
             locations: Vec::new(),
         }

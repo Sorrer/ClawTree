@@ -293,7 +293,46 @@ fn main() -> Result<()> {
     alive.store(false, Ordering::Relaxed);
     restore_terminal();
 
-    result
+    // If the user chose "Restart now" after an in-app update, replace this
+    // process with the freshly installed binary (preserving the original args).
+    // Existing tmux/Claude sessions survive and are reconnected on startup.
+    if let Ok(true) = result {
+        restart_into_new_binary();
+    }
+
+    result.map(|_| ())
+}
+
+/// Re-exec the current executable with the original arguments. On success this
+/// never returns (the process image is replaced); on failure it logs and falls
+/// through so the caller exits normally.
+fn restart_into_new_binary() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Could not restart automatically ({e}); please relaunch clawtree.");
+            return;
+        }
+    };
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // exec() only returns if it failed.
+        let err = std::process::Command::new(&exe).args(&args).exec();
+        eprintln!("Could not restart automatically ({err}); please relaunch clawtree.");
+    }
+
+    #[cfg(not(unix))]
+    {
+        match std::process::Command::new(&exe).args(&args).spawn() {
+            Ok(_) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("Could not restart automatically ({e}); please relaunch clawtree.")
+            }
+        }
+    }
 }
 
 async fn async_main(
@@ -303,7 +342,7 @@ async fn async_main(
     regular_repo_path: Option<std::path::PathBuf>,
     tmux_available: bool,
     wt_available: bool,
-) -> Result<()> {
+) -> Result<bool> {
     // Initialize terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
@@ -1231,14 +1270,15 @@ async fn async_main(
                 AppEvent::UpdateReplaceComplete { result, version } => {
                     match result {
                         Ok(()) => {
-                            app.close_dialog();
-                            app.set_status_with(
-                                StatusSeverity::Success,
-                                format!(
-                                    "Updated to v{} — restart clawtree to use the new version",
-                                    version
-                                ),
-                            );
+                            // The new binary is installed but this process is still
+                            // running the old one. Prompt the user to restart (or do
+                            // it for them) so the update actually takes effect.
+                            app.dialog = Some(Dialog::UpdateAvailable {
+                                latest_version: version,
+                                selected: 0,
+                                phase: UpdatePhase::Complete,
+                            });
+                            app.input_mode = app::InputMode::Dialog;
                             // Clear the update indicator since we've updated
                             app.update_available = None;
                         }
@@ -1479,7 +1519,7 @@ async fn async_main(
     // Brief pause to let tmux process the detach before PTY handles are dropped
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    Ok(())
+    Ok(app.restart_requested)
 }
 
 /// Execute a queued blocking action. Called after the loading overlay is drawn.

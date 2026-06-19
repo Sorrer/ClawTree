@@ -1965,6 +1965,79 @@ fn draw_update_available(
                 chunks[2],
             );
         }
+        UpdatePhase::Complete => {
+            let options = ["Restart now", "Later"];
+            let height = (options.len() as u16) + 7;
+            let area = centered_rect(54, height, f.area());
+            app.areas.dialog.set(area);
+            f.render_widget(Clear, area);
+
+            let block = Block::default()
+                .title(" Update Installed ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::DIALOG_CREATION));
+
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),                    // success line
+                    Constraint::Length(1),                    // separator
+                    Constraint::Length(1),                    // prompt
+                    Constraint::Length(options.len() as u16), // options
+                    Constraint::Length(1),                    // help
+                ])
+                .split(inner);
+
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✓ Updated to ", Style::default().fg(Color::Green)),
+                    Span::styled(
+                        format!("v{}", latest_version),
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])),
+                chunks[0],
+            );
+
+            f.render_widget(
+                Paragraph::new("Restart clawtree to start using the new version:")
+                    .style(Style::default().fg(Color::Gray)),
+                chunks[2],
+            );
+
+            let items: Vec<ListItem> = options
+                .iter()
+                .enumerate()
+                .map(|(idx, label)| {
+                    let is_sel = idx == selected;
+                    let marker = if is_sel { ">" } else { " " };
+                    let style = if is_sel {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    ListItem::new(Line::from(Span::styled(
+                        format!(" {} {}", marker, label),
+                        style,
+                    )))
+                })
+                .collect();
+
+            f.render_widget(List::new(items), chunks[3]);
+
+            f.render_widget(
+                Paragraph::new("↑/↓: select  Enter: confirm  Esc: later")
+                    .style(Style::default().fg(Color::DarkGray)),
+                chunks[4],
+            );
+        }
         UpdatePhase::Failed(error_message) => {
             let wrap_width = 50usize;
             let error_lines = error_message.len().div_ceil(wrap_width).min(4) as u16;

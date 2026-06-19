@@ -623,8 +623,11 @@ pub fn spawn_terminal_session(
 
     app.sessions.insert(session_id, session);
 
-    // Terminals go into the dedicated terminal panel, not under worktrees
-    app.terminal_ids.push(session_id);
+    // Terminals appear inline under their worktree, alongside Claude sessions.
+    if let Some(wt) = app.worktrees.get_mut(worktree_idx) {
+        wt.session_ids.push(session_id);
+        wt.expanded = true;
+    }
 
     Ok(session_id)
 }
@@ -1121,10 +1124,8 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
                 loc.session_ids.push(session_id);
                 loc.expanded = true;
             }
-        } else if is_terminal {
-            // Terminals go into the dedicated terminal panel
-            app.terminal_ids.push(session_id);
         } else if let Some(wt) = app.worktrees.get_mut(wt_idx.unwrap()) {
+            // Both Claude and terminal sessions appear inline under their worktree.
             wt.session_ids.push(session_id);
             wt.expanded = true;
         }

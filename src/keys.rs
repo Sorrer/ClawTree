@@ -167,6 +167,7 @@ const TERMINAL_KEYS: &[KeyEntry] = &[
     section("URLs"),
     ("Ctrl + U", "Copy last URL to clipboard"),
     section("Input"),
+    ("Alt + T", "Send a literal Tab to the terminal"),
     ("(all keys)", "Sent directly to Claude session"),
 ];
 
@@ -580,6 +581,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     .get(li)
                     .and_then(|loc| loc.session_ids.get(si).copied()),
                 Some(SidebarItem::Terminal(ti)) => app.terminal_ids.get(ti).copied(),
+                Some(SidebarItem::ProjectSession(si)) => app.project_session_ids.get(si).copied(),
                 _ => None,
             };
             if let Some(sid) = sid {
@@ -1290,6 +1292,22 @@ fn handle_terminal_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Alt+T — send a literal Tab to the terminal. Plain Tab is reserved for
+    // focus-switching, and Ctrl+I can't be used because it's the same byte
+    // (0x09) as Tab on terminals without the kitty keyboard protocol (e.g.
+    // through tmux). Alt-combos are ESC-prefixed, so they survive reliably.
+    if key.modifiers.contains(KeyModifiers::ALT)
+        && matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T'))
+    {
+        app.terminal_scroll = 0;
+        if let Some(sid) = app.active_session_id {
+            if let Some(session) = app.sessions.get(&sid) {
+                let _ = session.write_tx.send(bytes::Bytes::from_static(b"\t"));
+            }
+        }
+        return;
+    }
+
     // PgUp / PgDown scroll through history
     match key.code {
         KeyCode::PageUp => {
@@ -1498,6 +1516,7 @@ pub fn execute_context_action(
                     .get(li)
                     .and_then(|loc| loc.session_ids.get(si).copied()),
                 Some(SidebarItem::Terminal(ti)) => app.terminal_ids.get(ti).copied(),
+                Some(SidebarItem::ProjectSession(si)) => app.project_session_ids.get(si).copied(),
                 _ => None,
             };
             if let Some(sid) = sid {
@@ -1653,6 +1672,43 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             }
             UpdatePhase::Downloading | UpdatePhase::Replacing => {
                 // No interaction allowed during download/replace — consume all keys
+            }
+            UpdatePhase::Complete => {
+                match key.code {
+                    KeyCode::Char('j')
+                    | KeyCode::Down
+                    | KeyCode::Char('k')
+                    | KeyCode::Up
+                    | KeyCode::Tab => {
+                        // Two options (Restart now / Later) — just toggle.
+                        if let Some(Dialog::UpdateAvailable {
+                            ref mut selected, ..
+                        }) = app.dialog
+                        {
+                            *selected = (*selected + 1) % crate::app::UPDATE_COMPLETE_OPTION_COUNT;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(Dialog::UpdateAvailable { selected, .. }) = app.dialog.take() {
+                            if selected == 0 {
+                                // Restart now — exit the loop; main() re-execs the
+                                // freshly installed binary.
+                                app.restart_requested = true;
+                                app.should_quit = true;
+                            } else {
+                                // Later — keep running on the old binary until the
+                                // user restarts manually.
+                                app.close_dialog();
+                                app.set_status("Update installed — restart clawtree to apply it");
+                            }
+                        }
+                    }
+                    KeyCode::Esc => {
+                        app.close_dialog();
+                        app.set_status("Update installed — restart clawtree to apply it");
+                    }
+                    _ => {} // consume all other keys
+                }
             }
             UpdatePhase::Failed(_) => {
                 match key.code {
