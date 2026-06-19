@@ -157,6 +157,101 @@ pub struct SavedPrompt {
     pub prompt: String,
 }
 
+/// Expand a user-typed path the way a shell roughly would, since dialog text
+/// input has no shell to do it for us. Handles:
+///   - surrounding single/double quotes (e.g. a pasted `"~/my folder"`)
+///   - a leading `~` / `~/...` → `$HOME`
+///   - environment variables `$VAR` and `${VAR}` (unset vars are left literal)
+/// Relative paths (`./`, `../`) are intentionally left alone — `canonicalize`
+/// already resolves them against the current directory.
+pub fn expand_path(input: &str) -> PathBuf {
+    let mut s = input.trim();
+
+    // Strip one layer of matching surrounding quotes.
+    if s.len() >= 2 {
+        let bytes = s.as_bytes();
+        let first = bytes[0];
+        if (first == b'"' || first == b'\'') && bytes[bytes.len() - 1] == first {
+            s = &s[1..s.len() - 1];
+        }
+    }
+
+    // Expand environment variables: $VAR and ${VAR}.
+    let mut expanded = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '$' {
+            expanded.push(c);
+            continue;
+        }
+        // Braced form: ${VAR}
+        if chars.peek() == Some(&'{') {
+            chars.next(); // consume '{'
+            let mut name = String::new();
+            let mut closed = false;
+            for nc in chars.by_ref() {
+                if nc == '}' {
+                    closed = true;
+                    break;
+                }
+                name.push(nc);
+            }
+            match (closed, std::env::var(&name)) {
+                (true, Ok(val)) => expanded.push_str(&val),
+                // Unset or unterminated: keep the original text literal.
+                (true, Err(_)) => {
+                    expanded.push_str("${");
+                    expanded.push_str(&name);
+                    expanded.push('}');
+                }
+                (false, _) => {
+                    expanded.push_str("${");
+                    expanded.push_str(&name);
+                }
+            }
+            continue;
+        }
+        // Bare form: $VAR (alphanumeric + underscore)
+        let mut name = String::new();
+        while let Some(&nc) = chars.peek() {
+            if nc.is_alphanumeric() || nc == '_' {
+                name.push(nc);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        match std::env::var(&name) {
+            Ok(val) if !name.is_empty() => expanded.push_str(&val),
+            _ => {
+                // Unset var or lone `$`: keep literal.
+                expanded.push('$');
+                expanded.push_str(&name);
+            }
+        }
+    }
+
+    // Expand a leading tilde.
+    if expanded == "~" || expanded.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(expanded.strip_prefix("~/").unwrap_or(""));
+        }
+    }
+
+    PathBuf::from(expanded)
+}
+
+/// An extra (non-worktree) directory where the user wants to launch Claude sessions.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExtraLocation {
+    pub path: PathBuf,
+    pub name: Option<String>,
+    #[serde(skip)]
+    pub session_ids: Vec<u64>,
+    #[serde(skip)]
+    pub expanded: bool,
+}
+
 /// Status message severity for color coding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusSeverity {
@@ -212,6 +307,7 @@ pub enum ContextActionKind {
     OpenLastUrl,
     OpenWindowsTerminal,
     OpenWindowsTerminalClaude,
+    RemoveLocation,
 }
 
 /// Build a list of context actions appropriate for the given sidebar item.
@@ -246,12 +342,19 @@ pub fn context_actions_for_item(item: &SidebarItem, wt_available: bool) -> Vec<C
             }
             actions
         }
-        SidebarItem::ProjectSession(_) | SidebarItem::Session(_, _) | SidebarItem::Terminal(_) => {
+        SidebarItem::ProjectSession(_) | SidebarItem::Session(_, _) | SidebarItem::Terminal(_) | SidebarItem::LocationSession(_, _) => {
             vec![
                 ContextAction { label: "Rename Session".into(), hotkey: "r".into(), kind: ContextActionKind::RenameSession },
                 ContextAction { label: "Copy Last URL".into(), hotkey: "u".into(), kind: ContextActionKind::CopyLastUrl },
                 ContextAction { label: "Open Last URL".into(), hotkey: "U".into(), kind: ContextActionKind::OpenLastUrl },
                 ContextAction { label: "Delete Session".into(), hotkey: "d".into(), kind: ContextActionKind::DeleteSession },
+            ]
+        }
+        SidebarItem::Location(_) => {
+            vec![
+                ContextAction { label: "New Claude".into(), hotkey: "c".into(), kind: ContextActionKind::NewClaude },
+                ContextAction { label: "New Claude (YOLO)".into(), hotkey: "C".into(), kind: ContextActionKind::NewClaudeYolo },
+                ContextAction { label: "Remove Location".into(), hotkey: "d".into(), kind: ContextActionKind::RemoveLocation },
             ]
         }
     }
@@ -347,6 +450,18 @@ pub enum Dialog {
         selected: Option<usize>,
         actions: Vec<ContextAction>,
     },
+    /// A newer version is available — offer to update in-place.
+    UpdateAvailable {
+        latest_version: String,
+        selected: usize,           // 0=Update now, 1=Dismiss, 2=Skip this version
+        phase: UpdatePhase,
+    },
+    /// Add an extra location directory.
+    AddLocation {
+        path_input: String,
+        /// Inline validation error shown inside the dialog (e.g. missing dir).
+        error: Option<String>,
+    },
     /// Interactive staging and commit UI.
     GitCommit {
         worktree_idx: usize,
@@ -372,6 +487,22 @@ pub const PULL_ERROR_OPTION_COUNT: usize = 3;
 /// Number of options in AuthError dialog.
 pub const AUTH_ERROR_OPTION_COUNT: usize = 1;
 
+/// Number of options in UpdateAvailable dialog (Prompt phase).
+pub const UPDATE_AVAILABLE_OPTION_COUNT: usize = 3;
+
+/// Phase of the in-app update dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdatePhase {
+    /// Showing the prompt with three options.
+    Prompt,
+    /// Downloading and verifying the new binary.
+    Downloading,
+    /// Replacing the current binary.
+    Replacing,
+    /// An error occurred during download or replace.
+    Failed(String),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitPhase {
     Staging,           // navigating files, staging/unstaging
@@ -384,6 +515,7 @@ pub enum ConfirmAction {
     DeleteSession(u64),
     DeleteWorktree(PathBuf),
     ForceDeleteWorktree(PathBuf),
+    RemoveLocation(usize),
 }
 
 /// A blocking git action queued for execution by the main loop.
@@ -423,6 +555,10 @@ pub enum SidebarItem {
     Worktree(usize),
     Session(usize, usize), // (worktree_index, session_index within worktree)
     Terminal(usize),        // index into app.terminal_ids
+    /// An extra location directory (index into app.locations).
+    Location(usize),
+    /// A session under an extra location (location_index, session_index).
+    LocationSession(usize, usize),
 }
 
 /// Which sidebar panel has focus.
@@ -551,8 +687,14 @@ pub struct App {
     pub areas: LayoutAreas,
     /// Latest version string from GitHub Releases, if newer than current.
     pub update_available: Option<String>,
+    /// Version string the user chose to permanently skip (loaded from config file).
+    pub skipped_update_version: Option<String>,
+    /// Whether the update dialog has already been shown this session (dismiss = don't re-show).
+    pub update_dialog_shown: bool,
     /// Mutex to serialize git operations across threads (status poller, push/pull, etc.).
     pub git_lock: std::sync::Arc<std::sync::Mutex<()>>,
+    /// Extra (non-worktree) directories where the user wants to launch Claude sessions.
+    pub locations: Vec<ExtraLocation>,
 }
 
 impl App {
@@ -627,7 +769,10 @@ impl App {
             terminal_panel_items: Vec::new(),
             areas: LayoutAreas::default(),
             update_available: None,
+            skipped_update_version: None,
+            update_dialog_shown: false,
             git_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+            locations: Vec::new(),
         }
     }
 
@@ -680,6 +825,14 @@ impl App {
             if wt.expanded {
                 for (si, _sid) in wt.session_ids.iter().enumerate() {
                     self.sidebar_items.push(SidebarItem::Session(wi, si));
+                }
+            }
+        }
+        for (li, loc) in self.locations.iter().enumerate() {
+            self.sidebar_items.push(SidebarItem::Location(li));
+            if loc.expanded {
+                for (si, _sid) in loc.session_ids.iter().enumerate() {
+                    self.sidebar_items.push(SidebarItem::LocationSession(li, si));
                 }
             }
         }
@@ -772,12 +925,18 @@ impl App {
         for wt in &mut self.worktrees {
             wt.expanded = false;
         }
+        for loc in &mut self.locations {
+            loc.expanded = false;
+        }
         self.rebuild_sidebar_items();
     }
 
     pub fn expand_all(&mut self) {
         for wt in &mut self.worktrees {
             wt.expanded = true;
+        }
+        for loc in &mut self.locations {
+            loc.expanded = true;
         }
         self.rebuild_sidebar_items();
     }
@@ -791,6 +950,12 @@ impl App {
             Some(SidebarItem::Worktree(wi)) => {
                 if let Some(wt) = self.worktrees.get_mut(wi) {
                     wt.expanded = !wt.expanded;
+                    self.rebuild_sidebar_items();
+                }
+            }
+            Some(SidebarItem::Location(li)) | Some(SidebarItem::LocationSession(li, _)) => {
+                if let Some(loc) = self.locations.get_mut(li) {
+                    loc.expanded = !loc.expanded;
                     self.rebuild_sidebar_items();
                 }
             }
@@ -869,6 +1034,27 @@ impl App {
                     self.focus = FocusTarget::TerminalPane;
                     self.input_mode = InputMode::Terminal;
                     self.url_cache_dirty = true;
+                }
+            }
+            Some(SidebarItem::Location(_li)) => {
+                self.project_overview_active = false;
+                self.active_session_id = None;
+                self.active_worktree_idx = None;
+                self.worktree_status = None;
+                self.terminal_scroll = 0;
+            }
+            Some(SidebarItem::LocationSession(li, si)) => {
+                self.project_overview_active = false;
+                if let Some(loc) = self.locations.get(li) {
+                    if let Some(&sid) = loc.session_ids.get(si) {
+                        self.active_session_id = Some(sid);
+                        self.active_worktree_idx = None;
+                        self.worktree_status = None;
+                        self.terminal_scroll = 0;
+                        self.focus = FocusTarget::TerminalPane;
+                        self.input_mode = InputMode::Terminal;
+                        self.url_cache_dirty = true;
+                    }
                 }
             }
             None => {}
@@ -1121,6 +1307,82 @@ impl App {
         }
     }
 
+    /// Path to the skip-update-version config file.
+    fn skip_update_path() -> PathBuf {
+        let config_dir = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let home = std::env::var("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| PathBuf::from("."));
+                home.join(".config")
+            })
+            .join("clawtree");
+        config_dir.join("skip-update-version")
+    }
+
+    /// Load the skipped update version from the config file.
+    pub fn load_skipped_update_version(&mut self) {
+        let path = Self::skip_update_path();
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            let version = contents.trim().to_string();
+            if !version.is_empty() {
+                self.skipped_update_version = Some(version);
+            }
+        }
+    }
+
+    /// Save a version to skip permanently.
+    pub fn save_skipped_update_version(&self, version: &str) {
+        let path = Self::skip_update_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, version);
+    }
+
+    /// Path to the global locations persistence file.
+    fn locations_path() -> PathBuf {
+        let home = std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."));
+        home.join(".clawtree").join("locations.json")
+    }
+
+    /// Load extra locations from disk.
+    pub fn load_locations(&mut self) {
+        let path = Self::locations_path();
+        let json = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        match serde_json::from_str::<Vec<ExtraLocation>>(&json) {
+            Ok(locs) => self.locations = locs,
+            Err(e) => tracing::warn!("Failed to parse locations: {}", e),
+        }
+        self.rebuild_sidebar_items();
+    }
+
+    /// Save extra locations to disk.
+    pub fn save_locations(&self) {
+        let path = Self::locations_path();
+        if self.locations.is_empty() {
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match serde_json::to_string_pretty(&self.locations) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    tracing::warn!("Failed to save locations: {}", e);
+                }
+            }
+            Err(e) => tracing::warn!("Failed to serialize locations: {}", e),
+        }
+    }
+
     /// Load prompt queues from disk for all current sessions (by tmux name).
     pub fn load_prompt_queues(&mut self) {
         let path = self.prompt_queues_path();
@@ -1154,5 +1416,40 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod expand_path_tests {
+    use super::expand_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn expands_tilde() {
+        std::env::set_var("HOME", "/home/tester");
+        assert_eq!(expand_path("~/test"), PathBuf::from("/home/tester/test"));
+        assert_eq!(expand_path("~"), PathBuf::from("/home/tester"));
+    }
+
+    #[test]
+    fn strips_surrounding_quotes() {
+        std::env::set_var("HOME", "/home/tester");
+        assert_eq!(expand_path("\"~/my folder\""), PathBuf::from("/home/tester/my folder"));
+        assert_eq!(expand_path("'/tmp/x'"), PathBuf::from("/tmp/x"));
+    }
+
+    #[test]
+    fn expands_env_vars() {
+        std::env::set_var("CLAWTREE_TEST_DIR", "/opt/data");
+        assert_eq!(expand_path("$CLAWTREE_TEST_DIR/sub"), PathBuf::from("/opt/data/sub"));
+        assert_eq!(expand_path("${CLAWTREE_TEST_DIR}/sub"), PathBuf::from("/opt/data/sub"));
+    }
+
+    #[test]
+    fn leaves_unset_vars_and_relative_literal() {
+        std::env::remove_var("CLAWTREE_NOPE");
+        assert_eq!(expand_path("$CLAWTREE_NOPE/x"), PathBuf::from("$CLAWTREE_NOPE/x"));
+        assert_eq!(expand_path("./rel"), PathBuf::from("./rel"));
+        assert_eq!(expand_path("../up"), PathBuf::from("../up"));
     }
 }

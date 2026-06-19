@@ -324,45 +324,52 @@ fn handle_sidebar_click(app: &mut App, col: u16, row: u16) -> bool {
     app.focus = FocusTarget::Sidebar;
     app.input_mode = InputMode::Normal;
 
-    // Check if click is in the terminal panel sub-area first
-    let tp_inner = app.areas.sidebar_terminal_panel_inner.get();
-    if point_in_rect(col, row, tp_inner) {
-        let item_row = (row - tp_inner.y) as usize;
-        if item_row < app.terminal_panel_items.len() {
-            app.sidebar_panel = SidebarPanel::Terminals;
-            app.terminal_panel_selected = item_row;
+    // Check if click is in the terminal panel area (including borders)
+    let tp_full = app.areas.sidebar_terminal_panel.get();
+    if point_in_rect(col, row, tp_full) {
+        app.sidebar_panel = SidebarPanel::Terminals;
 
-            // Check if clicking the "+" button (rightmost 2 columns)
-            let rel_col = col.saturating_sub(tp_inner.x) as usize;
-            let tp_inner_w = tp_inner.width as usize;
-            if tp_inner_w >= 2 && rel_col >= tp_inner_w - 2 {
-                if let Some(item) = app.terminal_panel_items.get(item_row).copied() {
-                    let actions = app::context_actions_for_item(&item, app.wt_available);
-                    app.open_dialog(app::Dialog::ContextMenu {
-                        item,
-                        selected: None,
-                        actions,
-                    });
-                    return true;
+        // Check if click is on an actual item within the inner area
+        let tp_inner = app.areas.sidebar_terminal_panel_inner.get();
+        if point_in_rect(col, row, tp_inner) {
+            let item_row = (row - tp_inner.y) as usize;
+            if item_row < app.terminal_panel_items.len() {
+                app.terminal_panel_selected = item_row;
+
+                // Check if clicking the "+" button (rightmost 2 columns)
+                let rel_col = col.saturating_sub(tp_inner.x) as usize;
+                let tp_inner_w = tp_inner.width as usize;
+                if tp_inner_w >= 2 && rel_col >= tp_inner_w - 2 {
+                    if let Some(item) = app.terminal_panel_items.get(item_row).copied() {
+                        let actions = app::context_actions_for_item(&item, app.wt_available);
+                        app.open_dialog(app::Dialog::ContextMenu {
+                            item,
+                            selected: None,
+                            actions,
+                        });
+                        return true;
+                    }
                 }
-            }
 
-            app.activate_selected();
+                app.activate_selected();
+            }
         }
         return true;
     }
 
-    // Check worktree list area
+    // Click is in the worktrees panel area — switch to it
+    app.sidebar_panel = SidebarPanel::Worktrees;
+
+    // Check if click is on an actual item within the inner area
     let inner = app.areas.sidebar_inner.get();
     if !point_in_rect(col, row, inner) {
-        return true; // clicked a border, just focus
+        return true; // clicked a border, panel is already switched
     }
 
     // Map row to item index
     let item_row = (row - inner.y) as usize;
 
     if item_row < app.sidebar_items.len() {
-        app.sidebar_panel = SidebarPanel::Worktrees;
         app.sidebar_selected = item_row;
 
         // Check if clicking the expand/collapse icon area (first 2 chars)
@@ -372,6 +379,16 @@ fn handle_sidebar_click(app: &mut App, col: u16, row: u16) -> bool {
                 // Toggle expand/collapse
                 if let Some(wt) = app.worktrees.get_mut(wi) {
                     wt.expanded = !wt.expanded;
+                    app.rebuild_sidebar_items();
+                }
+                return true;
+            }
+        }
+        if let Some(SidebarItem::Location(li)) = app.sidebar_items.get(item_row).copied() {
+            let rel_col = col.saturating_sub(inner.x) as usize;
+            if rel_col < 2 {
+                if let Some(loc) = app.locations.get_mut(li) {
+                    loc.expanded = !loc.expanded;
                     app.rebuild_sidebar_items();
                 }
                 return true;
@@ -663,27 +680,32 @@ fn handle_mini_scroll(app: &mut App, col: u16, row: u16, up: bool) -> bool {
 
 /// Handle a right-click on the sidebar. Returns true if a context menu was opened.
 pub fn handle_sidebar_right_click(app: &mut App, col: u16, row: u16) -> bool {
-    // Check terminal panel sub-area first
-    let tp_inner = app.areas.sidebar_terminal_panel_inner.get();
-    if point_in_rect(col, row, tp_inner) {
-        let item_row = (row - tp_inner.y) as usize;
-        if item_row < app.terminal_panel_items.len() {
-            app.sidebar_panel = SidebarPanel::Terminals;
-            app.terminal_panel_selected = item_row;
-            if let Some(item) = app.terminal_panel_items.get(item_row).copied() {
-                let actions = app::context_actions_for_item(&item, app.wt_available);
-                app.open_dialog(app::Dialog::ContextMenu {
-                    item,
-                    selected: None,
-                    actions,
-                });
-                return true;
+    // Check terminal panel area first (including borders)
+    let tp_full = app.areas.sidebar_terminal_panel.get();
+    if point_in_rect(col, row, tp_full) {
+        app.sidebar_panel = SidebarPanel::Terminals;
+        let tp_inner = app.areas.sidebar_terminal_panel_inner.get();
+        if point_in_rect(col, row, tp_inner) {
+            let item_row = (row - tp_inner.y) as usize;
+            if item_row < app.terminal_panel_items.len() {
+                app.terminal_panel_selected = item_row;
+                if let Some(item) = app.terminal_panel_items.get(item_row).copied() {
+                    let actions = app::context_actions_for_item(&item, app.wt_available);
+                    app.open_dialog(app::Dialog::ContextMenu {
+                        item,
+                        selected: None,
+                        actions,
+                    });
+                    return true;
+                }
             }
         }
         return false;
     }
 
-    // Check worktree list area
+    // Click is in the worktrees panel area
+    app.sidebar_panel = SidebarPanel::Worktrees;
+
     let inner = app.areas.sidebar_inner.get();
     if !point_in_rect(col, row, inner) {
         return false;
@@ -691,7 +713,6 @@ pub fn handle_sidebar_right_click(app: &mut App, col: u16, row: u16) -> bool {
 
     let item_row = (row - inner.y) as usize;
     if item_row < app.sidebar_items.len() {
-        app.sidebar_panel = SidebarPanel::Worktrees;
         app.sidebar_selected = item_row;
         if let Some(item) = app.sidebar_items.get(item_row).copied() {
             let actions = app::context_actions_for_item(&item, app.wt_available);

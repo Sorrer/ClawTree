@@ -112,6 +112,7 @@ fn draw_tree_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 SidebarItem::Worktree(wi) => render_worktree(app, *wi, is_selected, inner_width),
                 SidebarItem::Session(wi, si) => render_session(app, *wi, *si, is_selected, inner_width),
                 SidebarItem::Terminal(_) => ListItem::new(Line::from(vec![])),
+                SidebarItem::Location(_) | SidebarItem::LocationSession(_, _) => ListItem::new(Line::from(vec![])),
             }
         })
         .collect();
@@ -140,7 +141,8 @@ fn draw_detail_pane(f: &mut Frame, app: &App, area: Rect) {
         Some(SidebarItem::Worktree(wi)) => {
             draw_worktree_detail(f, app, area, wi, border_style, border_type);
         }
-        Some(SidebarItem::Project) | Some(SidebarItem::ProjectSession(_)) | Some(SidebarItem::Terminal(_)) | None => {
+        Some(SidebarItem::Project) | Some(SidebarItem::ProjectSession(_)) | Some(SidebarItem::Terminal(_))
+        | Some(SidebarItem::Location(_)) | Some(SidebarItem::LocationSession(_, _)) | None => {
             let block = Block::default()
                 .title(" Details ")
                 .borders(Borders::ALL)

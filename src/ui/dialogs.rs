@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
-use crate::app::{App, CommitPhase, ContextAction, ContextActionKind, Dialog, SidebarItem};
+use crate::app::{App, CommitPhase, ContextAction, ContextActionKind, Dialog, SidebarItem, UpdatePhase};
 use super::theme;
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -111,6 +111,13 @@ pub fn draw(f: &mut Frame, app: &App) {
         } => {
             draw_context_menu(f, app, item, *selected, actions);
         }
+        Dialog::UpdateAvailable {
+            latest_version,
+            selected,
+            phase,
+        } => {
+            draw_update_available(f, app, latest_version, *selected, phase);
+        }
         Dialog::ConvertRepo {
             mode,
             target_path_input,
@@ -120,6 +127,9 @@ pub fn draw(f: &mut Frame, app: &App) {
             confirmed,
         } => {
             draw_convert_repo(f, app, source_repo_path, *mode, target_path_input, branch_name, *focused_field, *confirmed);
+        }
+        Dialog::AddLocation { path_input, error } => {
+            draw_add_location(f, app, path_input, error.as_deref());
         }
     }
 }
@@ -831,6 +841,63 @@ fn draw_rename_session(f: &mut Frame, app: &App, name: &str) {
         Paragraph::new("Enter: save  Esc: cancel")
             .style(Style::default().fg(Color::DarkGray)),
         chunks[3],
+    );
+}
+
+fn draw_add_location(f: &mut Frame, app: &App, path_input: &str, error: Option<&str>) {
+    let area = centered_rect(50, 7, f.area());
+    app.areas.dialog.set(area);
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Add Location ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::DIALOG_CREATION));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new("Directory path:")
+            .style(Style::default().fg(Color::Gray)),
+        chunks[0],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{}_", path_input),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        chunks[1],
+    );
+
+    if let Some(err) = error {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("⚠ {}", err),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ))),
+            chunks[3],
+        );
+    }
+
+    f.render_widget(
+        Paragraph::new("Enter: add  Esc: cancel")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[4],
     );
 }
 
@@ -1612,6 +1679,246 @@ fn draw_convert_repo(
     );
 }
 
+fn draw_update_available(f: &mut Frame, app: &App, latest_version: &str, selected: usize, phase: &UpdatePhase) {
+    let current_version = option_env!("CLAWTREE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+
+    match phase {
+        UpdatePhase::Prompt => {
+            let options = ["Update now", "Dismiss", "Skip this version"];
+            let height = (options.len() as u16) + 7;
+            let area = centered_rect(50, height, f.area());
+            app.areas.dialog.set(area);
+            f.render_widget(Clear, area);
+
+            let block = Block::default()
+                .title(" Update Available ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::DIALOG_CREATION));
+
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // version info
+                    Constraint::Length(1), // separator
+                    Constraint::Length(1), // prompt
+                    Constraint::Length(options.len() as u16), // options
+                    Constraint::Length(1), // help
+                ])
+                .split(inner);
+
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("v", Style::default().fg(Color::DarkGray)),
+                    Span::styled(current_version, Style::default().fg(Color::White)),
+                    Span::styled(" -> ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("v", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        latest_version,
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    ),
+                ])),
+                chunks[0],
+            );
+
+            f.render_widget(
+                Paragraph::new("A new version of clawtree is available:")
+                    .style(Style::default().fg(Color::Gray)),
+                chunks[2],
+            );
+
+            let items: Vec<ListItem> = options
+                .iter()
+                .enumerate()
+                .map(|(idx, label)| {
+                    let is_sel = idx == selected;
+                    let marker = if is_sel { ">" } else { " " };
+                    let style = if idx == 2 {
+                        // "Skip" option in dimmer color
+                        if is_sel {
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        }
+                    } else if is_sel {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    ListItem::new(Line::from(Span::styled(
+                        format!(" {} {}", marker, label),
+                        style,
+                    )))
+                })
+                .collect();
+
+            let list = List::new(items);
+            f.render_widget(list, chunks[3]);
+
+            f.render_widget(
+                Paragraph::new("j/k: select  Enter: confirm  Esc: dismiss")
+                    .style(Style::default().fg(Color::DarkGray)),
+                chunks[4],
+            );
+        }
+        UpdatePhase::Downloading => {
+            let height = 5;
+            let area = centered_rect(50, height, f.area());
+            app.areas.dialog.set(area);
+            f.render_widget(Clear, area);
+
+            let block = Block::default()
+                .title(" Updating ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::DIALOG_CREATION));
+
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // version
+                    Constraint::Length(1), // blank
+                    Constraint::Length(1), // spinner
+                ])
+                .split(inner);
+
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("Updating to ", Style::default().fg(Color::Gray)),
+                    Span::styled(
+                        format!("v{}", latest_version),
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    ),
+                ])),
+                chunks[0],
+            );
+
+            let spinner_idx = (app.spinner_frame / 3) % theme::SPINNER_FRAMES.len();
+            let spinner = theme::SPINNER_FRAMES[spinner_idx];
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("{} Downloading and verifying...", spinner),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ))),
+                chunks[2],
+            );
+        }
+        UpdatePhase::Replacing => {
+            let height = 5;
+            let area = centered_rect(50, height, f.area());
+            app.areas.dialog.set(area);
+            f.render_widget(Clear, area);
+
+            let block = Block::default()
+                .title(" Updating ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::DIALOG_CREATION));
+
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // version
+                    Constraint::Length(1), // blank
+                    Constraint::Length(1), // spinner
+                ])
+                .split(inner);
+
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("Updating to ", Style::default().fg(Color::Gray)),
+                    Span::styled(
+                        format!("v{}", latest_version),
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    ),
+                ])),
+                chunks[0],
+            );
+
+            let spinner_idx = (app.spinner_frame / 3) % theme::SPINNER_FRAMES.len();
+            let spinner = theme::SPINNER_FRAMES[spinner_idx];
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("{} Installing update...", spinner),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ))),
+                chunks[2],
+            );
+        }
+        UpdatePhase::Failed(error_message) => {
+            let wrap_width = 50usize;
+            let error_lines = error_message.len().div_ceil(wrap_width).min(4) as u16;
+            let height = error_lines + 6;
+            let area = centered_rect(50, height, f.area());
+            app.areas.dialog.set(area);
+            f.render_widget(Clear, area);
+
+            let block = Block::default()
+                .title(" Update Failed ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::DIALOG_DESTRUCTIVE));
+
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),           // header
+                    Constraint::Length(1),            // separator
+                    Constraint::Length(error_lines),  // error message
+                    Constraint::Length(1),            // ok
+                    Constraint::Length(1),            // help
+                ])
+                .split(inner);
+
+            f.render_widget(
+                Paragraph::new("Update failed:")
+                    .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                chunks[0],
+            );
+
+            let truncated = if error_message.len() > (wrap_width * 4) {
+                &error_message[..wrap_width * 4]
+            } else {
+                error_message.as_str()
+            };
+            f.render_widget(
+                Paragraph::new(truncated)
+                    .style(Style::default().fg(Color::Yellow))
+                    .wrap(ratatui::widgets::Wrap { trim: false }),
+                chunks[2],
+            );
+
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    " > OK",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ))),
+                chunks[3],
+            );
+
+            f.render_widget(
+                Paragraph::new("Enter/Esc: dismiss")
+                    .style(Style::default().fg(Color::DarkGray)),
+                chunks[4],
+            );
+        }
+    }
+}
+
 fn draw_context_menu(
     f: &mut Frame,
     app: &App,
@@ -1648,6 +1955,26 @@ fn draw_context_menu(
             app.terminal_ids.get(*ti)
                 .and_then(|sid| app.sessions.get(sid))
                 .and_then(|s| s.nickname.clone().or_else(|| Some(s.label.clone())))
+                .map(|n| format!(" {} ", n))
+                .unwrap_or_else(|| " Actions ".to_string())
+        }
+        SidebarItem::Location(li) => {
+            app.locations.get(*li)
+                .map(|loc| {
+                    let name = loc.name.clone().unwrap_or_else(|| {
+                        loc.path.file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| loc.path.to_string_lossy().to_string())
+                    });
+                    format!(" {} ", name)
+                })
+                .unwrap_or_else(|| " Actions ".to_string())
+        }
+        SidebarItem::LocationSession(li, si) => {
+            app.locations.get(*li)
+                .and_then(|loc| loc.session_ids.get(*si))
+                .and_then(|sid| app.sessions.get(sid))
+                .and_then(|s| s.nickname.clone().or_else(|| s.terminal_title()).or_else(|| Some(s.label.clone())))
                 .map(|n| format!(" {} ", n))
                 .unwrap_or_else(|| " Actions ".to_string())
         }

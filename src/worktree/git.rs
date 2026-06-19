@@ -219,7 +219,7 @@ pub fn force_remove_worktree(bare_repo_path: &Path, worktree_path: &Path) -> Res
 
 /// Initialize a new bare repo workflow in the given directory.
 /// Creates `.bare/` (via `git init --bare`), `.git` pointer file,
-/// and optionally an initial worktree.
+/// and an initial worktree for the given branch.
 pub fn init_bare_repo(dir: &Path, initial_branch: &str) -> Result<()> {
     let bare_dir = dir.join(".bare");
 
@@ -236,21 +236,42 @@ pub fn init_bare_repo(dir: &Path, initial_branch: &str) -> Result<()> {
         .current_dir(&bare_dir)
         .output();
 
-    // Create an initial empty commit so worktrees have something to branch from
-    let _ = Command::new("git")
+    // Create an initial empty commit so worktrees have something to branch from.
+    // Use GIT_DIR/GIT_WORK_TREE env vars because the bare repo has core.bare=true,
+    // which prevents `git commit` when resolved through the .git pointer file.
+    let commit_output = Command::new("git")
         .args([
             "-c", "user.name=init",
             "-c", "user.email=init@init",
             "commit", "--allow-empty", "-m", "Initial commit",
         ])
+        .env("GIT_DIR", &bare_dir)
+        .env("GIT_WORK_TREE", dir)
         .current_dir(dir)
-        .output();
+        .output()
+        .context("Failed to run initial commit")?;
+
+    if !commit_output.status.success() {
+        anyhow::bail!(
+            "Initial commit failed: {}",
+            String::from_utf8_lossy(&commit_output.stderr)
+        );
+    }
 
     // Create the first worktree
-    let _ = Command::new("git")
+    let wt_output = Command::new("git")
         .args(["worktree", "add", initial_branch])
         .current_dir(dir)
-        .output();
+        .output()
+        .context("Failed to run git worktree add")?;
+
+    if !wt_output.status.success() {
+        anyhow::bail!(
+            "Failed to create initial worktree '{}': {}",
+            initial_branch,
+            String::from_utf8_lossy(&wt_output.stderr)
+        );
+    }
 
     Ok(())
 }
@@ -554,9 +575,35 @@ pub fn detect_regular_repo(start: &Path) -> Option<PathBuf> {
 }
 
 /// Get the current branch name of a repo.
+/// Falls back to reading the symbolic-ref when rev-parse fails (e.g. empty repo with no commits).
 pub fn current_branch_name(repo_path: &Path) -> Result<String> {
-    let stdout = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_path, "git rev-parse")?;
-    Ok(stdout.trim().to_string())
+    // Try rev-parse first (works when there are commits)
+    if let Ok(stdout) = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_path, "git rev-parse") {
+        let name = stdout.trim().to_string();
+        if !name.is_empty() && name != "HEAD" {
+            return Ok(name);
+        }
+    }
+
+    // Fallback: read symbolic-ref (works for empty repos with no commits)
+    if let Ok(stdout) = run_git(&["symbolic-ref", "--short", "HEAD"], repo_path, "git symbolic-ref") {
+        let name = stdout.trim().to_string();
+        if !name.is_empty() {
+            return Ok(name);
+        }
+    }
+
+    anyhow::bail!("Could not determine current branch name")
+}
+
+/// Check if a repo has any commits.
+fn has_commits(repo_path: &Path) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo_path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Check for in-progress operations (rebase, merge, cherry-pick) in a repo.
@@ -660,6 +707,21 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
         .args(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
         .current_dir(repo_path)
         .output();
+
+    // 8b. If the repo has no commits, create an initial empty commit so
+    //     `git worktree add` has something to branch from.
+    if !has_commits(repo_path) {
+        let _ = Command::new("git")
+            .args([
+                "-c", "user.name=init",
+                "-c", "user.email=init@init",
+                "commit", "--allow-empty", "-m", "Initial commit",
+            ])
+            .env("GIT_DIR", &dot_bare)
+            .env("GIT_WORK_TREE", repo_path)
+            .current_dir(repo_path)
+            .output();
+    }
 
     // 9. Create worktree for the branch
     let wt_output = Command::new("git")

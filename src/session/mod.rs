@@ -694,6 +694,64 @@ pub fn spawn_root_terminal_session(app: &mut App, terminal_size: (u16, u16)) -> 
     Ok(session_id)
 }
 
+/// Spawn a Claude session in an extra location directory.
+pub fn spawn_location_session(app: &mut App, location_idx: usize, terminal_size: (u16, u16), skip_permissions: bool) -> anyhow::Result<u64> {
+    if !app.tmux_available {
+        anyhow::bail!("tmux is required for location sessions");
+    }
+
+    let loc = app.locations.get(location_idx)
+        .ok_or_else(|| anyhow::anyhow!("Invalid location index"))?;
+
+    let loc_path = loc.path.clone();
+    let loc_label = loc.name.clone().unwrap_or_else(|| {
+        loc_path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "location".to_string())
+    });
+
+    let session_id = app.next_session_id;
+    app.next_session_id += 1;
+
+    let (rows, cols) = calculate_pane_size(app, terminal_size.1, terminal_size.0);
+
+    let tmux_name = pty::tmux_session_name(&format!("loc-{}", loc_label), session_id);
+    let handle = pty::spawn_claude_pty_tmux(
+        &loc_path,
+        session_id,
+        app.event_tx.clone(),
+        rows,
+        cols,
+        skip_permissions,
+        &tmux_name,
+        None,
+    )?;
+
+    let session = Session {
+        id: session_id,
+        worktree_path: loc_path,
+        label: "Initializing...".to_string(),
+        parser: handle.parser,
+        write_tx: handle.write_tx,
+        master_pty: handle.master_pty,
+        exited: handle.exited,
+        last_output: handle.last_output,
+        tmux_session_name: handle.tmux_session_name,
+        nickname: None,
+        was_active: false,
+        is_terminal: false,
+    };
+
+    app.sessions.insert(session_id, session);
+
+    if let Some(loc) = app.locations.get_mut(location_idx) {
+        loc.session_ids.push(session_id);
+        loc.expanded = true;
+    }
+
+    Ok(session_id)
+}
+
 /// Kill a session and clean up. Also kills the tmux session if applicable.
 pub fn kill_session(app: &mut App, session_id: u64) {
     if let Some(session) = app.sessions.get(&session_id) {
@@ -711,6 +769,9 @@ pub fn kill_session(app: &mut App, session_id: u64) {
 
     for wt in &mut app.worktrees {
         wt.session_ids.retain(|&id| id != session_id);
+    }
+    for loc in &mut app.locations {
+        loc.session_ids.retain(|&id| id != session_id);
     }
     app.project_session_ids.retain(|&id| id != session_id);
     app.terminal_ids.retain(|&id| id != session_id);
@@ -940,7 +1001,16 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
         // Check if this is a root/project session (path matches bare repo)
         let is_root = wt_idx.is_none() && (wt_path == app.bare_repo_path || wt_path.starts_with(&app.bare_repo_path));
 
-        if wt_idx.is_none() && !is_root {
+        // Check if this session belongs to an extra location
+        let loc_idx = if wt_idx.is_none() && !is_root {
+            app.locations.iter().position(|loc| {
+                wt_path == loc.path || wt_path.starts_with(&loc.path)
+            })
+        } else {
+            None
+        };
+
+        if wt_idx.is_none() && !is_root && loc_idx.is_none() {
             continue; // Orphaned tmux session, skip
         }
 
@@ -991,6 +1061,12 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
             // Root sessions go under the Project entry
             app.project_session_ids.push(session_id);
             app.project_expanded = true;
+        } else if let Some(li) = loc_idx {
+            // Location sessions go under the extra location
+            if let Some(loc) = app.locations.get_mut(li) {
+                loc.session_ids.push(session_id);
+                loc.expanded = true;
+            }
         } else if is_terminal {
             // Terminals go into the dedicated terminal panel
             app.terminal_ids.push(session_id);
@@ -1310,12 +1386,28 @@ pub fn spawn_global_usage_poller(
 fn read_oauth_token() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
     let path = format!("{}/.claude/.credentials.json", home);
-    let content = std::fs::read_to_string(path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-    json.get("claudeAiOauth")
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!("Usage: cannot read {}: {}", path, e);
+            return None;
+        }
+    };
+    let json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!("Usage: failed to parse {}: {}", path, e);
+            return None;
+        }
+    };
+    let token = json.get("claudeAiOauth")
         .and_then(|o| o.get("accessToken"))
         .and_then(|t| t.as_str())
-        .map(|s| s.to_string())
+        .map(|s| s.to_string());
+    if token.is_none() {
+        tracing::debug!("Usage: no claudeAiOauth.accessToken in {}", path);
+    }
+    token
 }
 
 /// Poll the Anthropic API for global usage data.
@@ -1333,22 +1425,32 @@ fn poll_global_usage() -> Result<GlobalUsage, ()> {
             "https://api.anthropic.com/api/oauth/usage",
         ])
         .output()
-        .map_err(|_| ())?;
+        .map_err(|e| {
+            tracing::warn!("Usage: curl failed: {}", e);
+        })?;
 
     if !output.status.success() {
+        tracing::warn!("Usage: API returned status {}", output.status);
         return Err(());
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body).map_err(|_| ())?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+        tracing::warn!("Usage: failed to parse API response: {}", e);
+    })?;
 
     // Detect API-level errors (rate limits, auth failures, etc.)
     if json.get("error").is_some() {
+        tracing::warn!("Usage: API error: {}", json);
         return Err(());
     }
 
-    let five_hour = json.get("five_hour").ok_or(())?;
-    let seven_day = json.get("seven_day").ok_or(())?;
+    let five_hour = json.get("five_hour").ok_or_else(|| {
+        tracing::warn!("Usage: missing 'five_hour' in response");
+    })?;
+    let seven_day = json.get("seven_day").ok_or_else(|| {
+        tracing::warn!("Usage: missing 'seven_day' in response");
+    })?;
 
     // seven_day_sonnet may be null when unused
     let (sonnet_7d_pct, sonnet_7d_reset) = json.get("seven_day_sonnet")

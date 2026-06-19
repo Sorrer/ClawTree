@@ -4,7 +4,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, CommitPhase, ConfirmAction, ContextActionKind, Dialog, FocusTarget, InputMode, MiniModeFocus, PendingAction, ScreenMode, SidebarItem, SavedPrompt, StatusSeverity};
+use crate::app::{App, CommitPhase, ConfirmAction, ContextActionKind, Dialog, FocusTarget, InputMode, MiniModeFocus, PendingAction, ScreenMode, SidebarItem, SavedPrompt, StatusSeverity, UpdatePhase};
 use crate::session;
 use crate::ui::terminal_pane;
 use crate::url;
@@ -138,6 +138,8 @@ const SIDEBAR_KEYS: &[KeyEntry] = &[
     ("Ctrl + s",                "Stage all & commit with Claude"),
     ("p",                       "Push branch to remote"),
     ("Shift + p",               "Pull branch from remote"),
+    section("Locations"),
+    ("l",                       "Add extra location"),
     section("URLs"),
     ("u",                       "Copy last URL to clipboard"),
     ("Shift + U",               "Open last URL in browser"),
@@ -538,6 +540,9 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 Some(SidebarItem::Session(wi, si)) => {
                     app.worktrees.get(wi).and_then(|wt| wt.session_ids.get(si).copied())
                 }
+                Some(SidebarItem::LocationSession(li, si)) => {
+                    app.locations.get(li).and_then(|loc| loc.session_ids.get(si).copied())
+                }
                 Some(SidebarItem::Terminal(ti)) => {
                     app.terminal_ids.get(ti).copied()
                 }
@@ -570,6 +575,14 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         // W — open new Windows Terminal tab with claude in worktree directory (WSL only)
         (KeyModifiers::SHIFT, KeyCode::Char('W')) if app.wt_available => {
             open_wsl_window(app, true);
+        }
+
+        // l — add extra location
+        (_, KeyCode::Char('l')) => {
+            app.open_dialog(Dialog::AddLocation {
+                path_input: String::new(),
+                error: None,
+            });
         }
 
         _ => {}
@@ -670,6 +683,7 @@ fn selected_worktree_idx(app: &App) -> Option<usize> {
             let session = app.sessions.get(sid)?;
             app.worktrees.iter().position(|wt| wt.path == session.worktree_path)
         }
+        Some(SidebarItem::Location(_)) | Some(SidebarItem::LocationSession(_, _)) => None,
         None => None,
     }
 }
@@ -737,6 +751,28 @@ fn spawn_claude_for_selected(app: &mut App, terminal_size: (u16, u16), skip_perm
     // When Project is selected, spawn at the repo root
     if matches!(app.selected_sidebar_item(), Some(SidebarItem::Project)) {
         match session::spawn_root_session(app, terminal_size, skip_permissions) {
+            Ok(sid) => {
+                app.active_session_id = Some(sid);
+                app.project_overview_active = false;
+                app.focus = FocusTarget::TerminalPane;
+                app.input_mode = InputMode::Terminal;
+                app.rebuild_sidebar_items();
+            }
+            Err(e) => {
+                app.set_status(format!("Failed to spawn session: {}", e));
+            }
+        }
+        return;
+    }
+
+    // When a Location or LocationSession is selected, spawn in that location
+    let loc_idx = match app.selected_sidebar_item() {
+        Some(SidebarItem::Location(li)) => Some(li),
+        Some(SidebarItem::LocationSession(li, _)) => Some(li),
+        _ => None,
+    };
+    if let Some(li) = loc_idx {
+        match session::spawn_location_session(app, li, terminal_size, skip_permissions) {
             Ok(sid) => {
                 app.active_session_id = Some(sid);
                 app.project_overview_active = false;
@@ -854,6 +890,35 @@ fn handle_delete(app: &mut App) {
                     input: String::new(),
                     on_confirm: ConfirmAction::DeleteWorktree(path),
                 });
+            }
+        }
+        Some(SidebarItem::Location(li)) => {
+            if let Some(loc) = app.locations.get(li) {
+                let name = loc.name.clone().unwrap_or_else(|| {
+                    loc.path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| loc.path.to_string_lossy().to_string())
+                });
+                let session_count = loc.session_ids.len();
+                let msg = if session_count > 0 {
+                    format!("Remove location '{}' and kill {} session(s)?", name, session_count)
+                } else {
+                    format!("Remove location '{}'?", name)
+                };
+                app.open_dialog(Dialog::Confirm {
+                    message: msg,
+                    on_confirm: ConfirmAction::RemoveLocation(li),
+                });
+            }
+        }
+        Some(SidebarItem::LocationSession(li, si)) => {
+            if let Some(loc) = app.locations.get(li) {
+                if let Some(&sid) = loc.session_ids.get(si) {
+                    app.open_dialog(Dialog::Confirm {
+                        message: format!("Kill session {}?", session::session_label(app, sid)),
+                        on_confirm: ConfirmAction::DeleteSession(sid),
+                    });
+                }
             }
         }
         None => {}
@@ -1278,7 +1343,8 @@ fn handle_url_open(app: &mut App) {
 pub fn execute_context_action(app: &mut App, item: &SidebarItem, kind: &ContextActionKind, terminal_size: (u16, u16)) {
     // Ensure the item is selected so handlers can find it
     match item {
-        SidebarItem::Project | SidebarItem::ProjectSession(_) | SidebarItem::Worktree(_) | SidebarItem::Session(_, _) => {
+        SidebarItem::Project | SidebarItem::ProjectSession(_) | SidebarItem::Worktree(_) | SidebarItem::Session(_, _)
+        | SidebarItem::Location(_) | SidebarItem::LocationSession(_, _) => {
             if let Some(idx) = app.sidebar_items.iter().position(|i| i == item) {
                 app.sidebar_panel = crate::app::SidebarPanel::Worktrees;
                 app.sidebar_selected = idx;
@@ -1309,10 +1375,14 @@ pub fn execute_context_action(app: &mut App, item: &SidebarItem, kind: &ContextA
         }
         ContextActionKind::DeleteWorktree | ContextActionKind::DeleteSession => handle_delete(app),
         ContextActionKind::ForceDeleteWorktree => handle_force_delete(app),
+        ContextActionKind::RemoveLocation => handle_delete(app),
         ContextActionKind::RenameSession => {
             let sid = match app.selected_sidebar_item() {
                 Some(SidebarItem::Session(wi, si)) => {
                     app.worktrees.get(wi).and_then(|wt| wt.session_ids.get(si).copied())
+                }
+                Some(SidebarItem::LocationSession(li, si)) => {
+                    app.locations.get(li).and_then(|loc| loc.session_ids.get(si).copied())
                 }
                 Some(SidebarItem::Terminal(ti)) => {
                     app.terminal_ids.get(ti).copied()
@@ -1379,6 +1449,80 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 }
             }
             _ => {} // consume all other keys
+        }
+        return;
+    }
+
+    // ── UpdateAvailable dialog ────────────────────────────────────────
+    if let Some(Dialog::UpdateAvailable { ref phase, .. }) = app.dialog {
+        match phase {
+            UpdatePhase::Prompt => {
+                match key.code {
+                    KeyCode::Esc => {
+                        app.update_dialog_shown = true;
+                        app.close_dialog();
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if let Some(Dialog::UpdateAvailable { ref mut selected, .. }) = app.dialog {
+                            if *selected + 1 < crate::app::UPDATE_AVAILABLE_OPTION_COUNT {
+                                *selected += 1;
+                            }
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if let Some(Dialog::UpdateAvailable { ref mut selected, .. }) = app.dialog {
+                            if *selected > 0 {
+                                *selected -= 1;
+                            }
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(Dialog::UpdateAvailable { latest_version, selected, .. }) = app.dialog.take() {
+                            match selected {
+                                0 => {
+                                    // Update now — start download
+                                    let version = latest_version.clone();
+                                    app.dialog = Some(Dialog::UpdateAvailable {
+                                        latest_version,
+                                        selected: 0,
+                                        phase: UpdatePhase::Downloading,
+                                    });
+                                    app.input_mode = InputMode::Dialog;
+                                    crate::update::spawn_update_download(version, app.event_tx.clone());
+                                }
+                                1 => {
+                                    // Dismiss — close dialog, don't show again this session
+                                    app.update_dialog_shown = true;
+                                    app.close_dialog();
+                                }
+                                2 => {
+                                    // Skip this version permanently
+                                    app.save_skipped_update_version(&latest_version);
+                                    app.skipped_update_version = Some(latest_version);
+                                    app.update_dialog_shown = true;
+                                    app.close_dialog();
+                                }
+                                _ => {
+                                    app.close_dialog();
+                                }
+                            }
+                        }
+                    }
+                    _ => {} // consume all other keys
+                }
+            }
+            UpdatePhase::Downloading | UpdatePhase::Replacing => {
+                // No interaction allowed during download/replace — consume all keys
+            }
+            UpdatePhase::Failed(_) => {
+                match key.code {
+                    KeyCode::Enter | KeyCode::Esc => {
+                        app.update_dialog_shown = true;
+                        app.close_dialog();
+                    }
+                    _ => {} // consume all other keys
+                }
+            }
         }
         return;
     }
@@ -1591,7 +1735,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             .ok();
                     } else {
                         // Different location
-                        let target = std::path::PathBuf::from(&target_path_input);
+                        let target = crate::app::expand_path(&target_path_input);
                         let source = source_repo_path;
                         let bare_path = target.clone();
                         app.set_status("Converting repo to new location...");
@@ -1912,6 +2056,37 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         }
                     }
                 }
+                Some(Dialog::AddLocation { path_input, .. }) => {
+                    // Expand `~`, env vars and surrounding quotes — there's no
+                    // shell to do it for dialog text input.
+                    let path = crate::app::expand_path(&path_input);
+                    if !path.is_dir() {
+                        app.dialog = Some(Dialog::AddLocation {
+                            path_input,
+                            error: Some("Directory does not exist".to_string()),
+                        });
+                        return;
+                    }
+                    let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+                    // Check for duplicate
+                    if app.locations.iter().any(|loc| loc.path == canonical) {
+                        app.dialog = Some(Dialog::AddLocation {
+                            path_input,
+                            error: Some("Location already exists".to_string()),
+                        });
+                        return;
+                    }
+                    app.locations.push(crate::app::ExtraLocation {
+                        path: canonical,
+                        name: None,
+                        session_ids: Vec::new(),
+                        expanded: false,
+                    });
+                    app.save_locations();
+                    app.rebuild_sidebar_items();
+                    app.close_dialog();
+                    app.set_status("Location added");
+                }
                 Some(Dialog::Confirm { on_confirm, .. }) => {
                     match on_confirm {
                         ConfirmAction::DeleteSession(sid) => {
@@ -1919,6 +2094,21 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         }
                         ConfirmAction::DeleteWorktree(_) | ConfirmAction::ForceDeleteWorktree(_) => {
                             // Should not happen — worktree deletion uses ConfirmDangerous now
+                        }
+                        ConfirmAction::RemoveLocation(idx) => {
+                            // Kill all sessions in this location
+                            if let Some(loc) = app.locations.get(idx) {
+                                let sids: Vec<u64> = loc.session_ids.clone();
+                                for sid in sids {
+                                    session::kill_session(app, sid);
+                                }
+                            }
+                            if idx < app.locations.len() {
+                                app.locations.remove(idx);
+                                app.save_locations();
+                                app.rebuild_sidebar_items();
+                                app.set_status("Location removed");
+                            }
                         }
                     }
                     app.close_dialog();
@@ -1966,6 +2156,9 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     }
                 }
                 Some(Dialog::ContextMenu { .. }) => {
+                    // Handled in the early return above
+                }
+                Some(Dialog::UpdateAvailable { .. }) => {
                     // Handled in the early return above
                 }
                 None => {
@@ -2262,6 +2455,11 @@ fn dialog_insert_char(app: &mut App, c: char) -> bool {
             input.push(c);
             true
         }
+        Some(Dialog::AddLocation { ref mut path_input, ref mut error }) => {
+            path_input.push(c);
+            *error = None;
+            true
+        }
         Some(Dialog::ConfirmDangerous { ref mut input, .. }) => {
             input.push(c);
             true
@@ -2310,6 +2508,11 @@ fn dialog_backspace(app: &mut App) -> bool {
         }
         Some(Dialog::RenameSession { ref mut input, .. }) => {
             input.pop();
+            true
+        }
+        Some(Dialog::AddLocation { ref mut path_input, ref mut error }) => {
+            path_input.pop();
+            *error = None;
             true
         }
         Some(Dialog::ConfirmDangerous { ref mut input, .. }) => {
@@ -2725,7 +2928,8 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
             let target_wi = match app.mini.items.get(app.mini.selected).copied() {
                 Some(SidebarItem::Worktree(wi)) => wi,
                 Some(SidebarItem::Session(wi, _)) => wi,
-                Some(SidebarItem::Project) | Some(SidebarItem::ProjectSession(_)) | Some(SidebarItem::Terminal(_)) | None => 0,
+                Some(SidebarItem::Project) | Some(SidebarItem::ProjectSession(_)) | Some(SidebarItem::Terminal(_))
+                | Some(SidebarItem::Location(_)) | Some(SidebarItem::LocationSession(_, _)) | None => 0,
             };
             app.mini.target_worktree_idx = target_wi;
             // If only one worktree, skip selection and go straight to prompt
@@ -2773,7 +2977,8 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
                         });
                     }
                 }
-                Some(SidebarItem::Project) | Some(SidebarItem::Terminal(_)) | None => {}
+                Some(SidebarItem::Project) | Some(SidebarItem::Terminal(_))
+                | Some(SidebarItem::Location(_)) | Some(SidebarItem::LocationSession(_, _)) | None => {}
             }
         }
         KeyCode::Char('r') => {

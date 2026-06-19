@@ -126,7 +126,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             match session.parser.try_read() {
                 Ok(guard) => {
                     let screen = guard.screen();
-                    render_vt100_screen(f, screen, block, area, &app.url_cache, app.text_selection.as_ref());
+                    render_vt100_screen(f, screen, block, area, &app.url_cache, app.text_selection.as_ref(), is_focused);
                     return;
                 }
                 Err(_) => {
@@ -587,7 +587,7 @@ fn draw_scrollbar(f: &mut Frame, area: Rect, total_lines: usize, scroll_offset: 
 /// attribute (SGR 2).  Claude Code uses dim for placeholder/hint text, so
 /// without this the placeholders render at full intensity — the same color
 /// as regular typed text.
-fn render_vt100_screen(f: &mut Frame, screen: &vt100::Screen, block: Block, area: Rect, url_cache: &url::UrlCache, selection: Option<&TextSelection>) {
+fn render_vt100_screen(f: &mut Frame, screen: &vt100::Screen, block: Block, area: Rect, url_cache: &url::UrlCache, selection: Option<&TextSelection>, is_focused: bool) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -692,6 +692,18 @@ fn render_vt100_screen(f: &mut Frame, screen: &vt100::Screen, block: Block, area
                 style = style.add_modifier(Modifier::REVERSED);
                 buf_cell.set_style(style);
             }
+        }
+    }
+
+    // Position the hardware cursor at the embedded terminal's cursor location.
+    // ratatui hides the cursor every frame unless `set_cursor_position` is
+    // called during draw, so without this the cursor is invisible inside the
+    // pane (e.g. typing into Claude Code via tmux). Only show it when the pane
+    // is focused and the program hasn't hidden the cursor itself.
+    if is_focused && !screen.hide_cursor() {
+        let (cur_row, cur_col) = screen.cursor_position();
+        if cur_row < inner.height.min(screen_rows) && cur_col < inner.width.min(screen_cols) {
+            f.set_cursor_position((inner.x + cur_col, inner.y + cur_row));
         }
     }
 }

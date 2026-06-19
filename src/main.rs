@@ -23,7 +23,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tracing_subscriber::EnvFilter;
 
-use crate::app::{App, PendingAction, CommitPhase, Dialog, ScreenMode, StatusSeverity};
+use crate::app::{App, PendingAction, CommitPhase, Dialog, ScreenMode, StatusSeverity, UpdatePhase};
 use crate::event::AppEvent;
 
 /// Watchdog thread poll interval in milliseconds.
@@ -101,8 +101,14 @@ fn main() -> Result<()> {
         libc::signal(libc::SIGHUP, signal_handler as *const () as libc::sighandler_t);
     }
 
-    // Set up file logging (to file, never stdout)
-    let log_file = std::fs::File::create("worktree-claude-tui.log")
+    // Set up file logging to ~/.clawtree/logs/clawtree.log
+    let log_dir = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join(".clawtree")
+        .join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_file = std::fs::File::create(log_dir.join("clawtree.log"))
         .or_else(|_| std::fs::File::create("/dev/null"))
         .or_else(|_| std::fs::File::open("/dev/null"))
         .expect("Cannot open any log target");
@@ -284,6 +290,12 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
     let mut app = App::new(bare_repo_path.clone(), event_tx.clone(), repo_detected, tmux_available, wt_available);
     app.regular_repo_path = regular_repo_path;
 
+    // Load skipped update version preference
+    app.load_skipped_update_version();
+
+    // Load extra locations from global config
+    app.load_locations();
+
     // Auto-detect whether to open init or convert dialog
     if !repo_detected {
         if app.regular_repo_path.is_some() {
@@ -343,14 +355,65 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
             app.set_status(format!("Failed to load worktrees: {}", e));
         }
 
-        // If the bare repo has no worktrees, fall back to the welcome screen
-        // (this can happen after a failed conversion left a .bare/ behind).
+        // If the bare repo has no worktrees, try to recover by creating
+        // the missing worktree from HEAD's branch. This handles the case
+        // where a previous init/conversion created .bare but the worktree
+        // add failed or was interrupted.
         if app.worktrees.is_empty() {
-            app.repo_detected = false;
-            // Search from the original target dir (not bare_repo_path, which
-            // may be a parent directory where detect_bare_repo found .bare/).
-            app.regular_repo_path = worktree::git::detect_regular_repo(&target_dir);
-        } else {
+            tracing::warn!("Bare repo has no worktrees, attempting recovery");
+            let recovered = (|| -> anyhow::Result<bool> {
+                let bare_dir = app.bare_repo_path.join(".bare");
+                let branch = worktree::git::current_branch_name(&app.bare_repo_path)
+                    .or_else(|_| worktree::git::current_branch_name(&bare_dir))
+                    .unwrap_or_else(|_| "main".to_string());
+
+                // Ensure there's at least one commit
+                let has_commit = std::process::Command::new("git")
+                    .args(["rev-parse", "HEAD"])
+                    .current_dir(&app.bare_repo_path)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+
+                if !has_commit {
+                    let _ = std::process::Command::new("git")
+                        .args([
+                            "-c", "user.name=init",
+                            "-c", "user.email=init@init",
+                            "commit", "--allow-empty", "-m", "Initial commit",
+                        ])
+                        .env("GIT_DIR", &bare_dir)
+                        .env("GIT_WORK_TREE", &app.bare_repo_path)
+                        .current_dir(&app.bare_repo_path)
+                        .output();
+                }
+
+                let output = std::process::Command::new("git")
+                    .args(["worktree", "add", &branch])
+                    .current_dir(&app.bare_repo_path)
+                    .output()?;
+
+                if output.status.success() {
+                    worktree::refresh_worktrees(&mut app)?;
+                    Ok(!app.worktrees.is_empty())
+                } else {
+                    Ok(false)
+                }
+            })().unwrap_or(false);
+
+            if !recovered {
+                app.repo_detected = false;
+                // Search from the original target dir (not bare_repo_path, which
+                // may be a parent directory where detect_bare_repo found .bare/).
+                app.regular_repo_path = worktree::git::detect_regular_repo(&target_dir);
+                // If no regular repo found either, show init dialog
+                if app.regular_repo_path.is_none() {
+                    app.auto_init_pending = Some(app::AutoInitKind::Init);
+                }
+            }
+        }
+
+        if !app.worktrees.is_empty() {
             // Reconnect existing tmux sessions from a previous TUI run
             let size = terminal.size()?;
             let reconnected = session::reconnect_tmux_sessions(&mut app, (size.width, size.height));
@@ -946,7 +1009,68 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                         needs_redraw = true;
                     }
                     AppEvent::UpdateAvailable { latest_version } => {
-                        app.update_available = Some(latest_version);
+                        app.update_available = Some(latest_version.clone());
+                        // Show the update dialog if not skipped, not already shown, and no dialog open
+                        let is_skipped = app.skipped_update_version.as_deref() == Some(latest_version.as_str());
+                        if !is_skipped && !app.update_dialog_shown && app.dialog.is_none() {
+                            app.update_dialog_shown = true;
+                            app.open_dialog(Dialog::UpdateAvailable {
+                                latest_version,
+                                selected: 0,
+                                phase: UpdatePhase::Prompt,
+                            });
+                        }
+                        needs_redraw = true;
+                    }
+                    AppEvent::UpdateDownloadComplete { result, version } => {
+                        match result {
+                            Ok(binary_path) => {
+                                // Transition dialog to Replacing phase
+                                if let Some(Dialog::UpdateAvailable { ref latest_version, .. }) = app.dialog {
+                                    let ver = latest_version.clone();
+                                    app.dialog = Some(Dialog::UpdateAvailable {
+                                        latest_version: ver,
+                                        selected: 0,
+                                        phase: UpdatePhase::Replacing,
+                                    });
+                                }
+                                update::spawn_update_replace(binary_path, version, event_tx.clone());
+                            }
+                            Err(e) => {
+                                if let Some(Dialog::UpdateAvailable { ref latest_version, .. }) = app.dialog {
+                                    let ver = latest_version.clone();
+                                    app.dialog = Some(Dialog::UpdateAvailable {
+                                        latest_version: ver,
+                                        selected: 0,
+                                        phase: UpdatePhase::Failed(e),
+                                    });
+                                }
+                            }
+                        }
+                        needs_redraw = true;
+                    }
+                    AppEvent::UpdateReplaceComplete { result, version } => {
+                        match result {
+                            Ok(()) => {
+                                app.close_dialog();
+                                app.set_status_with(
+                                    StatusSeverity::Success,
+                                    format!("Updated to v{} — restart clawtree to use the new version", version),
+                                );
+                                // Clear the update indicator since we've updated
+                                app.update_available = None;
+                            }
+                            Err(e) => {
+                                if let Some(Dialog::UpdateAvailable { ref latest_version, .. }) = app.dialog {
+                                    let ver = latest_version.clone();
+                                    app.dialog = Some(Dialog::UpdateAvailable {
+                                        latest_version: ver,
+                                        selected: 0,
+                                        phase: UpdatePhase::Failed(e),
+                                    });
+                                }
+                            }
+                        }
                         needs_redraw = true;
                     }
                     AppEvent::WorktreeStatusReady { worktree_path, status, next_refresh_at } => {

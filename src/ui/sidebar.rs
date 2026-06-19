@@ -71,6 +71,12 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                     // Terminals are rendered in the terminal panel, not here
                     ListItem::new(Line::from(vec![]))
                 }
+                SidebarItem::Location(li) => {
+                    render_location(app, *li, is_selected, is_hovered, inner_width)
+                }
+                SidebarItem::LocationSession(li, si) => {
+                    render_location_session(app, *li, *si, is_selected, is_hovered, inner_width)
+                }
             }
         })
         .collect();
@@ -95,7 +101,7 @@ fn render_project(app: &App, is_selected: bool, is_hovered: bool, inner_width: u
 
     let label = format!("◆ {}", project_name);
     let mut spans = vec![
-        Span::styled(label, Style::default().fg(Color::Magenta).bg(bg).add_modifier(bold)),
+        Span::styled(label, Style::default().fg(t.brand_claw).bg(bg).add_modifier(bold)),
     ];
 
     // Pad to full width
@@ -697,5 +703,165 @@ fn format_reset_datetime(iso: &str) -> String {
     };
 
     format!("{} {}", local.format("%b %-d %H:%M"), tz)
+}
+
+fn render_location(app: &App, li: usize, is_selected: bool, is_hovered: bool, inner_width: usize) -> ListItem<'static> {
+    let loc = &app.locations[li];
+    let icon = if loc.expanded { "▼" } else { "▶" };
+
+    let display_name = loc.name.clone().unwrap_or_else(|| {
+        loc.path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| loc.path.to_string_lossy().to_string())
+    });
+
+    let total = loc.session_ids.len();
+    let alive = loc.session_ids.iter().filter(|sid| {
+        app.sessions.get(sid)
+            .map(|s| !s.exited.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    }).count();
+    let working = loc.session_ids.iter().filter(|sid| {
+        app.sessions.get(sid)
+            .map(|s| s.is_active())
+            .unwrap_or(false)
+    }).count();
+
+    let has_bg = is_selected || is_hovered;
+    let t = theme::get();
+    let bg = if is_selected { t.sidebar_sel_bg } else if is_hovered { t.sidebar_hover_bg } else { Color::Reset };
+    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+
+    let label_style = Style::default()
+        .fg(Color::Cyan)
+        .bg(bg)
+        .add_modifier(bold);
+
+    let mut spans = vec![
+        Span::styled(format!("{} ◇ {}", icon, display_name), label_style),
+    ];
+
+    if total > 0 {
+        spans.push(Span::styled(
+            format!(" {}", alive),
+            Style::default().fg(Color::DarkGray).bg(bg),
+        ));
+        if working > 0 {
+            spans.push(Span::styled(
+                format!(" {}", working),
+                Style::default().fg(Color::Yellow).bg(bg),
+            ));
+        }
+    }
+
+    let text_len: usize = spans.iter().map(|s| s.width()).sum();
+    if has_bg && text_len < inner_width {
+        let pad = inner_width - text_len;
+        if is_hovered && pad >= 2 {
+            spans.push(Span::styled(" ".repeat(pad - 2), Style::default().bg(bg)));
+            spans.push(Span::styled("+ ", Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD)));
+        } else {
+            spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
+        }
+    }
+
+    ListItem::new(Line::from(spans))
+}
+
+fn render_location_session(app: &App, li: usize, si: usize, is_selected: bool, is_hovered: bool, inner_width: usize) -> ListItem<'static> {
+    let loc = &app.locations[li];
+    let sid = loc.session_ids[si];
+    let session = app.sessions.get(&sid);
+    let is_active_session = app.active_session_id == Some(sid);
+
+    let has_bg = is_selected || is_active_session || is_hovered;
+    let t = theme::get();
+    let bg = match (is_selected, is_active_session, is_hovered) {
+        (true, true, _) => t.sidebar_sel_active_bg,
+        (true, false, _) => t.sidebar_sel_bg,
+        (false, true, _) => t.sidebar_active_bg,
+        (false, false, true) => t.sidebar_hover_bg,
+        (false, false, false) => Color::Reset,
+    };
+    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+
+    let status = session
+        .map(|s| s.agent_status())
+        .unwrap_or(AgentStatus::Exited);
+    let in_plan_mode = session.map(|s| s.is_in_plan_mode()).unwrap_or(false);
+    let nickname = session.and_then(|s| s.nickname.clone());
+    let title = session.and_then(|s| s.terminal_title());
+
+    let display_name = nickname.unwrap_or_else(|| {
+        title
+            .unwrap_or_else(|| {
+                session
+                    .map(|s| s.label.clone())
+                    .unwrap_or_else(|| "???".to_string())
+            })
+            .trim_start_matches('\u{2733}')
+            .trim_start_matches('\u{2802}')
+            .trim_start_matches('\u{2810}')
+            .trim_start()
+            .to_string()
+    });
+
+    let (status_icon, fg): (String, Color) = match status {
+        AgentStatus::Exited => ("\u{2717}".to_string(), Color::DarkGray),
+        AgentStatus::Working => (spinner_char(app).to_string(), Color::Yellow),
+        AgentStatus::NeedsInput => ("\u{25cf}".to_string(), theme::AGENT_NEEDS_INPUT),
+        AgentStatus::Idle => ("\u{25cb}".to_string(), Color::Gray),
+    };
+
+    let sel_fg = if has_bg {
+        match fg {
+            Color::DarkGray => Color::Gray,
+            Color::Gray => Color::White,
+            other => other,
+        }
+    } else {
+        fg
+    };
+
+    let usage_suffix = app.claude_usage.get(&sid).map(|u| {
+        (format!(" {}%", u.usage_pct()), Color::DarkGray)
+    });
+
+    let prefix = format!("  {} ", status_icon);
+    let suffix_len = usage_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
+    let max_name = inner_width.saturating_sub(prefix.len()).saturating_sub(suffix_len);
+    let truncated = if display_name.len() > max_name && max_name > 1 {
+        let mut end = max_name.saturating_sub(1);
+        while end > 0 && !display_name.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &display_name[..end])
+    } else {
+        display_name
+    };
+
+    let name_fg = if in_plan_mode { theme::AGENT_PLANNING } else { sel_fg };
+
+    let mut spans = vec![
+        Span::styled(prefix, Style::default().fg(sel_fg).bg(bg).add_modifier(bold)),
+        Span::styled(truncated, Style::default().fg(name_fg).bg(bg).add_modifier(bold)),
+    ];
+
+    if let Some((usage_text, usage_color)) = usage_suffix {
+        spans.push(Span::styled(usage_text, Style::default().fg(usage_color).bg(bg)));
+    }
+
+    let text_len: usize = spans.iter().map(|s| s.width()).sum();
+    if has_bg && text_len < inner_width {
+        let pad = inner_width - text_len;
+        if is_hovered && pad >= 2 {
+            spans.push(Span::styled(" ".repeat(pad - 2), Style::default().bg(bg)));
+            spans.push(Span::styled("+ ", Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD)));
+        } else {
+            spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
+        }
+    }
+
+    ListItem::new(Line::from(spans))
 }
 

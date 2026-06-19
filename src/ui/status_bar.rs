@@ -76,6 +76,20 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                             "c:claude t:term n:new-wt ?:help ^q:quit"
                         }
                     }
+                    Some(crate::app::SidebarItem::Location(_)) => {
+                        if wide {
+                            "c:claude  Shift+c:claude (YOLO)  d:remove location  l:add location  ?:help  Ctrl+Q:quit"
+                        } else {
+                            "c:claude Shift+c:claude (YOLO) d:remove l:add-loc ?:help"
+                        }
+                    }
+                    Some(crate::app::SidebarItem::LocationSession(_, _)) => {
+                        if wide {
+                            "c:claude  Shift+c:claude (YOLO)  d:delete  r:rename  ?:help  Ctrl+Q:quit"
+                        } else {
+                            "c:claude Shift+c:claude (YOLO) d:del r:rename ?:help"
+                        }
+                    }
                     Some(crate::app::SidebarItem::Terminal(_)) | None => {
                         if wide { "n:new worktree  ^b:sidebar  ?:help  ^q:quit" } else { "n:new-wt ^b:sidebar ?:help ^q:quit" }
                     }

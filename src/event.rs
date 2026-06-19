@@ -76,4 +76,14 @@ pub enum AppEvent {
     UpdateAvailable {
         latest_version: String,
     },
+    /// Background update download completed.
+    UpdateDownloadComplete {
+        result: Result<PathBuf, String>,
+        version: String,
+    },
+    /// Background update binary replacement completed.
+    UpdateReplaceComplete {
+        result: Result<(), String>,
+        version: String,
+    },
 }
