@@ -1,3 +1,6 @@
+// Shared across multiple integration test binaries; not every test uses every helper.
+#![allow(dead_code)]
+
 use std::path::Path;
 use std::process::Command;
 
@@ -10,7 +13,11 @@ pub fn setup_bare_repo(dir: &Path) {
         .current_dir(dir)
         .output()
         .expect("git init --bare failed");
-    assert!(out.status.success(), "git init --bare failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git init --bare failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     // Write .git pointer file
     std::fs::write(dir.join(".git"), "gitdir: ./.bare\n").expect("write .git file");
@@ -18,17 +25,17 @@ pub fn setup_bare_repo(dir: &Path) {
     // Set default branch
     let _ = Command::new("git")
         .args(["symbolic-ref", "HEAD", "refs/heads/main"])
-        .current_dir(&dir.join(".bare"))
+        .current_dir(dir.join(".bare"))
         .output();
 
     // Configure user in the bare repo
     let _ = Command::new("git")
         .args(["config", "user.name", "Test User"])
-        .current_dir(&dir.join(".bare"))
+        .current_dir(dir.join(".bare"))
         .output();
     let _ = Command::new("git")
         .args(["config", "user.email", "test@test.com"])
-        .current_dir(&dir.join(".bare"))
+        .current_dir(dir.join(".bare"))
         .output();
 
     // Initial empty commit: use GIT_DIR + GIT_WORK_TREE to allow commit
@@ -36,16 +43,25 @@ pub fn setup_bare_repo(dir: &Path) {
     // needs an explicit work tree to allow commits).
     let out = Command::new("git")
         .args([
-            "-c", "user.name=Test User",
-            "-c", "user.email=test@test.com",
-            "commit", "--allow-empty", "-m", "Initial commit",
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@test.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Initial commit",
         ])
         .env("GIT_DIR", dir.join(".bare"))
         .env("GIT_WORK_TREE", dir)
         .current_dir(dir)
         .output()
         .expect("initial commit failed");
-    assert!(out.status.success(), "initial commit failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "initial commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// Configure git user.name and user.email in a repo.
@@ -76,14 +92,22 @@ pub fn git_commit(dir: &Path, msg: &str) {
         .current_dir(dir)
         .output()
         .expect("git add failed");
-    assert!(out.status.success(), "git add -A failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git add -A failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let out = Command::new("git")
         .args(["commit", "-m", msg])
         .current_dir(dir)
         .output()
         .expect("git commit failed");
-    assert!(out.status.success(), "git commit failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// Initialize a bare repo and create the initial worktree for "main".
@@ -94,7 +118,11 @@ pub fn setup_bare_repo_with_worktree(dir: &Path) {
         .current_dir(dir)
         .output()
         .expect("worktree add main failed");
-    assert!(out.status.success(), "worktree add main failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "worktree add main failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     git_config(&dir.join("main"));
 }
 

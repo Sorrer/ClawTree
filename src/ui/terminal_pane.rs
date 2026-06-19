@@ -1,26 +1,32 @@
 use std::time::Instant;
 
 use ansi_to_tui::IntoText as _;
-use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::style::Modifier;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::Frame;
 
+use super::theme;
 use crate::app::{App, FocusTarget, TextSelection};
 use crate::url;
-use super::theme;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == FocusTarget::TerminalPane;
 
     let border_style = if is_focused {
-        Style::default().fg(theme::get().border_focused_terminal).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme::get().border_focused_terminal)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::BORDER_UNFOCUSED)
     };
-    let border_type = if is_focused { BorderType::Thick } else { BorderType::Plain };
+    let border_type = if is_focused {
+        BorderType::Thick
+    } else {
+        BorderType::Plain
+    };
 
     let focus_indicator = if is_focused { " ▸" } else { "" };
     let mut title = match app.active_session_id {
@@ -73,10 +79,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
                             // Parse ANSI escape sequences into styled ratatui text
                             let text = content.as_bytes().into_text().unwrap_or_default();
-                            let lines: Vec<Line> = text.lines
-                                .into_iter()
-                                .take(visible_rows)
-                                .collect();
+                            let lines: Vec<Line> =
+                                text.lines.into_iter().take(visible_rows).collect();
                             let para = Paragraph::new(lines);
                             f.render_widget(para, inner_area);
 
@@ -89,14 +93,20 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                                         break;
                                     }
                                     let col_start = if row == sr { sc } else { 0 };
-                                    let col_end = if row == er { ec } else { inner_area.width.saturating_sub(1) };
+                                    let col_end = if row == er {
+                                        ec
+                                    } else {
+                                        inner_area.width.saturating_sub(1)
+                                    };
                                     for col in col_start..=col_end {
                                         if col >= inner_area.width {
                                             break;
                                         }
                                         let buf_x = inner_area.x + col;
                                         let buf_y = inner_area.y + row;
-                                        if buf_x >= buf.area().right() || buf_y >= buf.area().bottom() {
+                                        if buf_x >= buf.area().right()
+                                            || buf_y >= buf.area().bottom()
+                                        {
                                             continue;
                                         }
                                         let buf_cell = &mut buf[(buf_x, buf_y)];
@@ -115,7 +125,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                                 width: 1,
                                 height: inner_area.height,
                             };
-                            draw_scrollbar(f, scrollbar_area, total, effective_scroll, visible_rows);
+                            draw_scrollbar(
+                                f,
+                                scrollbar_area,
+                                total,
+                                effective_scroll,
+                                visible_rows,
+                            );
                             return;
                         }
                     }
@@ -126,12 +142,19 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             match session.parser.try_read() {
                 Ok(guard) => {
                     let screen = guard.screen();
-                    render_vt100_screen(f, screen, block, area, &app.url_cache, app.text_selection.as_ref(), is_focused);
+                    render_vt100_screen(
+                        f,
+                        screen,
+                        block,
+                        area,
+                        &app.url_cache,
+                        app.text_selection.as_ref(),
+                        is_focused,
+                    );
                     return;
                 }
                 Err(_) => {
-                    let placeholder =
-                        Paragraph::new("Rendering...").block(block);
+                    let placeholder = Paragraph::new("Rendering...").block(block);
                     f.render_widget(placeholder, area);
                     return;
                 }
@@ -141,7 +164,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     // Priority 2: Project overview panel
     if app.project_overview_active {
-        let project_name = app.bare_repo_path
+        let project_name = app
+            .bare_repo_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "Project".to_string());
@@ -184,17 +208,24 @@ fn draw_project_overview(f: &mut Frame, app: &App, area: Rect) {
     use crate::worktree::git;
     use std::sync::atomic::Ordering;
 
-    let project_name = app.bare_repo_path
+    let project_name = app
+        .bare_repo_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "Project".to_string());
 
     let label_style = Style::default().fg(Color::Gray);
     let value_style = Style::default().fg(Color::White);
-    let header_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let header_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
     let dim_style = Style::default().fg(Color::DarkGray);
-    let section_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
-    let key_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let section_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let key_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -211,7 +242,9 @@ fn draw_project_overview(f: &mut Frame, app: &App, area: Rect) {
 
     // Compact stats line
     let wt_count = app.worktrees.len();
-    let active_sessions = app.sessions.values()
+    let active_sessions = app
+        .sessions
+        .values()
         .filter(|s| !s.exited.load(Ordering::Relaxed))
         .count();
     let total_sessions = app.sessions.len();
@@ -219,7 +252,10 @@ fn draw_project_overview(f: &mut Frame, app: &App, area: Rect) {
         Span::styled("  ", Style::default()),
         Span::styled(format!("{}", wt_count), value_style),
         Span::styled(" worktrees  ", label_style),
-        Span::styled(format!("{}/{}", active_sessions, total_sessions), value_style),
+        Span::styled(
+            format!("{}/{}", active_sessions, total_sessions),
+            value_style,
+        ),
         Span::styled(" sessions", label_style),
     ];
     if let Some(url) = git::remote_url(&app.bare_repo_path) {
@@ -302,7 +338,10 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
         }
         None => "  \u{27F3} Fetching...".to_string(),
     };
-    lines.push(Line::styled(refresh_text, Style::default().fg(Color::DarkGray)));
+    lines.push(Line::styled(
+        refresh_text,
+        Style::default().fg(Color::DarkGray),
+    ));
 
     lines.push(Line::raw(""));
 
@@ -323,17 +362,27 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
             lines.push(Line::styled(unstaged_header, unstaged_header_style));
 
             if unstaged.is_empty() {
-                lines.push(Line::styled("    (none)", Style::default().fg(Color::DarkGray)));
+                lines.push(Line::styled(
+                    "    (none)",
+                    Style::default().fg(Color::DarkGray),
+                ));
             } else {
                 for (i, (status_char, path)) in unstaged.iter().enumerate() {
-                    let is_selected = focused && app.info_panel_section == 0 && app.info_panel_cursor == i;
+                    let is_selected =
+                        focused && app.info_panel_section == 0 && app.info_panel_cursor == i;
                     let color = file_status_color(*status_char);
                     let prefix = if is_selected { " > " } else { "   " };
                     let status_str = format!("{}{} ", prefix, status_char);
                     if is_selected {
                         lines.push(Line::from(vec![
-                            Span::styled(status_str, Style::default().fg(Color::White).bg(Color::DarkGray)),
-                            Span::styled(path.as_str(), Style::default().fg(Color::White).bg(Color::DarkGray)),
+                            Span::styled(
+                                status_str,
+                                Style::default().fg(Color::White).bg(Color::DarkGray),
+                            ),
+                            Span::styled(
+                                path.as_str(),
+                                Style::default().fg(Color::White).bg(Color::DarkGray),
+                            ),
                         ]));
                     } else {
                         lines.push(Line::from(vec![
@@ -356,16 +405,26 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
             lines.push(Line::styled(staged_header, staged_header_style));
 
             if staged.is_empty() {
-                lines.push(Line::styled("    (none)", Style::default().fg(Color::DarkGray)));
+                lines.push(Line::styled(
+                    "    (none)",
+                    Style::default().fg(Color::DarkGray),
+                ));
             } else {
                 for (i, (status_char, path)) in staged.iter().enumerate() {
-                    let is_selected = focused && app.info_panel_section == 1 && app.info_panel_cursor == i;
+                    let is_selected =
+                        focused && app.info_panel_section == 1 && app.info_panel_cursor == i;
                     let prefix = if is_selected { " > " } else { "   " };
                     let status_str = format!("{}{} ", prefix, status_char);
                     if is_selected {
                         lines.push(Line::from(vec![
-                            Span::styled(status_str, Style::default().fg(Color::White).bg(Color::DarkGray)),
-                            Span::styled(path.as_str(), Style::default().fg(Color::White).bg(Color::DarkGray)),
+                            Span::styled(
+                                status_str,
+                                Style::default().fg(Color::White).bg(Color::DarkGray),
+                            ),
+                            Span::styled(
+                                path.as_str(),
+                                Style::default().fg(Color::White).bg(Color::DarkGray),
+                            ),
                         ]));
                     } else {
                         lines.push(Line::from(vec![
@@ -450,7 +509,10 @@ fn draw_worktree_info(f: &mut Frame, app: &App, wi: usize, area: Rect) {
 
     // Split area: content on top, hints pinned at bottom
     let content_height = area.height.saturating_sub(1);
-    let content_area = Rect { height: content_height, ..area };
+    let content_area = Rect {
+        height: content_height,
+        ..area
+    };
     let hints_area = Rect {
         y: area.y + content_height,
         height: 1,
@@ -487,10 +549,15 @@ fn file_status_color(status: char) -> Color {
 fn capture_tmux_pane(tmux_name: &str, start: i64, end: i64) -> Option<String> {
     let output = std::process::Command::new("tmux")
         .args([
-            "capture-pane", "-t", tmux_name,
-            "-p", "-e",
-            "-S", &start.to_string(),
-            "-E", &end.to_string(),
+            "capture-pane",
+            "-t",
+            tmux_name,
+            "-p",
+            "-e",
+            "-S",
+            &start.to_string(),
+            "-E",
+            &end.to_string(),
         ])
         .output()
         .ok()?;
@@ -506,10 +573,14 @@ fn capture_tmux_pane(tmux_name: &str, start: i64, end: i64) -> Option<String> {
 pub fn capture_tmux_pane_plain(tmux_name: &str, start: i64, end: i64) -> Option<String> {
     let output = std::process::Command::new("tmux")
         .args([
-            "capture-pane", "-t", tmux_name,
+            "capture-pane",
+            "-t",
+            tmux_name,
             "-p",
-            "-S", &start.to_string(),
-            "-E", &end.to_string(),
+            "-S",
+            &start.to_string(),
+            "-E",
+            &end.to_string(),
         ])
         .output()
         .ok()?;
@@ -538,7 +609,13 @@ pub fn tmux_history_size(tmux_name: &str) -> usize {
 }
 
 /// Draw a scrollbar in the given 1-column area.
-fn draw_scrollbar(f: &mut Frame, area: Rect, total_lines: usize, scroll_offset: usize, visible: usize) {
+fn draw_scrollbar(
+    f: &mut Frame,
+    area: Rect,
+    total_lines: usize,
+    scroll_offset: usize,
+    visible: usize,
+) {
     if area.height == 0 || total_lines == 0 {
         return;
     }
@@ -587,7 +664,15 @@ fn draw_scrollbar(f: &mut Frame, area: Rect, total_lines: usize, scroll_offset: 
 /// attribute (SGR 2).  Claude Code uses dim for placeholder/hint text, so
 /// without this the placeholders render at full intensity — the same color
 /// as regular typed text.
-fn render_vt100_screen(f: &mut Frame, screen: &vt100::Screen, block: Block, area: Rect, url_cache: &url::UrlCache, selection: Option<&TextSelection>, is_focused: bool) {
+fn render_vt100_screen(
+    f: &mut Frame,
+    screen: &vt100::Screen,
+    block: Block,
+    area: Rect,
+    url_cache: &url::UrlCache,
+    selection: Option<&TextSelection>,
+    is_focused: bool,
+) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -677,7 +762,11 @@ fn render_vt100_screen(f: &mut Frame, screen: &vt100::Screen, block: Block, area
                 break;
             }
             let col_start = if row == sr { sc } else { 0 };
-            let col_end = if row == er { ec } else { inner.width.min(screen_cols).saturating_sub(1) };
+            let col_end = if row == er {
+                ec
+            } else {
+                inner.width.min(screen_cols).saturating_sub(1)
+            };
             for col in col_start..=col_end {
                 if col >= inner.width.min(screen_cols) {
                     break;

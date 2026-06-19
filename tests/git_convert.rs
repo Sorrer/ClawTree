@@ -103,7 +103,11 @@ fn test_convert_in_place_blocks_during_merge() {
     let result = git::convert_repo_in_place(dir, "");
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
-    assert!(err_msg.contains("merge") || err_msg.contains("in progress"), "unexpected error: {}", err_msg);
+    assert!(
+        err_msg.contains("merge") || err_msg.contains("in progress"),
+        "unexpected error: {}",
+        err_msg
+    );
 }
 
 /// After in-place conversion, the worktree should contain the committed file
@@ -122,12 +126,18 @@ fn test_convert_in_place_files_moved_to_worktree() {
 
     let wt = dir.join("main");
     // Committed files should be in the worktree
-    assert!(wt.join("src/main.rs").exists(), "src/main.rs not in worktree");
+    assert!(
+        wt.join("src/main.rs").exists(),
+        "src/main.rs not in worktree"
+    );
     assert!(wt.join("README.md").exists(), "README.md not in worktree");
 
     // Old root-level files should be cleaned up
     assert!(!dir.join("src").exists(), "root src/ should be removed");
-    assert!(!dir.join("README.md").exists(), "root README.md should be removed");
+    assert!(
+        !dir.join("README.md").exists(),
+        "root README.md should be removed"
+    );
 }
 
 /// After in-place conversion, `git worktree list` should work and show
@@ -144,7 +154,11 @@ fn test_convert_in_place_worktree_list_works() {
     git::convert_repo_in_place(dir, "").unwrap();
 
     let entries = git::list_worktrees(dir).unwrap();
-    assert!(entries.len() >= 2, "expected bare + main, got {} entries", entries.len());
+    assert!(
+        entries.len() >= 2,
+        "expected bare + main, got {} entries",
+        entries.len()
+    );
 
     let bare = entries.iter().find(|e| e.is_bare);
     assert!(bare.is_some(), "no bare entry after conversion");
@@ -169,10 +183,15 @@ fn test_convert_in_place_can_create_new_worktree() {
     // Create a new worktree from the converted repo
     git::create_worktree(dir, "feature-x", "feature-x", "main").unwrap();
 
-    assert!(dir.join("feature-x").is_dir(), "feature-x worktree not created");
+    assert!(
+        dir.join("feature-x").is_dir(),
+        "feature-x worktree not created"
+    );
 
     let entries = git::list_worktrees(dir).unwrap();
-    let feature = entries.iter().find(|e| e.branch.as_deref() == Some("feature-x"));
+    let feature = entries
+        .iter()
+        .find(|e| e.branch.as_deref() == Some("feature-x"));
     assert!(feature.is_some(), "feature-x not in worktree list");
 }
 
@@ -214,7 +233,10 @@ fn test_convert_in_place_worktree_clean_after_conversion() {
     git::convert_repo_in_place(dir, "").unwrap();
 
     let wt = dir.join("main");
-    assert!(git::is_worktree_clean(&wt).unwrap(), "worktree should be clean after converting a clean repo");
+    assert!(
+        git::is_worktree_clean(&wt).unwrap(),
+        "worktree should be clean after converting a clean repo"
+    );
 }
 
 /// Converting a repo with multiple branches should preserve all branches,
@@ -241,9 +263,21 @@ fn test_convert_in_place_preserves_branches() {
     git::convert_repo_in_place(dir, "").unwrap();
 
     let branches = git::list_branches(dir).unwrap();
-    assert!(branches.contains(&"main".to_string()), "main branch missing: {:?}", branches);
-    assert!(branches.contains(&"feature-a".to_string()), "feature-a branch missing: {:?}", branches);
-    assert!(branches.contains(&"feature-b".to_string()), "feature-b branch missing: {:?}", branches);
+    assert!(
+        branches.contains(&"main".to_string()),
+        "main branch missing: {:?}",
+        branches
+    );
+    assert!(
+        branches.contains(&"feature-a".to_string()),
+        "feature-a branch missing: {:?}",
+        branches
+    );
+    assert!(
+        branches.contains(&"feature-b".to_string()),
+        "feature-b branch missing: {:?}",
+        branches
+    );
 }
 
 /// Converting a repo with a deep directory structure should work.
@@ -276,7 +310,8 @@ fn test_convert_in_place_deep_directory_structure() {
     for entry in &root_entries {
         assert!(
             entry == ".bare" || entry == ".git" || entry == "main",
-            "unexpected root entry after conversion: '{}'", entry
+            "unexpected root entry after conversion: '{}'",
+            entry
         );
     }
 }
@@ -299,7 +334,10 @@ fn test_convert_in_place_stash_pop_untracked() {
     let wt = dir.join("main");
     // Stash should have captured and restored the untracked file
     // (stash push --include-untracked + stash pop)
-    assert!(wt.join("committed.txt").exists(), "committed file should be in worktree");
+    assert!(
+        wt.join("committed.txt").exists(),
+        "committed file should be in worktree"
+    );
     // The untracked file may or may not be restored depending on stash behavior,
     // but the conversion should not error
     assert!(wt.is_dir(), "worktree should exist");
@@ -317,7 +355,11 @@ fn test_convert_in_place_uncommitted_files_only() {
     // Create several files and directories but do NOT commit them
     test_helpers::create_file(dir, "README.md", "# My Project");
     test_helpers::create_file(dir, "src/main.rs", "fn main() { println!(\"hello\"); }");
-    test_helpers::create_file(dir, "src/lib.rs", "pub fn add(a: i32, b: i32) -> i32 { a + b }");
+    test_helpers::create_file(
+        dir,
+        "src/lib.rs",
+        "pub fn add(a: i32, b: i32) -> i32 { a + b }",
+    );
     test_helpers::create_file(dir, "assets/icon.txt", "pretend this is an icon");
     test_helpers::create_file(dir, "Cargo.toml", "[package]\nname = \"test\"");
 
@@ -336,10 +378,19 @@ fn test_convert_in_place_uncommitted_files_only() {
     assert!(dir.join("main").is_dir(), "main worktree not created");
 
     // Old root-level files should be cleaned up
-    assert!(!dir.join("README.md").exists(), "root README.md should be removed");
+    assert!(
+        !dir.join("README.md").exists(),
+        "root README.md should be removed"
+    );
     assert!(!dir.join("src").exists(), "root src/ should be removed");
-    assert!(!dir.join("assets").exists(), "root assets/ should be removed");
-    assert!(!dir.join("Cargo.toml").exists(), "root Cargo.toml should be removed");
+    assert!(
+        !dir.join("assets").exists(),
+        "root assets/ should be removed"
+    );
+    assert!(
+        !dir.join("Cargo.toml").exists(),
+        "root Cargo.toml should be removed"
+    );
 
     // Root should only contain .bare, .git, main
     let root_entries: Vec<String> = std::fs::read_dir(dir)
@@ -350,21 +401,41 @@ fn test_convert_in_place_uncommitted_files_only() {
     for entry in &root_entries {
         assert!(
             entry == ".bare" || entry == ".git" || entry == "main",
-            "unexpected root entry after conversion: '{}'", entry
+            "unexpected root entry after conversion: '{}'",
+            entry
         );
     }
 
     // The worktree should have the files restored via stash pop
     let wt = dir.join("main");
-    assert!(wt.join("README.md").exists(), "README.md should be restored in worktree");
-    assert!(wt.join("src/main.rs").exists(), "src/main.rs should be restored in worktree");
-    assert!(wt.join("src/lib.rs").exists(), "src/lib.rs should be restored in worktree");
-    assert!(wt.join("assets/icon.txt").exists(), "assets/icon.txt should be restored in worktree");
-    assert!(wt.join("Cargo.toml").exists(), "Cargo.toml should be restored in worktree");
+    assert!(
+        wt.join("README.md").exists(),
+        "README.md should be restored in worktree"
+    );
+    assert!(
+        wt.join("src/main.rs").exists(),
+        "src/main.rs should be restored in worktree"
+    );
+    assert!(
+        wt.join("src/lib.rs").exists(),
+        "src/lib.rs should be restored in worktree"
+    );
+    assert!(
+        wt.join("assets/icon.txt").exists(),
+        "assets/icon.txt should be restored in worktree"
+    );
+    assert!(
+        wt.join("Cargo.toml").exists(),
+        "Cargo.toml should be restored in worktree"
+    );
 
     // Verify the repo is functional — we can list worktrees
     let entries = git::list_worktrees(dir).unwrap();
-    assert!(entries.len() >= 2, "expected bare + main, got {} entries", entries.len());
+    assert!(
+        entries.len() >= 2,
+        "expected bare + main, got {} entries",
+        entries.len()
+    );
 
     // Verify we can still stage and commit in the new worktree
     test_helpers::git_config(&wt);
@@ -399,15 +470,30 @@ fn test_convert_in_place_with_conflicting_dir_name() {
     // Worktree exists and contains the files (from checkout)
     let wt = dir.join("main");
     assert!(wt.is_dir(), "main worktree not created");
-    assert!(wt.join("main/scene.tscn").exists(), "main/scene.tscn not in worktree");
-    assert!(wt.join("main/player.gd").exists(), "main/player.gd not in worktree");
-    assert!(wt.join("project.godot").exists(), "project.godot not in worktree");
+    assert!(
+        wt.join("main/scene.tscn").exists(),
+        "main/scene.tscn not in worktree"
+    );
+    assert!(
+        wt.join("main/player.gd").exists(),
+        "main/player.gd not in worktree"
+    );
+    assert!(
+        wt.join("project.godot").exists(),
+        "project.godot not in worktree"
+    );
 
     // Root should be clean
-    assert!(!dir.join("project.godot").exists(), "root project.godot should be removed");
+    assert!(
+        !dir.join("project.godot").exists(),
+        "root project.godot should be removed"
+    );
 
     // Temp holding dir should be cleaned up
-    assert!(!dir.join(".clawtree_convert_tmp").exists(), "temp dir should be removed");
+    assert!(
+        !dir.join(".clawtree_convert_tmp").exists(),
+        "temp dir should be removed"
+    );
 
     // Repo should be functional
     let entries = git::list_worktrees(dir).unwrap();
@@ -461,9 +547,21 @@ fn test_convert_in_place_preserves_all_file_states() {
         .output()
         .unwrap();
     let status_str = String::from_utf8_lossy(&status.stdout);
-    assert!(status_str.contains("A  staged_new.txt"), "staged_new.txt should be staged before conversion, got: {}", status_str);
-    assert!(status_str.contains(" M committed.txt"), "committed.txt should have unstaged modifications before conversion, got: {}", status_str);
-    assert!(status_str.contains("?? untracked.txt"), "untracked.txt should be untracked before conversion, got: {}", status_str);
+    assert!(
+        status_str.contains("A  staged_new.txt"),
+        "staged_new.txt should be staged before conversion, got: {}",
+        status_str
+    );
+    assert!(
+        status_str.contains(" M committed.txt"),
+        "committed.txt should have unstaged modifications before conversion, got: {}",
+        status_str
+    );
+    assert!(
+        status_str.contains("?? untracked.txt"),
+        "untracked.txt should be untracked before conversion, got: {}",
+        status_str
+    );
 
     // Ignored files should be ignored
     let ignored = Command::new("git")
@@ -472,7 +570,11 @@ fn test_convert_in_place_preserves_all_file_states() {
         .output()
         .unwrap();
     let ignored_str = String::from_utf8_lossy(&ignored.stdout);
-    assert!(ignored_str.contains("!! build/"), "build/ should be ignored before conversion, got: {}", ignored_str);
+    assert!(
+        ignored_str.contains("!! build/"),
+        "build/ should be ignored before conversion, got: {}",
+        ignored_str
+    );
 
     // ── Run conversion ──────────────────────────────────────────────────
     let branch = git::convert_repo_in_place(dir, "").unwrap();
@@ -482,8 +584,14 @@ fn test_convert_in_place_preserves_all_file_states() {
     assert!(wt.is_dir(), "worktree directory should exist");
 
     // ── Verify 1: Committed files are present ───────────────────────────
-    assert!(wt.join("committed.txt").exists(), "committed.txt should be in worktree");
-    assert!(wt.join("src/lib.rs").exists(), "src/lib.rs should be in worktree");
+    assert!(
+        wt.join("committed.txt").exists(),
+        "committed.txt should be in worktree"
+    );
+    assert!(
+        wt.join("src/lib.rs").exists(),
+        "src/lib.rs should be in worktree"
+    );
     assert_eq!(
         std::fs::read_to_string(wt.join("src/lib.rs")).unwrap(),
         "pub fn hello() {}",
@@ -491,7 +599,10 @@ fn test_convert_in_place_preserves_all_file_states() {
     );
 
     // ── Verify 2: Staged file is present and still staged ───────────────
-    assert!(wt.join("staged_new.txt").exists(), "staged_new.txt should be in worktree");
+    assert!(
+        wt.join("staged_new.txt").exists(),
+        "staged_new.txt should be in worktree"
+    );
     assert_eq!(
         std::fs::read_to_string(wt.join("staged_new.txt")).unwrap(),
         "staged new file",
@@ -524,13 +635,19 @@ fn test_convert_in_place_preserves_all_file_states() {
     );
 
     // ── Verify 4: Untracked files are present ───────────────────────────
-    assert!(wt.join("untracked.txt").exists(), "untracked.txt should be in worktree");
+    assert!(
+        wt.join("untracked.txt").exists(),
+        "untracked.txt should be in worktree"
+    );
     assert_eq!(
         std::fs::read_to_string(wt.join("untracked.txt")).unwrap(),
         "untracked content",
         "untracked file content should be intact"
     );
-    assert!(wt.join("untracked_dir/deep.txt").exists(), "untracked_dir/deep.txt should be in worktree");
+    assert!(
+        wt.join("untracked_dir/deep.txt").exists(),
+        "untracked_dir/deep.txt should be in worktree"
+    );
     assert_eq!(
         std::fs::read_to_string(wt.join("untracked_dir/deep.txt")).unwrap(),
         "deep untracked",
@@ -538,19 +655,28 @@ fn test_convert_in_place_preserves_all_file_states() {
     );
 
     // ── Verify 5: Ignored files are present ─────────────────────────────
-    assert!(wt.join("build/output.bin").exists(), "ignored build/output.bin should be in worktree");
+    assert!(
+        wt.join("build/output.bin").exists(),
+        "ignored build/output.bin should be in worktree"
+    );
     assert_eq!(
         std::fs::read_to_string(wt.join("build/output.bin")).unwrap(),
         "binary data",
         "ignored file content should be intact"
     );
-    assert!(wt.join("build/cache/temp.dat").exists(), "ignored build/cache/temp.dat should be in worktree");
+    assert!(
+        wt.join("build/cache/temp.dat").exists(),
+        "ignored build/cache/temp.dat should be in worktree"
+    );
     assert_eq!(
         std::fs::read_to_string(wt.join("build/cache/temp.dat")).unwrap(),
         "cached data",
         "deep ignored file content should be intact"
     );
-    assert!(wt.join("debug.log").exists(), "ignored debug.log should be in worktree");
+    assert!(
+        wt.join("debug.log").exists(),
+        "ignored debug.log should be in worktree"
+    );
     assert_eq!(
         std::fs::read_to_string(wt.join("debug.log")).unwrap(),
         "log line 1",
@@ -558,7 +684,10 @@ fn test_convert_in_place_preserves_all_file_states() {
     );
 
     // ── Verify .gitignore itself is present ─────────────────────────────
-    assert!(wt.join(".gitignore").exists(), ".gitignore should be in worktree");
+    assert!(
+        wt.join(".gitignore").exists(),
+        ".gitignore should be in worktree"
+    );
 
     // ── Verify cleanup: no leftover files at root ───────────────────────
     let root_entries: Vec<String> = std::fs::read_dir(dir)
@@ -569,16 +698,24 @@ fn test_convert_in_place_preserves_all_file_states() {
     for entry in &root_entries {
         assert!(
             entry == ".bare" || entry == ".git" || entry == "main",
-            "unexpected root entry after conversion: '{}'", entry
+            "unexpected root entry after conversion: '{}'",
+            entry
         );
     }
 
     // ── Verify temp holding dir is cleaned up ───────────────────────────
-    assert!(!dir.join(".clawtree_convert_tmp").exists(), "temp dir should be cleaned up");
+    assert!(
+        !dir.join(".clawtree_convert_tmp").exists(),
+        "temp dir should be cleaned up"
+    );
 
     // ── Verify repo is functional after conversion ──────────────────────
     let entries = git::list_worktrees(dir).unwrap();
-    assert!(entries.len() >= 2, "expected bare + main, got {} entries", entries.len());
+    assert!(
+        entries.len() >= 2,
+        "expected bare + main, got {} entries",
+        entries.len()
+    );
 }
 
 // ── Convert to separate location ─────────────────────────────────────────
@@ -617,7 +754,11 @@ fn test_convert_to_location_nonempty_target() {
     let result = git::convert_repo_to_location(source, target, "");
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
-    assert!(err_msg.contains("not empty"), "unexpected error: {}", err_msg);
+    assert!(
+        err_msg.contains("not empty"),
+        "unexpected error: {}",
+        err_msg
+    );
 }
 
 /// The target should contain the committed files in its worktree.
@@ -636,8 +777,14 @@ fn test_convert_to_location_files_in_worktree() {
     git::convert_repo_to_location(source, &target, "").unwrap();
 
     let wt = target.join("main");
-    assert!(wt.join("src/main.rs").exists(), "src/main.rs not in target worktree");
-    assert!(wt.join("README.md").exists(), "README.md not in target worktree");
+    assert!(
+        wt.join("src/main.rs").exists(),
+        "src/main.rs not in target worktree"
+    );
+    assert!(
+        wt.join("README.md").exists(),
+        "README.md not in target worktree"
+    );
 }
 
 /// After converting to a new location, the target should support creating
@@ -657,7 +804,11 @@ fn test_convert_to_location_fully_functional() {
 
     // List worktrees
     let entries = git::list_worktrees(&target).unwrap();
-    assert!(entries.len() >= 2, "expected bare + main, got {}", entries.len());
+    assert!(
+        entries.len() >= 2,
+        "expected bare + main, got {}",
+        entries.len()
+    );
 
     // Create a new worktree
     git::create_worktree(&target, "feature", "feature", "main").unwrap();
@@ -685,7 +836,10 @@ fn test_convert_to_location_source_unchanged() {
 
     // Record source state before conversion
     let source_head_before = git::head_subject(source).unwrap();
-    assert!(source.join(".git").is_dir(), "source should have .git directory before");
+    assert!(
+        source.join(".git").is_dir(),
+        "source should have .git directory before"
+    );
 
     let tmp_target = tempfile::tempdir().unwrap();
     let target = tmp_target.path().join("converted");
@@ -693,10 +847,19 @@ fn test_convert_to_location_source_unchanged() {
     git::convert_repo_to_location(source, &target, "").unwrap();
 
     // Source should be untouched
-    assert!(source.join(".git").is_dir(), "source .git directory should still exist");
-    assert!(source.join("file.txt").exists(), "source file should still exist");
+    assert!(
+        source.join(".git").is_dir(),
+        "source .git directory should still exist"
+    );
+    assert!(
+        source.join("file.txt").exists(),
+        "source file should still exist"
+    );
     let source_head_after = git::head_subject(source).unwrap();
-    assert_eq!(source_head_before, source_head_after, "source HEAD should be unchanged");
+    assert_eq!(
+        source_head_before, source_head_after,
+        "source HEAD should be unchanged"
+    );
 }
 
 /// Converting with a branch override at a new location should use the specified branch.
@@ -718,5 +881,8 @@ fn test_convert_to_location_branch_override() {
 
     let branch = git::convert_repo_to_location(source, &target, "develop").unwrap();
     assert_eq!(branch, "develop");
-    assert!(target.join("develop").is_dir(), "develop worktree not created");
+    assert!(
+        target.join("develop").is_dir(),
+        "develop worktree not created"
+    );
 }

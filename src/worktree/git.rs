@@ -41,7 +41,11 @@ fn run_git(args: &[&str], cwd: &Path, description: &str) -> Result<String> {
 
 /// List all worktrees from a bare repo path.
 pub fn list_worktrees(bare_repo_path: &Path) -> Result<Vec<GitWorktreeEntry>> {
-    let stdout = run_git(&["worktree", "list", "--porcelain"], bare_repo_path, "git worktree list")?;
+    let stdout = run_git(
+        &["worktree", "list", "--porcelain"],
+        bare_repo_path,
+        "git worktree list",
+    )?;
     parse_worktree_list(&stdout)
 }
 
@@ -94,7 +98,12 @@ fn parse_worktree_list(output: &str) -> Result<Vec<GitWorktreeEntry>> {
 }
 
 /// Create a new worktree. If `base_branch` is non-empty, the new branch is based off it.
-pub fn create_worktree(bare_repo_path: &Path, branch: &str, rel_path: &str, base_branch: &str) -> Result<()> {
+pub fn create_worktree(
+    bare_repo_path: &Path,
+    branch: &str,
+    rel_path: &str,
+    base_branch: &str,
+) -> Result<()> {
     let mut args = vec!["worktree", "add", "-b", branch, rel_path];
     if !base_branch.is_empty() {
         args.push(base_branch);
@@ -128,22 +137,38 @@ pub fn create_worktree(bare_repo_path: &Path, branch: &str, rel_path: &str, base
 /// Remove a worktree.
 pub fn remove_worktree(bare_repo_path: &Path, worktree_path: &Path) -> Result<()> {
     let wt_str = worktree_path.to_string_lossy();
-    run_git(&["worktree", "remove", &wt_str], bare_repo_path, "git worktree remove")?;
+    run_git(
+        &["worktree", "remove", &wt_str],
+        bare_repo_path,
+        "git worktree remove",
+    )?;
     Ok(())
 }
 
 /// List local branches.
 pub fn list_branches(bare_repo_path: &Path) -> Result<Vec<String>> {
-    let stdout = run_git(&["branch", "--format=%(refname:short)"], bare_repo_path, "git branch")?;
-    Ok(stdout.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+    let stdout = run_git(
+        &["branch", "--format=%(refname:short)"],
+        bare_repo_path,
+        "git branch",
+    )?;
+    Ok(stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
 }
 
 /// Get the remote origin URL for a bare repo (if configured).
 pub fn remote_url(bare_repo_path: &Path) -> Option<String> {
-    run_git(&["config", "--get", "remote.origin.url"], bare_repo_path, "git remote url")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    run_git(
+        &["config", "--get", "remote.origin.url"],
+        bare_repo_path,
+        "git remote url",
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
 }
 
 /// Result of a merge operation.
@@ -179,7 +204,11 @@ pub fn merge_in_progress(worktree_path: &Path) -> Option<String> {
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
-    Some(if name.is_empty() { "unknown".to_string() } else { name })
+    Some(if name.is_empty() {
+        "unknown".to_string()
+    } else {
+        name
+    })
 }
 
 /// Merge a branch into the current branch of a worktree.
@@ -213,7 +242,11 @@ pub fn merge_abort(worktree_path: &Path) -> Result<()> {
 /// Force-remove a worktree (even if dirty).
 pub fn force_remove_worktree(bare_repo_path: &Path, worktree_path: &Path) -> Result<()> {
     let wt_str = worktree_path.to_string_lossy();
-    run_git(&["worktree", "remove", "--force", &wt_str], bare_repo_path, "git worktree remove --force")?;
+    run_git(
+        &["worktree", "remove", "--force", &wt_str],
+        bare_repo_path,
+        "git worktree remove --force",
+    )?;
     Ok(())
 }
 
@@ -227,12 +260,15 @@ pub fn init_bare_repo(dir: &Path, initial_branch: &str) -> Result<()> {
     run_git(&["init", "--bare", ".bare"], dir, "git init --bare")?;
 
     // Create .git file pointing to .bare
-    std::fs::write(dir.join(".git"), "gitdir: ./.bare\n")
-        .context("Failed to write .git file")?;
+    std::fs::write(dir.join(".git"), "gitdir: ./.bare\n").context("Failed to write .git file")?;
 
     // Set default branch name
     let _ = Command::new("git")
-        .args(["symbolic-ref", "HEAD", &format!("refs/heads/{}", initial_branch)])
+        .args([
+            "symbolic-ref",
+            "HEAD",
+            &format!("refs/heads/{}", initial_branch),
+        ])
         .current_dir(&bare_dir)
         .output();
 
@@ -241,9 +277,14 @@ pub fn init_bare_repo(dir: &Path, initial_branch: &str) -> Result<()> {
     // which prevents `git commit` when resolved through the .git pointer file.
     let commit_output = Command::new("git")
         .args([
-            "-c", "user.name=init",
-            "-c", "user.email=init@init",
-            "commit", "--allow-empty", "-m", "Initial commit",
+            "-c",
+            "user.name=init",
+            "-c",
+            "user.email=init@init",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Initial commit",
         ])
         .env("GIT_DIR", &bare_dir)
         .env("GIT_WORK_TREE", dir)
@@ -296,13 +337,16 @@ pub fn clone_bare_repo(dir: &Path, url: &str, initial_branch: &str) -> Result<()
     }
 
     // Create .git file pointing to .bare
-    std::fs::write(dir.join(".git"), "gitdir: ./.bare\n")
-        .context("Failed to write .git file")?;
+    std::fs::write(dir.join(".git"), "gitdir: ./.bare\n").context("Failed to write .git file")?;
 
     // Fix remote fetch config (bare clones default to fetch = +refs/heads/*:refs/heads/*)
     // We want the standard fetch refspec so `git fetch` works properly
     let _ = Command::new("git")
-        .args(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
+        .args([
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ])
         .current_dir(dir)
         .output();
 
@@ -353,28 +397,24 @@ pub fn detect_bare_repo(start: &Path) -> Option<PathBuf> {
                         dir.join(gitdir)
                     };
                     // Navigate up from .bare/worktrees/xxx to the repo root
-                    if let Some(repo_root) = gitdir_path
-                        .canonicalize()
-                        .ok()
-                        .and_then(|p| {
-                            // Typically: /path/to/repo/.bare/worktrees/name
-                            // We want: /path/to/repo
-                            let p_str = p.to_string_lossy();
-                            if p_str.contains(".bare") {
-                                let mut ancestor = p.as_path();
-                                while let Some(parent) = ancestor.parent() {
-                                    if parent.file_name().map(|n| n == ".bare").unwrap_or(false) {
-                                        return parent.parent().map(|p| p.to_path_buf());
-                                    }
-                                    if parent.join(".bare").is_dir() {
-                                        return Some(parent.to_path_buf());
-                                    }
-                                    ancestor = parent;
+                    if let Some(repo_root) = gitdir_path.canonicalize().ok().and_then(|p| {
+                        // Typically: /path/to/repo/.bare/worktrees/name
+                        // We want: /path/to/repo
+                        let p_str = p.to_string_lossy();
+                        if p_str.contains(".bare") {
+                            let mut ancestor = p.as_path();
+                            while let Some(parent) = ancestor.parent() {
+                                if parent.file_name().map(|n| n == ".bare").unwrap_or(false) {
+                                    return parent.parent().map(|p| p.to_path_buf());
                                 }
+                                if parent.join(".bare").is_dir() {
+                                    return Some(parent.to_path_buf());
+                                }
+                                ancestor = parent;
                             }
-                            None
-                        })
-                    {
+                        }
+                        None
+                    }) {
                         return Some(repo_root);
                     }
                 }
@@ -396,13 +436,11 @@ pub fn unpushed_commits(worktree_path: &Path) -> Vec<String> {
         .current_dir(worktree_path)
         .output();
     match output {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter(|l| !l.is_empty())
-                .map(|l| l.to_string())
-                .collect()
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -410,13 +448,25 @@ pub fn unpushed_commits(worktree_path: &Path) -> Vec<String> {
 /// Get recent commits as one-line summaries ("hash subject").
 pub fn log_oneline(worktree_path: &Path, count: usize) -> Result<Vec<String>> {
     let count_arg = format!("-{}", count);
-    let stdout = run_git(&["log", "--oneline", &count_arg], worktree_path, "git log --oneline")?;
-    Ok(stdout.lines().map(|l| l.to_string()).filter(|l| !l.is_empty()).collect())
+    let stdout = run_git(
+        &["log", "--oneline", &count_arg],
+        worktree_path,
+        "git log --oneline",
+    )?;
+    Ok(stdout
+        .lines()
+        .map(|l| l.to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
 }
 
 /// Get the subject line of the HEAD commit.
 pub fn head_subject(worktree_path: &Path) -> Result<String> {
-    let stdout = run_git(&["log", "-1", "--format=%s"], worktree_path, "git log --format=%s")?;
+    let stdout = run_git(
+        &["log", "-1", "--format=%s"],
+        worktree_path,
+        "git log --format=%s",
+    )?;
     Ok(stdout.trim().to_string())
 }
 
@@ -455,8 +505,10 @@ pub fn pull_branch(worktree_path: &Path) -> Result<PullResult> {
     }
 
     // Detect merge conflicts
-    if stderr.contains("CONFLICT") || stdout.contains("CONFLICT")
-        || stderr.contains("Automatic merge failed") || stdout.contains("Automatic merge failed")
+    if stderr.contains("CONFLICT")
+        || stdout.contains("CONFLICT")
+        || stderr.contains("Automatic merge failed")
+        || stdout.contains("Automatic merge failed")
     {
         return Ok(PullResult::Conflict(combined));
     }
@@ -476,12 +528,19 @@ pub fn push_branch(worktree_path: &Path, branch: &str) -> Result<String> {
 
     if output.status.success() {
         let msg = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Ok(if msg.is_empty() { "Pushed successfully".to_string() } else { msg });
+        return Ok(if msg.is_empty() {
+            "Pushed successfully".to_string()
+        } else {
+            msg
+        });
     }
 
     // If no upstream, set it up
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("no upstream") || stderr.contains("has no upstream") || stderr.contains("--set-upstream") {
+    if stderr.contains("no upstream")
+        || stderr.contains("has no upstream")
+        || stderr.contains("--set-upstream")
+    {
         let output2 = Command::new("git")
             .args(["push", "-u", "origin", branch])
             .env("GIT_TERMINAL_PROMPT", "0")
@@ -491,7 +550,11 @@ pub fn push_branch(worktree_path: &Path, branch: &str) -> Result<String> {
 
         if output2.status.success() {
             let msg = String::from_utf8_lossy(&output2.stderr).trim().to_string();
-            return Ok(if msg.is_empty() { "Pushed successfully (upstream set)".to_string() } else { msg });
+            return Ok(if msg.is_empty() {
+                "Pushed successfully (upstream set)".to_string()
+            } else {
+                msg
+            });
         }
 
         anyhow::bail!(
@@ -525,7 +588,11 @@ pub fn parse_status_porcelain(output: &str) -> Vec<FileChange> {
 
 /// Get file status using `git status --porcelain`.
 pub fn status_porcelain(worktree_path: &Path) -> Result<Vec<FileChange>> {
-    let stdout = run_git(&["status", "--porcelain"], worktree_path, "git status --porcelain")?;
+    let stdout = run_git(
+        &["status", "--porcelain"],
+        worktree_path,
+        "git status --porcelain",
+    )?;
     Ok(parse_status_porcelain(&stdout))
 }
 
@@ -537,7 +604,11 @@ pub fn stage_file(worktree_path: &Path, file: &str) -> Result<()> {
 
 /// Unstage a single file.
 pub fn unstage_file(worktree_path: &Path, file: &str) -> Result<()> {
-    run_git(&["restore", "--staged", "--", file], worktree_path, "git restore --staged")?;
+    run_git(
+        &["restore", "--staged", "--", file],
+        worktree_path,
+        "git restore --staged",
+    )?;
     Ok(())
 }
 
@@ -578,7 +649,11 @@ pub fn detect_regular_repo(start: &Path) -> Option<PathBuf> {
 /// Falls back to reading the symbolic-ref when rev-parse fails (e.g. empty repo with no commits).
 pub fn current_branch_name(repo_path: &Path) -> Result<String> {
     // Try rev-parse first (works when there are commits)
-    if let Ok(stdout) = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_path, "git rev-parse") {
+    if let Ok(stdout) = run_git(
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+        repo_path,
+        "git rev-parse",
+    ) {
         let name = stdout.trim().to_string();
         if !name.is_empty() && name != "HEAD" {
             return Ok(name);
@@ -586,7 +661,11 @@ pub fn current_branch_name(repo_path: &Path) -> Result<String> {
     }
 
     // Fallback: read symbolic-ref (works for empty repos with no commits)
-    if let Ok(stdout) = run_git(&["symbolic-ref", "--short", "HEAD"], repo_path, "git symbolic-ref") {
+    if let Ok(stdout) = run_git(
+        &["symbolic-ref", "--short", "HEAD"],
+        repo_path,
+        "git symbolic-ref",
+    ) {
         let name = stdout.trim().to_string();
         if !name.is_empty() {
             return Ok(name);
@@ -655,12 +734,21 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
 
     // 2. Guard: check for in-progress operations
     if let Some(op) = has_in_progress_operation(repo_path) {
-        anyhow::bail!("Cannot convert: {} in progress. Complete or abort it first.", op);
+        anyhow::bail!(
+            "Cannot convert: {} in progress. Complete or abort it first.",
+            op
+        );
     }
 
     // 3. Stash uncommitted changes
     let stash_output = Command::new("git")
-        .args(["stash", "push", "--include-untracked", "-m", "clawtree-conversion"])
+        .args([
+            "stash",
+            "push",
+            "--include-untracked",
+            "-m",
+            "clawtree-conversion",
+        ])
         .current_dir(repo_path)
         .output()
         .context("Failed to stash changes")?;
@@ -671,8 +759,7 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
     //    `git worktree add` runs against a clean root and can't collide
     //    with existing directories/files.
     let holding = repo_path.join(".clawtree_convert_tmp");
-    std::fs::create_dir_all(&holding)
-        .context("Failed to create temp holding directory")?;
+    std::fs::create_dir_all(&holding).context("Failed to create temp holding directory")?;
 
     for entry in std::fs::read_dir(repo_path)
         .context("Failed to read repo directory")?
@@ -688,8 +775,7 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
     // 5. Rename .git/ directory to .bare/
     let dot_git = repo_path.join(".git");
     let dot_bare = repo_path.join(".bare");
-    std::fs::rename(&dot_git, &dot_bare)
-        .context("Failed to rename .git to .bare")?;
+    std::fs::rename(&dot_git, &dot_bare).context("Failed to rename .git to .bare")?;
 
     // 6. Write .git text file
     std::fs::write(repo_path.join(".git"), "gitdir: ./.bare\n")
@@ -704,7 +790,11 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
 
     // 8. Fix remote fetch refspec
     let _ = Command::new("git")
-        .args(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
+        .args([
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ])
         .current_dir(repo_path)
         .output();
 
@@ -713,9 +803,14 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
     if !has_commits(repo_path) {
         let _ = Command::new("git")
             .args([
-                "-c", "user.name=init",
-                "-c", "user.email=init@init",
-                "commit", "--allow-empty", "-m", "Initial commit",
+                "-c",
+                "user.name=init",
+                "-c",
+                "user.email=init@init",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial commit",
             ])
             .env("GIT_DIR", &dot_bare)
             .env("GIT_WORK_TREE", repo_path)
@@ -740,7 +835,10 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
             .output();
         if let Ok(ref out) = retry {
             if !out.status.success() {
-                tracing::warn!("worktree add --force also failed: {}", String::from_utf8_lossy(&out.stderr));
+                tracing::warn!(
+                    "worktree add --force also failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
             }
         }
     }
@@ -797,7 +895,11 @@ pub fn convert_repo_in_place(repo_path: &Path, branch_override: &str) -> Result<
 
 /// Convert a regular git repo to bare worktree layout at a **different location**.
 /// Returns the branch name on success.
-pub fn convert_repo_to_location(source_repo: &Path, target_dir: &Path, branch_override: &str) -> Result<String> {
+pub fn convert_repo_to_location(
+    source_repo: &Path,
+    target_dir: &Path,
+    branch_override: &str,
+) -> Result<String> {
     // 1. Get branch name from source repo
     let branch = if branch_override.is_empty() {
         current_branch_name(source_repo)?
@@ -816,8 +918,7 @@ pub fn convert_repo_to_location(source_repo: &Path, target_dir: &Path, branch_ov
     }
 
     // 3. Create target directory
-    std::fs::create_dir_all(target_dir)
-        .context("Failed to create target directory")?;
+    std::fs::create_dir_all(target_dir).context("Failed to create target directory")?;
 
     // 4. Clone bare from source's .git directory
     let source_git = source_repo.join(".git");
@@ -847,7 +948,11 @@ pub fn convert_repo_to_location(source_repo: &Path, target_dir: &Path, branch_ov
 
     // 6. Fix remote fetch refspec
     let _ = Command::new("git")
-        .args(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
+        .args([
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ])
         .current_dir(target_dir)
         .output();
 
@@ -982,17 +1087,23 @@ detached
 
     #[test]
     fn test_is_auth_error_terminal_prompt() {
-        assert!(is_auth_error("fatal: could not read Username for 'https://github.com': terminal prompts disabled"));
+        assert!(is_auth_error(
+            "fatal: could not read Username for 'https://github.com': terminal prompts disabled"
+        ));
     }
 
     #[test]
     fn test_is_auth_error_auth_failed() {
-        assert!(is_auth_error("remote: Authentication failed for 'https://github.com/repo.git'"));
+        assert!(is_auth_error(
+            "remote: Authentication failed for 'https://github.com/repo.git'"
+        ));
     }
 
     #[test]
     fn test_is_auth_error_publickey() {
-        assert!(is_auth_error("git@github.com: Permission denied (publickey)."));
+        assert!(is_auth_error(
+            "git@github.com: Permission denied (publickey)."
+        ));
     }
 
     #[test]

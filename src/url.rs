@@ -42,9 +42,7 @@ impl Default for UrlCache {
 /// characters, etc.) naturally terminates URL matches instead of being consumed.
 fn url_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"https?://[A-Za-z0-9\-._~:/?#\[@!$&*+,;=%]+"#).unwrap()
-    })
+    RE.get_or_init(|| Regex::new(r#"https?://[A-Za-z0-9\-._~:/?#\[@!$&*+,;=%]+"#).unwrap())
 }
 
 /// Check if a row appears to be soft-wrapped (its content continues on the
@@ -205,7 +203,11 @@ pub fn open_url_in_browser(url: &str) -> Result<(), String> {
         }
         // Fallback: powershell.exe Start-Process
         if let Ok(status) = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-Command", &format!("Start-Process '{}'", url)])
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!("Start-Process '{}'", url),
+            ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
@@ -268,10 +270,13 @@ fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to run {}: {}", cmd, e))?;
 
     if let Some(ref mut stdin) = child.stdin {
-        stdin.write_all(text.as_bytes())
+        stdin
+            .write_all(text.as_bytes())
             .map_err(|e| format!("Failed to write to {}: {}", cmd, e))?;
     }
-    let status = child.wait().map_err(|e| format!("Failed to wait for {}: {}", cmd, e))?;
+    let status = child
+        .wait()
+        .map_err(|e| format!("Failed to wait for {}: {}", cmd, e))?;
     if status.success() {
         Ok(())
     } else {
@@ -317,7 +322,10 @@ mod tests {
     fn detects_url_with_path_and_query() {
         let urls = detect("Go to https://auth.example.com/login?code=abc123&state=xyz");
         assert_eq!(urls.len(), 1);
-        assert_eq!(urls[0].url, "https://auth.example.com/login?code=abc123&state=xyz");
+        assert_eq!(
+            urls[0].url,
+            "https://auth.example.com/login?code=abc123&state=xyz"
+        );
     }
 
     #[test]
@@ -502,10 +510,7 @@ mod tests {
         let row1: &str = &url_text[cols as usize..]; // "wraps"
 
         // Use CSI sequences to position cursor: \x1b[row;colH
-        let input = format!(
-            "\x1b[1;1H{}\x1b[2;1H{}",
-            row0, row1
-        );
+        let input = format!("\x1b[1;1H{}\x1b[2;1H{}", row0, row1);
         let urls = detect_with_size(5, cols, &input);
         assert_eq!(urls.len(), 1, "should detect one merged URL");
         assert_eq!(urls[0].url, url_text);
@@ -587,7 +592,10 @@ mod tests {
     fn url_with_percent_encoding() {
         let urls = detect("https://example.com/path%20with%20spaces/file.txt");
         assert_eq!(urls.len(), 1);
-        assert_eq!(urls[0].url, "https://example.com/path%20with%20spaces/file.txt");
+        assert_eq!(
+            urls[0].url,
+            "https://example.com/path%20with%20spaces/file.txt"
+        );
     }
 
     #[test]
@@ -608,7 +616,10 @@ mod tests {
     fn url_with_complex_query() {
         let urls = detect("https://search.com/q?term=foo+bar&lang=en&page=1#results");
         assert_eq!(urls.len(), 1);
-        assert_eq!(urls[0].url, "https://search.com/q?term=foo+bar&lang=en&page=1#results");
+        assert_eq!(
+            urls[0].url,
+            "https://search.com/q?term=foo+bar&lang=en&page=1#results"
+        );
     }
 
     #[test]
@@ -732,9 +743,7 @@ mod tests {
         // If a row doesn't fill all columns, it should NOT merge with the
         // next row, even when using cursor positioning.
         let cols: u16 = 80;
-        let input = format!(
-            "\x1b[1;1Hhttps://example.com/pa\x1b[2;1Hth/rest"
-        );
+        let input = "\x1b[1;1Hhttps://example.com/pa\x1b[2;1Hth/rest".to_string();
         let urls = detect_with_size(5, cols, &input);
         // "https://example.com/pa" is only 22 chars in an 80-col terminal,
         // so the last cell of row 0 is whitespace → no merge

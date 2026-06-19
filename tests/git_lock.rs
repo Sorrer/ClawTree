@@ -1,7 +1,7 @@
 mod test_helpers;
 
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use worktree_claude_tui::git;
 
@@ -51,7 +51,10 @@ fn test_concurrent_git_status_without_lock_is_unreliable() {
     // We don't assert errors > 0 here because the race is non-deterministic.
     // The point of this test is to contrast with the locked version below.
     let unlocked_errors = errors.load(Ordering::Relaxed);
-    eprintln!("Unlocked concurrent git ops: {} errors (non-deterministic)", unlocked_errors);
+    eprintln!(
+        "Unlocked concurrent git ops: {} errors (non-deterministic)",
+        unlocked_errors
+    );
 }
 
 /// Verify that serializing git operations via a mutex eliminates index.lock errors.
@@ -98,7 +101,11 @@ fn test_concurrent_git_ops_with_lock_no_errors() {
     }
 
     let locked_errors = errors.load(Ordering::Relaxed);
-    assert_eq!(locked_errors, 0, "Expected zero errors with lock, got {}", locked_errors);
+    assert_eq!(
+        locked_errors, 0,
+        "Expected zero errors with lock, got {}",
+        locked_errors
+    );
 }
 
 /// Verify that try_lock correctly skips when the lock is held,
@@ -134,8 +141,16 @@ fn test_try_lock_skips_when_held() {
         h.join().unwrap();
     }
 
-    assert_eq!(skipped.load(Ordering::Relaxed), 4, "All poller threads should skip when lock is held");
-    assert_eq!(acquired.load(Ordering::Relaxed), 0, "No poller thread should acquire a held lock");
+    assert_eq!(
+        skipped.load(Ordering::Relaxed),
+        4,
+        "All poller threads should skip when lock is held"
+    );
+    assert_eq!(
+        acquired.load(Ordering::Relaxed),
+        0,
+        "No poller thread should acquire a held lock"
+    );
 }
 
 /// Verify that try_lock succeeds when no user operation is running.
@@ -164,7 +179,10 @@ fn test_try_lock_succeeds_when_free() {
     }
 
     // At least some threads should have acquired the lock
-    assert!(acquired.load(Ordering::Relaxed) > 0, "At least one thread should acquire the free lock");
+    assert!(
+        acquired.load(Ordering::Relaxed) > 0,
+        "At least one thread should acquire the free lock"
+    );
 }
 
 /// Simulate the real pattern: a "user operation" thread uses lock() while
@@ -233,15 +251,27 @@ fn test_mixed_lock_and_try_lock_pattern() {
         h.join().unwrap();
     }
 
-    assert_eq!(user_op_completed.load(Ordering::Relaxed), 10,
-        "All user operations should complete");
-    assert_eq!(poller_errors.load(Ordering::Relaxed), 0,
-        "Poller should never get git errors when using lock");
+    assert_eq!(
+        user_op_completed.load(Ordering::Relaxed),
+        10,
+        "All user operations should complete"
+    );
+    assert_eq!(
+        poller_errors.load(Ordering::Relaxed),
+        0,
+        "Poller should never get git errors when using lock"
+    );
 
     let skipped = poller_skipped.load(Ordering::Relaxed);
     let success = poller_success.load(Ordering::Relaxed);
-    eprintln!("Poller: {} success, {} skipped (both are fine)", success, skipped);
-    assert!(success + skipped == 40, "All poller iterations should either succeed or skip");
+    eprintln!(
+        "Poller: {} success, {} skipped (both are fine)",
+        success, skipped
+    );
+    assert!(
+        success + skipped == 40,
+        "All poller iterations should either succeed or skip"
+    );
 }
 
 /// Verify that lock() blocks until the holder releases, rather than failing.
@@ -275,8 +305,14 @@ fn test_lock_waits_for_release() {
     h1.join().unwrap();
 
     let sequence = order.lock().unwrap().clone();
-    assert_eq!(sequence, vec!["holder_start", "holder_end", "waiter_acquired"],
-        "Waiter should acquire only after holder releases");
-    assert!(waited >= Duration::from_millis(50),
-        "Waiter should have blocked for a meaningful duration, waited {:?}", waited);
+    assert_eq!(
+        sequence,
+        vec!["holder_start", "holder_end", "waiter_acquired"],
+        "Waiter should acquire only after holder releases"
+    );
+    assert!(
+        waited >= Duration::from_millis(50),
+        "Waiter should have blocked for a meaningful duration, waited {:?}",
+        waited
+    );
 }

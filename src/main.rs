@@ -14,16 +14,21 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event as CrosstermEvent, KeyModifiers as EvtKeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event as CrosstermEvent, KeyModifiers as EvtKeyModifiers, MouseButton, MouseEventKind,
+};
 
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tracing_subscriber::EnvFilter;
 
-use crate::app::{App, PendingAction, CommitPhase, Dialog, ScreenMode, StatusSeverity, UpdatePhase};
+use crate::app::{
+    App, CommitPhase, Dialog, PendingAction, ScreenMode, StatusSeverity, UpdatePhase,
+};
 use crate::event::AppEvent;
 
 /// Watchdog thread poll interval in milliseconds.
@@ -36,10 +41,7 @@ static SIGNAL_RECEIVED: AtomicBool = AtomicBool::new(false);
 
 /// Set the outer terminal's window/tab title via OSC escape sequence.
 fn set_terminal_title(title: &str) {
-    let _ = crossterm::execute!(
-        io::stdout(),
-        crossterm::terminal::SetTitle(title)
-    );
+    let _ = crossterm::execute!(io::stdout(), crossterm::terminal::SetTitle(title));
 }
 
 /// Restore the terminal to a usable state. Safe to call multiple times.
@@ -96,9 +98,18 @@ fn main() -> Result<()> {
     // Register signal handlers. These just set SIGNAL_RECEIVED; the watchdog
     // thread does the actual cleanup + exit.
     unsafe {
-        libc::signal(libc::SIGINT, signal_handler as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, signal_handler as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGHUP, signal_handler as *const () as libc::sighandler_t);
+        libc::signal(
+            libc::SIGINT,
+            signal_handler as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            signal_handler as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGHUP,
+            signal_handler as *const () as libc::sighandler_t,
+        );
     }
 
     // Set up file logging to ~/.clawtree/logs/clawtree.log
@@ -166,7 +177,9 @@ fn main() -> Result<()> {
             let target = match &positional_dir {
                 Some(arg) => {
                     let p = std::path::PathBuf::from(arg);
-                    if p.is_absolute() { p } else {
+                    if p.is_absolute() {
+                        p
+                    } else {
                         std::env::current_dir().unwrap_or_default().join(p)
                     }
                 }
@@ -187,7 +200,11 @@ fn main() -> Result<()> {
         if session_names.is_empty() {
             println!("No clawtree tmux sessions found ({}).", scope);
         } else {
-            println!("Killing {} clawtree tmux session(s) ({}):", session_names.len(), scope);
+            println!(
+                "Killing {} clawtree tmux session(s) ({}):",
+                session_names.len(),
+                scope
+            );
             for name in &session_names {
                 let ok = session::pty::kill_tmux_session(name);
                 let status = if ok { "killed" } else { "failed" };
@@ -236,7 +253,11 @@ fn main() -> Result<()> {
     if let Some(ref p) = regular_repo_path {
         tracing::info!("Regular repo detected at {:?}", p);
     }
-    tracing::info!("Bare repo path: {:?}, detected: {}", bare_repo_path, repo_detected);
+    tracing::info!(
+        "Bare repo path: {:?}, detected: {}",
+        bare_repo_path,
+        repo_detected
+    );
 
     // Build tokio runtime manually so we control shutdown
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -259,7 +280,14 @@ fn main() -> Result<()> {
             .unwrap_or(false);
     tracing::info!("wt.exe available: {}", wt_available);
 
-    let result = rt.block_on(async_main(target_dir, bare_repo_path, repo_detected, regular_repo_path, tmux_available, wt_available));
+    let result = rt.block_on(async_main(
+        target_dir,
+        bare_repo_path,
+        repo_detected,
+        regular_repo_path,
+        tmux_available,
+        wt_available,
+    ));
 
     // Clean exit — tell watchdog to stop, restore terminal
     alive.store(false, Ordering::Relaxed);
@@ -268,26 +296,46 @@ fn main() -> Result<()> {
     result
 }
 
-async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::PathBuf, repo_detected: bool, regular_repo_path: Option<std::path::PathBuf>, tmux_available: bool, wt_available: bool) -> Result<()> {
+async fn async_main(
+    target_dir: std::path::PathBuf,
+    bare_repo_path: std::path::PathBuf,
+    repo_detected: bool,
+    regular_repo_path: Option<std::path::PathBuf>,
+    tmux_available: bool,
+    wt_available: bool,
+) -> Result<()> {
     // Initialize terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)
-        .context("Failed to enter alternate screen")?;
+    crossterm::execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )
+    .context("Failed to enter alternate screen")?;
     // Enable keyboard enhancement if the terminal supports it (kitty protocol).
     // This allows detecting Shift+Enter, Ctrl+key combos, etc. Silently ignored
     // on terminals that don't support it.
-    let _ = crossterm::execute!(io::stdout(),
+    let _ = crossterm::execute!(
+        io::stdout(),
         crossterm::event::PushKeyboardEnhancementFlags(
             crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-            | crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
-        ));
+                | crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+        )
+    );
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("Failed to create terminal")?;
 
     // Create event channel and app
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
-    let mut app = App::new(bare_repo_path.clone(), event_tx.clone(), repo_detected, tmux_available, wt_available);
+    let mut app = App::new(
+        bare_repo_path.clone(),
+        event_tx.clone(),
+        repo_detected,
+        tmux_available,
+        wt_available,
+    );
     app.regular_repo_path = regular_repo_path;
 
     // Load skipped update version preference
@@ -317,19 +365,17 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
     let input_tx = event_tx.clone();
     std::thread::Builder::new()
         .name("input-reader".into())
-        .spawn(move || {
-            loop {
-                match crossterm::event::poll(std::time::Duration::from_millis(50)) {
-                    Ok(true) => {
-                        if let Ok(evt) = crossterm::event::read() {
-                            if input_tx.send(AppEvent::Input(evt)).is_err() {
-                                break;
-                            }
+        .spawn(move || loop {
+            match crossterm::event::poll(std::time::Duration::from_millis(50)) {
+                Ok(true) => {
+                    if let Ok(evt) = crossterm::event::read() {
+                        if input_tx.send(AppEvent::Input(evt)).is_err() {
+                            break;
                         }
                     }
-                    Ok(false) => {}
-                    Err(_) => break,
                 }
+                Ok(false) => {}
+                Err(_) => break,
             }
         })
         .context("Failed to spawn input reader thread")?;
@@ -338,12 +384,10 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
     let tick_tx = event_tx.clone();
     std::thread::Builder::new()
         .name("tick-timer".into())
-        .spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(TICK_RATE_MS));
-                if tick_tx.send(AppEvent::Tick).is_err() {
-                    break;
-                }
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(TICK_RATE_MS));
+            if tick_tx.send(AppEvent::Tick).is_err() {
+                break;
             }
         })
         .context("Failed to spawn tick timer thread")?;
@@ -378,9 +422,14 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                 if !has_commit {
                     let _ = std::process::Command::new("git")
                         .args([
-                            "-c", "user.name=init",
-                            "-c", "user.email=init@init",
-                            "commit", "--allow-empty", "-m", "Initial commit",
+                            "-c",
+                            "user.name=init",
+                            "-c",
+                            "user.email=init@init",
+                            "commit",
+                            "--allow-empty",
+                            "-m",
+                            "Initial commit",
                         ])
                         .env("GIT_DIR", &bare_dir)
                         .env("GIT_WORK_TREE", &app.bare_repo_path)
@@ -399,7 +448,8 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
                 } else {
                     Ok(false)
                 }
-            })().unwrap_or(false);
+            })()
+            .unwrap_or(false);
 
             if !recovered {
                 app.repo_detected = false;
@@ -442,8 +492,14 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
         if let Ok(mut info) = tmux_session_info.lock() {
             *info = session::collect_tmux_session_info(&app);
         }
-        session::spawn_tmux_title_poller(event_tx.clone(), std::sync::Arc::clone(&tmux_session_info));
-        session::spawn_claude_usage_poller(event_tx.clone(), std::sync::Arc::clone(&tmux_session_info));
+        session::spawn_tmux_title_poller(
+            event_tx.clone(),
+            std::sync::Arc::clone(&tmux_session_info),
+        );
+        session::spawn_claude_usage_poller(
+            event_tx.clone(),
+            std::sync::Arc::clone(&tmux_session_info),
+        );
     }
 
     // ── Global usage poller — background thread ────────────────
@@ -459,7 +515,11 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
         if let Ok(mut paths) = status_poller_paths.lock() {
             *paths = worktree::collect_worktree_paths(&app);
         }
-        worktree::spawn_status_poller(event_tx.clone(), std::sync::Arc::clone(&status_poller_paths), std::sync::Arc::clone(&app.git_lock));
+        worktree::spawn_status_poller(
+            event_tx.clone(),
+            std::sync::Arc::clone(&status_poller_paths),
+            std::sync::Arc::clone(&app.git_lock),
+        );
     }
 
     // ── Main event loop ────────────────────────────────────────────
@@ -528,726 +588,877 @@ async fn async_main(target_dir: std::path::PathBuf, bare_repo_path: std::path::P
         .await
         {
             Ok(Some(e)) => e,
-            Ok(None) => break, // all senders dropped
+            Ok(None) => break,  // all senders dropped
             Err(_) => continue, // timeout, loop back
         };
 
         let mut current_event = Some(first_event);
         while let Some(event) = current_event.take().or_else(|| event_rx.try_recv().ok()) {
-            if app.should_quit { break; }
-                match event {
-                    AppEvent::Input(CrosstermEvent::Key(key)) => {
-                        let session_count_before = app.sessions.len();
-                        let worktree_count_before = app.worktrees.len();
-                        let scroll_before = app.terminal_scroll;
-                        let size = terminal.size()?;
-                        app.last_terminal_size = (size.width, size.height);
-                        keys::handle_key(&mut app, key, (size.width, size.height));
-                        if app.terminal_scroll != scroll_before {
-                            app.url_cache_dirty = true;
-                        }
-                        // Re-enable mouse capture on any keypress (user is done
-                        // with native text selection if it was active).
-                        if !app.mouse_captured {
-                            app.mouse_captured = true;
-                            app.mouse_capture_disabled_at = None;
-                            let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
-                        }
-                        // Clear any in-progress text selection on keypress
-                        app.text_selection = None;
-                        // If sessions changed, update the tmux poller's snapshot
-                        if tmux_available && app.sessions.len() != session_count_before {
-                            if let Ok(mut info) = tmux_session_info.lock() {
-                                *info = session::collect_tmux_session_info(&app);
-                            }
-                        }
-                        // If worktrees changed, update the status poller's snapshot
-                        if repo_detected && app.worktrees.len() != worktree_count_before {
-                            if let Ok(mut paths) = status_poller_paths.lock() {
-                                *paths = worktree::collect_worktree_paths(&app);
-                            }
-                        }
-                        // Handle immediate background status fetch requests
-                        if let Some(path) = app.request_status_fetch.take() {
-                            let tx = event_tx.clone();
-                            let next_refresh = app.next_status_refresh
-                                .unwrap_or_else(|| Instant::now() + worktree::STATUS_REFRESH_INTERVAL);
-                            let git_lock = std::sync::Arc::clone(&app.git_lock);
-                            tokio::task::spawn_blocking(move || {
-                                // Use try_lock to avoid blocking if a user operation is running
-                                if let Ok(_guard) = git_lock.try_lock() {
-                                    if let Ok(status) = worktree::fetch_worktree_status_by_path(&path) {
-                                        let _ = tx.send(AppEvent::WorktreeStatusReady {
-                                            worktree_path: path,
-                                            status,
-                                            next_refresh_at: next_refresh,
-                                        });
-                                    }
-                                }
-                            });
-                        }
-                        needs_redraw = true;
+            if app.should_quit {
+                break;
+            }
+            match event {
+                AppEvent::Input(CrosstermEvent::Key(key)) => {
+                    let session_count_before = app.sessions.len();
+                    let worktree_count_before = app.worktrees.len();
+                    let scroll_before = app.terminal_scroll;
+                    let size = terminal.size()?;
+                    app.last_terminal_size = (size.width, size.height);
+                    keys::handle_key(&mut app, key, (size.width, size.height));
+                    if app.terminal_scroll != scroll_before {
+                        app.url_cache_dirty = true;
                     }
-                    AppEvent::Input(CrosstermEvent::Mouse(mouse)) => {
-                        match mouse.kind {
-                            MouseEventKind::Down(MouseButton::Left) => {
-                                // Clear any existing selection on new click
-                                app.text_selection = None;
+                    // Re-enable mouse capture on any keypress (user is done
+                    // with native text selection if it was active).
+                    if !app.mouse_captured {
+                        app.mouse_captured = true;
+                        app.mouse_capture_disabled_at = None;
+                        let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
+                    }
+                    // Clear any in-progress text selection on keypress
+                    app.text_selection = None;
+                    // If sessions changed, update the tmux poller's snapshot
+                    if tmux_available && app.sessions.len() != session_count_before {
+                        if let Ok(mut info) = tmux_session_info.lock() {
+                            *info = session::collect_tmux_session_info(&app);
+                        }
+                    }
+                    // If worktrees changed, update the status poller's snapshot
+                    if repo_detected && app.worktrees.len() != worktree_count_before {
+                        if let Ok(mut paths) = status_poller_paths.lock() {
+                            *paths = worktree::collect_worktree_paths(&app);
+                        }
+                    }
+                    // Handle immediate background status fetch requests
+                    if let Some(path) = app.request_status_fetch.take() {
+                        let tx = event_tx.clone();
+                        let next_refresh = app
+                            .next_status_refresh
+                            .unwrap_or_else(|| Instant::now() + worktree::STATUS_REFRESH_INTERVAL);
+                        let git_lock = std::sync::Arc::clone(&app.git_lock);
+                        tokio::task::spawn_blocking(move || {
+                            // Use try_lock to avoid blocking if a user operation is running
+                            if let Ok(_guard) = git_lock.try_lock() {
+                                if let Ok(status) = worktree::fetch_worktree_status_by_path(&path) {
+                                    let _ = tx.send(AppEvent::WorktreeStatusReady {
+                                        worktree_path: path,
+                                        status,
+                                        next_refresh_at: next_refresh,
+                                    });
+                                }
+                            }
+                        });
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::Input(CrosstermEvent::Mouse(mouse)) => {
+                    match mouse.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            // Clear any existing selection on new click
+                            app.text_selection = None;
 
-                                if mouse.modifiers.contains(EvtKeyModifiers::SHIFT) {
-                                    // Shift+Click → native text selection (escape hatch)
-                                    app.mouse_captured = false;
-                                    app.mouse_capture_disabled_at = Some(Instant::now());
-                                    let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
-                                } else if mouse::is_terminal_session_area(&app, mouse.column, mouse.row) {
-                                    // Check if clicking a URL first (only in live view)
-                                    if app.terminal_scroll == 0 {
-                                        if let Some(idx) = mouse::url_at_position(&app, mouse.column, mouse.row) {
-                                            if let Some(detected) = app.url_cache.urls.get(idx) {
-                                                let url = detected.url.clone();
-                                                match url::open_url_in_browser(&url) {
-                                                    Ok(()) => app.set_status(format!("Opened: {}", url)),
-                                                    Err(e) => app.set_status_with(app::StatusSeverity::Error, format!("Failed to open URL: {}", e)),
-                                                }
-                                            }
-                                            // URL click handled; skip selection start
-                                            needs_redraw = true;
-                                            continue;
-                                        }
-                                    }
-                                    // Start in-app text selection (works in both live and scrollback)
-                                    if let Some(pos) = mouse::screen_to_vt100(&app, mouse.column, mouse.row) {
-                                        app.text_selection = Some(app::TextSelection {
-                                            anchor: pos,
-                                            endpoint: pos,
-                                        });
-                                    }
-                                    // Set focus without resetting scroll
-                                    app.focus = app::FocusTarget::TerminalPane;
-                                    app.input_mode = app::InputMode::Terminal;
-                                } else {
-                                    // Click in sidebar/other panels
-                                    mouse::handle_mouse(&mut app, mouse);
-                                }
-                                needs_redraw = true;
-                            }
-                            #[allow(clippy::collapsible_match)]
-                            MouseEventKind::Drag(MouseButton::Left) => {
-                                // Update text selection endpoint while dragging.
-                                // Use clamped variant so dragging outside the pane
-                                // extends the selection to the edge instead of freezing.
-                                // Note: split borrows intentional — mutable borrow of
-                                // text_selection cannot overlap with &app passed to
-                                // screen_to_vt100_clamped.
-                                if app.text_selection.is_some() {
-                                    if let Some(pos) = mouse::screen_to_vt100_clamped(&app, mouse.column, mouse.row) {
-                                        if let Some(ref mut sel) = app.text_selection {
-                                            sel.endpoint = pos;
-                                        }
-                                        needs_redraw = true;
-                                    }
-                                }
-                            }
-                            MouseEventKind::Up(MouseButton::Left) => {
-                                // Finish text selection: extract text and copy to clipboard
-                                if let Some(sel) = app.text_selection.take() {
-                                    // Only copy if there's a meaningful selection (not just a click)
-                                    if sel.anchor != sel.endpoint {
-                                        let (start, end) = sel.ordered();
-                                        let extracted = if app.terminal_scroll > 0 {
-                                            // Scrollback: extract from tmux plain-text capture
-                                            app.active_session_id.and_then(|sid| {
-                                                let session = app.sessions.get(&sid)?;
-                                                let tmux_name = session.tmux_session_name.as_ref()?;
-                                                let inner = app.areas.terminal_pane_inner.get();
-                                                let visible_rows = inner.height as usize;
-                                                let history = ui::terminal_pane::tmux_history_size(tmux_name);
-                                                let eff = app.terminal_scroll.min(history);
-                                                let s = -(eff as i64);
-                                                let e = s + visible_rows as i64 - 1;
-                                                let content = ui::terminal_pane::capture_tmux_pane_plain(tmux_name, s, e)?;
-                                                let text = mouse::extract_text_from_plain(&content, start, end);
-                                                if text.is_empty() { None } else { Some(text) }
-                                            })
-                                        } else {
-                                            // Live view: extract from vt100 screen
-                                            app.active_session_id.and_then(|sid| {
-                                                let session = app.sessions.get(&sid)?;
-                                                let guard = session.parser.try_read().ok()?;
-                                                let screen = guard.screen();
-                                                let text = mouse::extract_text_from_screen(screen, start, end);
-                                                if text.is_empty() { None } else { Some(text) }
-                                            })
-                                        };
-                                        if let Some(text) = extracted {
-                                            match mouse::copy_to_clipboard(&text) {
-                                                Ok(()) => {
-                                                    app.set_status_with(
-                                                        app::StatusSeverity::Success,
-                                                        format!("Copied {} chars", text.len()),
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    app.set_status_with(
-                                                        app::StatusSeverity::Error,
-                                                        format!("Clipboard error: {}", e),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                    needs_redraw = true;
-                                }
-                            }
-                            MouseEventKind::Down(MouseButton::Right) => {
-                                app.text_selection = None;
-                                // Right-click in sidebar → context menu
-                                let sidebar_area = app.areas.sidebar.get();
-                                if !app.show_help && app.dialog.is_none()
-                                    && app.screen_mode == ScreenMode::Normal
-                                    && mouse::point_in_rect(mouse.column, mouse.row, sidebar_area)
-                                {
-                                    app.focus = app::FocusTarget::Sidebar;
-                                    app.input_mode = app::InputMode::Normal;
-                                    mouse::handle_sidebar_right_click(&mut app, mouse.column, mouse.row);
-                                } else {
-                                    // Elsewhere → escape hatch for native text selection
-                                    app.mouse_captured = false;
-                                    app.mouse_capture_disabled_at = Some(Instant::now());
-                                    let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
-                                }
-                                needs_redraw = true;
-                            }
-                            MouseEventKind::Down(MouseButton::Middle) => {
-                                // Middle click → escape hatch for native text selection
-                                app.text_selection = None;
+                            if mouse.modifiers.contains(EvtKeyModifiers::SHIFT) {
+                                // Shift+Click → native text selection (escape hatch)
                                 app.mouse_captured = false;
                                 app.mouse_capture_disabled_at = Some(Instant::now());
                                 let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
-                                needs_redraw = true;
-                            }
-                            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                                app.text_selection = None;
-                                let scroll_before = app.terminal_scroll;
-                                mouse::handle_mouse(&mut app, mouse);
-                                if app.terminal_scroll != scroll_before {
-                                    app.url_cache_dirty = true;
+                            } else if mouse::is_terminal_session_area(&app, mouse.column, mouse.row)
+                            {
+                                // Check if clicking a URL first (only in live view)
+                                if app.terminal_scroll == 0 {
+                                    if let Some(idx) =
+                                        mouse::url_at_position(&app, mouse.column, mouse.row)
+                                    {
+                                        if let Some(detected) = app.url_cache.urls.get(idx) {
+                                            let url = detected.url.clone();
+                                            match url::open_url_in_browser(&url) {
+                                                Ok(()) => {
+                                                    app.set_status(format!("Opened: {}", url))
+                                                }
+                                                Err(e) => app.set_status_with(
+                                                    app::StatusSeverity::Error,
+                                                    format!("Failed to open URL: {}", e),
+                                                ),
+                                            }
+                                        }
+                                        // URL click handled; skip selection start
+                                        needs_redraw = true;
+                                        continue;
+                                    }
                                 }
-                                needs_redraw = true;
+                                // Start in-app text selection (works in both live and scrollback)
+                                if let Some(pos) =
+                                    mouse::screen_to_vt100(&app, mouse.column, mouse.row)
+                                {
+                                    app.text_selection = Some(app::TextSelection {
+                                        anchor: pos,
+                                        endpoint: pos,
+                                    });
+                                }
+                                // Set focus without resetting scroll
+                                app.focus = app::FocusTarget::TerminalPane;
+                                app.input_mode = app::InputMode::Terminal;
+                            } else {
+                                // Click in sidebar/other panels
+                                mouse::handle_mouse(&mut app, mouse);
                             }
-                            MouseEventKind::Moved => {
-                                let old_hovered = app.url_cache.hovered;
-                                app.url_cache.hovered = mouse::url_at_position(&app, mouse.column, mouse.row);
-                                if app.url_cache.hovered != old_hovered {
+                            needs_redraw = true;
+                        }
+                        #[allow(clippy::collapsible_match)]
+                        MouseEventKind::Drag(MouseButton::Left) => {
+                            // Update text selection endpoint while dragging.
+                            // Use clamped variant so dragging outside the pane
+                            // extends the selection to the edge instead of freezing.
+                            // Note: split borrows intentional — mutable borrow of
+                            // text_selection cannot overlap with &app passed to
+                            // screen_to_vt100_clamped.
+                            if app.text_selection.is_some() {
+                                if let Some(pos) =
+                                    mouse::screen_to_vt100_clamped(&app, mouse.column, mouse.row)
+                                {
+                                    if let Some(ref mut sel) = app.text_selection {
+                                        sel.endpoint = pos;
+                                    }
                                     needs_redraw = true;
                                 }
+                            }
+                        }
+                        MouseEventKind::Up(MouseButton::Left) => {
+                            // Finish text selection: extract text and copy to clipboard
+                            if let Some(sel) = app.text_selection.take() {
+                                // Only copy if there's a meaningful selection (not just a click)
+                                if sel.anchor != sel.endpoint {
+                                    let (start, end) = sel.ordered();
+                                    let extracted = if app.terminal_scroll > 0 {
+                                        // Scrollback: extract from tmux plain-text capture
+                                        app.active_session_id.and_then(|sid| {
+                                            let session = app.sessions.get(&sid)?;
+                                            let tmux_name = session.tmux_session_name.as_ref()?;
+                                            let inner = app.areas.terminal_pane_inner.get();
+                                            let visible_rows = inner.height as usize;
+                                            let history =
+                                                ui::terminal_pane::tmux_history_size(tmux_name);
+                                            let eff = app.terminal_scroll.min(history);
+                                            let s = -(eff as i64);
+                                            let e = s + visible_rows as i64 - 1;
+                                            let content =
+                                                ui::terminal_pane::capture_tmux_pane_plain(
+                                                    tmux_name, s, e,
+                                                )?;
+                                            let text = mouse::extract_text_from_plain(
+                                                &content, start, end,
+                                            );
+                                            if text.is_empty() {
+                                                None
+                                            } else {
+                                                Some(text)
+                                            }
+                                        })
+                                    } else {
+                                        // Live view: extract from vt100 screen
+                                        app.active_session_id.and_then(|sid| {
+                                            let session = app.sessions.get(&sid)?;
+                                            let guard = session.parser.try_read().ok()?;
+                                            let screen = guard.screen();
+                                            let text =
+                                                mouse::extract_text_from_screen(screen, start, end);
+                                            if text.is_empty() {
+                                                None
+                                            } else {
+                                                Some(text)
+                                            }
+                                        })
+                                    };
+                                    if let Some(text) = extracted {
+                                        match mouse::copy_to_clipboard(&text) {
+                                            Ok(()) => {
+                                                app.set_status_with(
+                                                    app::StatusSeverity::Success,
+                                                    format!("Copied {} chars", text.len()),
+                                                );
+                                            }
+                                            Err(e) => {
+                                                app.set_status_with(
+                                                    app::StatusSeverity::Error,
+                                                    format!("Clipboard error: {}", e),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                needs_redraw = true;
+                            }
+                        }
+                        MouseEventKind::Down(MouseButton::Right) => {
+                            app.text_selection = None;
+                            // Right-click in sidebar → context menu
+                            let sidebar_area = app.areas.sidebar.get();
+                            if !app.show_help
+                                && app.dialog.is_none()
+                                && app.screen_mode == ScreenMode::Normal
+                                && mouse::point_in_rect(mouse.column, mouse.row, sidebar_area)
+                            {
+                                app.focus = app::FocusTarget::Sidebar;
+                                app.input_mode = app::InputMode::Normal;
+                                mouse::handle_sidebar_right_click(
+                                    &mut app,
+                                    mouse.column,
+                                    mouse.row,
+                                );
+                            } else {
+                                // Elsewhere → escape hatch for native text selection
+                                app.mouse_captured = false;
+                                app.mouse_capture_disabled_at = Some(Instant::now());
+                                let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
+                            }
+                            needs_redraw = true;
+                        }
+                        MouseEventKind::Down(MouseButton::Middle) => {
+                            // Middle click → escape hatch for native text selection
+                            app.text_selection = None;
+                            app.mouse_captured = false;
+                            app.mouse_capture_disabled_at = Some(Instant::now());
+                            let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
+                            needs_redraw = true;
+                        }
+                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                            app.text_selection = None;
+                            let scroll_before = app.terminal_scroll;
+                            mouse::handle_mouse(&mut app, mouse);
+                            if app.terminal_scroll != scroll_before {
+                                app.url_cache_dirty = true;
+                            }
+                            needs_redraw = true;
+                        }
+                        MouseEventKind::Moved => {
+                            let old_hovered = app.url_cache.hovered;
+                            app.url_cache.hovered =
+                                mouse::url_at_position(&app, mouse.column, mouse.row);
+                            if app.url_cache.hovered != old_hovered {
+                                needs_redraw = true;
+                            }
 
-                                // Track context menu hover (update selected to follow mouse)
-                                if let Some(app::Dialog::ContextMenu { ref actions, ref mut selected, .. }) = app.dialog {
-                                    let dialog_area = app.areas.dialog.get();
-                                    let new_sel = if mouse::point_in_rect(mouse.column, mouse.row, dialog_area) {
+                            // Track context menu hover (update selected to follow mouse)
+                            if let Some(app::Dialog::ContextMenu {
+                                ref actions,
+                                ref mut selected,
+                                ..
+                            }) = app.dialog
+                            {
+                                let dialog_area = app.areas.dialog.get();
+                                let new_sel =
+                                    if mouse::point_in_rect(mouse.column, mouse.row, dialog_area) {
                                         let inner_y = dialog_area.y + 1;
                                         if mouse.row >= inner_y {
                                             let action_row = (mouse.row - inner_y) as usize;
-                                            if action_row < actions.len() { Some(action_row) } else { None }
+                                            if action_row < actions.len() {
+                                                Some(action_row)
+                                            } else {
+                                                None
+                                            }
                                         } else {
                                             None
                                         }
                                     } else {
                                         None
                                     };
-                                    if *selected != new_sel {
-                                        *selected = new_sel;
-                                        needs_redraw = true;
-                                    }
-                                }
-
-                                // Track sidebar hover (only when no overlay is open)
-                                if !app.show_help && app.dialog.is_none() && app.screen_mode == ScreenMode::Normal {
-                                    let old_sidebar_hover = app.sidebar_hovered;
-                                    let old_tp_hover = app.terminal_panel_hovered;
-
-                                    let sidebar_inner = app.areas.sidebar_inner.get();
-                                    let tp_inner = app.areas.sidebar_terminal_panel_inner.get();
-
-                                    if mouse::point_in_rect(mouse.column, mouse.row, sidebar_inner) {
-                                        let item_row = (mouse.row - sidebar_inner.y) as usize;
-                                        app.sidebar_hovered = if item_row < app.sidebar_items.len() { Some(item_row) } else { None };
-                                        app.terminal_panel_hovered = None;
-                                    } else if mouse::point_in_rect(mouse.column, mouse.row, tp_inner) {
-                                        let item_row = (mouse.row - tp_inner.y) as usize;
-                                        app.terminal_panel_hovered = if item_row < app.terminal_panel_items.len() { Some(item_row) } else { None };
-                                        app.sidebar_hovered = None;
-                                    } else {
-                                        app.sidebar_hovered = None;
-                                        app.terminal_panel_hovered = None;
-                                    }
-
-                                    if app.sidebar_hovered != old_sidebar_hover || app.terminal_panel_hovered != old_tp_hover {
-                                        needs_redraw = true;
-                                    }
-                                } else if app.sidebar_hovered.is_some() || app.terminal_panel_hovered.is_some() {
-                                    app.sidebar_hovered = None;
-                                    app.terminal_panel_hovered = None;
+                                if *selected != new_sel {
+                                    *selected = new_sel;
                                     needs_redraw = true;
                                 }
                             }
-                            _ => {}
+
+                            // Track sidebar hover (only when no overlay is open)
+                            if !app.show_help
+                                && app.dialog.is_none()
+                                && app.screen_mode == ScreenMode::Normal
+                            {
+                                let old_sidebar_hover = app.sidebar_hovered;
+                                let old_tp_hover = app.terminal_panel_hovered;
+
+                                let sidebar_inner = app.areas.sidebar_inner.get();
+                                let tp_inner = app.areas.sidebar_terminal_panel_inner.get();
+
+                                if mouse::point_in_rect(mouse.column, mouse.row, sidebar_inner) {
+                                    let item_row = (mouse.row - sidebar_inner.y) as usize;
+                                    app.sidebar_hovered = if item_row < app.sidebar_items.len() {
+                                        Some(item_row)
+                                    } else {
+                                        None
+                                    };
+                                    app.terminal_panel_hovered = None;
+                                } else if mouse::point_in_rect(mouse.column, mouse.row, tp_inner) {
+                                    let item_row = (mouse.row - tp_inner.y) as usize;
+                                    app.terminal_panel_hovered =
+                                        if item_row < app.terminal_panel_items.len() {
+                                            Some(item_row)
+                                        } else {
+                                            None
+                                        };
+                                    app.sidebar_hovered = None;
+                                } else {
+                                    app.sidebar_hovered = None;
+                                    app.terminal_panel_hovered = None;
+                                }
+
+                                if app.sidebar_hovered != old_sidebar_hover
+                                    || app.terminal_panel_hovered != old_tp_hover
+                                {
+                                    needs_redraw = true;
+                                }
+                            } else if app.sidebar_hovered.is_some()
+                                || app.terminal_panel_hovered.is_some()
+                            {
+                                app.sidebar_hovered = None;
+                                app.terminal_panel_hovered = None;
+                                needs_redraw = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                AppEvent::Input(CrosstermEvent::Paste(data)) => {
+                    // Re-enable mouse capture on paste (user finished selecting).
+                    if !app.mouse_captured {
+                        app.mouse_captured = true;
+                        app.mouse_capture_disabled_at = None;
+                        let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
+                    }
+                    keys::handle_paste(&mut app, data);
+                    needs_redraw = true;
+                }
+                AppEvent::Input(CrosstermEvent::Resize(w, h)) => {
+                    tracing::info!("RESIZE-EVENT from crossterm: {}x{}", w, h);
+                    app.last_terminal_size = (w, h);
+                    session::resize_all(&app, h, w);
+                    app.text_selection = None;
+                    needs_redraw = true;
+                }
+                AppEvent::Input(_) => {}
+                AppEvent::PtyOutput => {
+                    app.url_cache_dirty = true;
+                    needs_redraw = true;
+                }
+                AppEvent::PtyExited { session_id } => {
+                    session::mark_exited(&mut app, session_id);
+                    if tmux_available {
+                        if let Ok(mut info) = tmux_session_info.lock() {
+                            *info = session::collect_tmux_session_info(&app);
                         }
                     }
-                    AppEvent::Input(CrosstermEvent::Paste(data)) => {
-                        // Re-enable mouse capture on paste (user finished selecting).
-                        if !app.mouse_captured {
+                    needs_redraw = true;
+                }
+                AppEvent::WorktreeCreated { branch, error } => {
+                    match error {
+                        Some(e) => app.set_status_with(
+                            StatusSeverity::Error,
+                            format!("Error creating '{}': {}", branch, e),
+                        ),
+                        None => {
+                            app.set_status_with(
+                                StatusSeverity::Success,
+                                format!("Created worktree '{}'", branch),
+                            );
+                            let _ = worktree::refresh_worktrees(&mut app);
+                            // Update status poller paths
+                            if let Ok(mut paths) = status_poller_paths.lock() {
+                                *paths = worktree::collect_worktree_paths(&app);
+                            }
+                        }
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::PushComplete { branch, error } => {
+                    match error {
+                        Some(e) => {
+                            if worktree::git::is_auth_error(&e) {
+                                app.set_status_with(
+                                    StatusSeverity::Error,
+                                    format!("Push '{}' — authentication needed", branch),
+                                );
+                                app.open_dialog(Dialog::AuthError {
+                                    operation: "push".to_string(),
+                                    message: e,
+                                    selected: 0,
+                                });
+                            } else {
+                                app.set_status_with(
+                                    StatusSeverity::Error,
+                                    format!("Push '{}' failed: {}", branch, e),
+                                );
+                            }
+                        }
+                        None => {
+                            app.set_status_with(
+                                StatusSeverity::Success,
+                                format!("Pushed '{}'", branch),
+                            );
+                            app.refresh_worktree_status();
+                        }
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::PullComplete {
+                    branch,
+                    worktree_idx,
+                    error,
+                    has_conflicts,
+                } => {
+                    match (error, has_conflicts) {
+                        (None, _) => {
+                            app.set_status_with(
+                                StatusSeverity::Success,
+                                format!("Pulled '{}'", branch),
+                            );
+                            let _ = worktree::refresh_worktrees(&mut app);
+                            app.refresh_worktree_status();
+                        }
+                        (Some(_msg), true) => {
+                            // Merge conflict from pull — open conflict resolution dialog
+                            app.set_status_with(
+                                StatusSeverity::Error,
+                                format!("Pull '{}' has merge conflicts", branch),
+                            );
+                            app.open_dialog(Dialog::MergeConflict {
+                                worktree_idx,
+                                source_branch: format!("origin/{}", branch),
+                                selected: 0,
+                            });
+                        }
+                        (Some(msg), false) => {
+                            if worktree::git::is_auth_error(&msg) {
+                                app.set_status_with(
+                                    StatusSeverity::Error,
+                                    format!("Pull '{}' — authentication needed", branch),
+                                );
+                                app.open_dialog(Dialog::AuthError {
+                                    operation: "pull".to_string(),
+                                    message: msg,
+                                    selected: 0,
+                                });
+                            } else {
+                                // Non-conflict error — open error dialog
+                                app.set_status_with(
+                                    StatusSeverity::Error,
+                                    format!("Pull '{}' failed", branch),
+                                );
+                                app.open_dialog(Dialog::PullError {
+                                    worktree_idx,
+                                    error_message: msg,
+                                    selected: 0,
+                                });
+                            }
+                        }
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::InitRepoComplete { error, .. } => {
+                    match error {
+                        Some(e) => {
+                            if worktree::git::is_auth_error(&e) {
+                                app.set_status_with(
+                                    StatusSeverity::Error,
+                                    "Clone failed — authentication needed",
+                                );
+                                app.open_dialog(Dialog::AuthError {
+                                    operation: "clone".to_string(),
+                                    message: e,
+                                    selected: 0,
+                                });
+                            } else {
+                                app.set_status_with(
+                                    StatusSeverity::Error,
+                                    format!("Init error: {}", e),
+                                );
+                            }
+                        }
+                        None => {
+                            app.repo_detected = true;
+                            app.set_status_with(StatusSeverity::Success, "Repository initialized!");
+                            let _ = worktree::refresh_worktrees(&mut app);
+                            // Start the status poller now that we have a repo
+                            if let Ok(mut paths) = status_poller_paths.lock() {
+                                *paths = worktree::collect_worktree_paths(&app);
+                            }
+                            worktree::spawn_status_poller(
+                                event_tx.clone(),
+                                std::sync::Arc::clone(&status_poller_paths),
+                                std::sync::Arc::clone(&app.git_lock),
+                            );
+                        }
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::ConvertRepoComplete {
+                    bare_repo_path: new_path,
+                    error,
+                } => {
+                    match error {
+                        Some(e) => app.set_status_with(
+                            StatusSeverity::Error,
+                            format!("Convert error: {}", e),
+                        ),
+                        None => {
+                            app.bare_repo_path = new_path;
+                            app.repo_detected = true;
+                            app.regular_repo_path = None;
+                            app.set_status_with(
+                                StatusSeverity::Success,
+                                "Repository converted to bare worktree layout!",
+                            );
+                            let _ = worktree::refresh_worktrees(&mut app);
+                            // Start the status poller now that we have a repo
+                            if let Ok(mut paths) = status_poller_paths.lock() {
+                                *paths = worktree::collect_worktree_paths(&app);
+                            }
+                            worktree::spawn_status_poller(
+                                event_tx.clone(),
+                                std::sync::Arc::clone(&status_poller_paths),
+                                std::sync::Arc::clone(&app.git_lock),
+                            );
+                        }
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::TmuxTitlesChanged { updates } => {
+                    session::apply_tmux_title_updates(&app, updates);
+                    // Update the poller's snapshot so it knows the current titles
+                    if let Ok(mut info) = tmux_session_info.lock() {
+                        *info = session::collect_tmux_session_info(&app);
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::ClaudeUsageUpdated { updates } => {
+                    for (session_id, usage) in updates {
+                        app.claude_usage.insert(session_id, usage);
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::GlobalUsageUpdated { usage } => {
+                    app.global_usage = Some(usage);
+                    needs_redraw = true;
+                }
+                AppEvent::SummaryReady {
+                    session_id,
+                    summary,
+                } => {
+                    app.agent_summaries.insert(session_id, summary);
+                    needs_redraw = true;
+                }
+                AppEvent::ClaudeCommitMessageReady {
+                    worktree_idx,
+                    message,
+                } => {
+                    // Only apply if the dialog is still open and in GeneratingMessage phase
+                    let applies = matches!(
+                        &app.dialog,
+                        Some(Dialog::GitCommit { worktree_idx: wi, phase, .. })
+                        if *wi == worktree_idx && *phase == CommitPhase::GeneratingMessage
+                    );
+                    if applies {
+                        match message {
+                            Ok(msg) => {
+                                if let Some(Dialog::GitCommit {
+                                    ref mut commit_message,
+                                    ref mut phase,
+                                    ref mut cursor_pos,
+                                    ..
+                                }) = app.dialog
+                                {
+                                    *commit_message = msg;
+                                    *cursor_pos = commit_message.chars().count();
+                                    *phase = CommitPhase::Message;
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(Dialog::GitCommit { ref mut phase, .. }) = app.dialog {
+                                    *phase = CommitPhase::Message;
+                                }
+                                app.set_status(format!("AI message failed: {}", e));
+                            }
+                        }
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::UpdateAvailable { latest_version } => {
+                    app.update_available = Some(latest_version.clone());
+                    // Show the update dialog if not skipped, not already shown, and no dialog open
+                    let is_skipped =
+                        app.skipped_update_version.as_deref() == Some(latest_version.as_str());
+                    if !is_skipped && !app.update_dialog_shown && app.dialog.is_none() {
+                        app.update_dialog_shown = true;
+                        app.open_dialog(Dialog::UpdateAvailable {
+                            latest_version,
+                            selected: 0,
+                            phase: UpdatePhase::Prompt,
+                        });
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::UpdateDownloadComplete { result, version } => {
+                    match result {
+                        Ok(binary_path) => {
+                            // Transition dialog to Replacing phase
+                            if let Some(Dialog::UpdateAvailable {
+                                ref latest_version, ..
+                            }) = app.dialog
+                            {
+                                let ver = latest_version.clone();
+                                app.dialog = Some(Dialog::UpdateAvailable {
+                                    latest_version: ver,
+                                    selected: 0,
+                                    phase: UpdatePhase::Replacing,
+                                });
+                            }
+                            update::spawn_update_replace(binary_path, version, event_tx.clone());
+                        }
+                        Err(e) => {
+                            if let Some(Dialog::UpdateAvailable {
+                                ref latest_version, ..
+                            }) = app.dialog
+                            {
+                                let ver = latest_version.clone();
+                                app.dialog = Some(Dialog::UpdateAvailable {
+                                    latest_version: ver,
+                                    selected: 0,
+                                    phase: UpdatePhase::Failed(e),
+                                });
+                            }
+                        }
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::UpdateReplaceComplete { result, version } => {
+                    match result {
+                        Ok(()) => {
+                            app.close_dialog();
+                            app.set_status_with(
+                                StatusSeverity::Success,
+                                format!(
+                                    "Updated to v{} — restart clawtree to use the new version",
+                                    version
+                                ),
+                            );
+                            // Clear the update indicator since we've updated
+                            app.update_available = None;
+                        }
+                        Err(e) => {
+                            if let Some(Dialog::UpdateAvailable {
+                                ref latest_version, ..
+                            }) = app.dialog
+                            {
+                                let ver = latest_version.clone();
+                                app.dialog = Some(Dialog::UpdateAvailable {
+                                    latest_version: ver,
+                                    selected: 0,
+                                    phase: UpdatePhase::Failed(e),
+                                });
+                            }
+                        }
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::WorktreeStatusReady {
+                    worktree_path,
+                    status,
+                    next_refresh_at,
+                } => {
+                    // Update the per-worktree cache
+                    app.worktree_statuses
+                        .insert(worktree_path.clone(), status.clone());
+                    app.next_status_refresh = Some(next_refresh_at);
+                    // If this is the currently viewed worktree, update the display
+                    if let Some(wi) = app.active_worktree_idx {
+                        if app.worktrees.get(wi).map(|wt| &wt.path) == Some(&worktree_path) {
+                            app.worktree_status = Some(status);
+                            app.clamp_info_panel_cursor();
+                        }
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::Tick => {
+                    // Auto-trigger init/convert dialog on first tick
+                    if let Some(kind) = app.auto_init_pending.take() {
+                        match kind {
+                            app::AutoInitKind::Convert => {
+                                if let Some(ref repo_path) = app.regular_repo_path {
+                                    let branch = worktree::git::current_branch_name(repo_path)
+                                        .unwrap_or_else(|_| "main".to_string());
+                                    let source = repo_path.clone();
+                                    app.open_dialog(Dialog::ConvertRepo {
+                                        mode: 0,
+                                        target_path_input: String::new(),
+                                        branch_name: branch,
+                                        focused_field: 0,
+                                        source_repo_path: source,
+                                        confirmed: false,
+                                    });
+                                }
+                            }
+                            app::AutoInitKind::Init => {
+                                app.open_dialog(Dialog::InitRepo {
+                                    url_input: String::new(),
+                                    branch_input: "main".to_string(),
+                                    focused_field: 0,
+                                });
+                            }
+                        }
+                    }
+
+                    // Auto-re-enable mouse capture after text selection timeout.
+                    if let Some(disabled_at) = app.mouse_capture_disabled_at {
+                        if !app.mouse_captured && disabled_at.elapsed() > Duration::from_secs(2) {
                             app.mouse_captured = true;
                             app.mouse_capture_disabled_at = None;
                             let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
                         }
-                        keys::handle_paste(&mut app, data);
-                        needs_redraw = true;
                     }
-                    AppEvent::Input(CrosstermEvent::Resize(w, h)) => {
-                        tracing::info!("RESIZE-EVENT from crossterm: {}x{}", w, h);
-                        app.last_terminal_size = (w, h);
-                        session::resize_all(&app, h, w);
-                        app.text_selection = None;
-                        needs_redraw = true;
-                    }
-                    AppEvent::Input(_) => {}
-                    AppEvent::PtyOutput => {
-                        app.url_cache_dirty = true;
-                        needs_redraw = true;
-                    }
-                    AppEvent::PtyExited { session_id } => {
-                        session::mark_exited(&mut app, session_id);
-                        if tmux_available {
-                            if let Ok(mut info) = tmux_session_info.lock() {
-                                *info = session::collect_tmux_session_info(&app);
-                            }
+
+                    // Increment spinner frame (~30fps from 33ms tick)
+                    // We want ~10fps for the spinner, so advance every 3rd tick
+                    app.spinner_frame = app.spinner_frame.wrapping_add(1);
+
+                    // ── Mini mode agent tracking (~1/sec, on every 30th tick) ──
+                    if app.spinner_frame.is_multiple_of(30) {
+                        // Rebuild agent list if in mini mode
+                        if app.screen_mode == ScreenMode::Mini {
+                            app.rebuild_mini_agent_list();
                         }
-                        needs_redraw = true;
-                    }
-                    AppEvent::WorktreeCreated { branch, error } => {
-                        match error {
-                            Some(e) => app.set_status_with(StatusSeverity::Error, format!("Error creating '{}': {}", branch, e)),
-                            None => {
-                                app.set_status_with(StatusSeverity::Success, format!("Created worktree '{}'", branch));
-                                let _ = worktree::refresh_worktrees(&mut app);
-                                // Update status poller paths
-                                if let Ok(mut paths) = status_poller_paths.lock() {
-                                    *paths = worktree::collect_worktree_paths(&app);
-                                }
-                            }
-                        }
-                        needs_redraw = true;
-                    }
-                    AppEvent::PushComplete { branch, error } => {
-                        match error {
-                            Some(e) => {
-                                if worktree::git::is_auth_error(&e) {
-                                    app.set_status_with(StatusSeverity::Error, format!("Push '{}' — authentication needed", branch));
-                                    app.open_dialog(Dialog::AuthError {
-                                        operation: "push".to_string(),
-                                        message: e,
-                                        selected: 0,
-                                    });
-                                } else {
-                                    app.set_status_with(StatusSeverity::Error, format!("Push '{}' failed: {}", branch, e));
-                                }
-                            }
-                            None => {
-                                app.set_status_with(StatusSeverity::Success, format!("Pushed '{}'", branch));
-                                app.refresh_worktree_status();
-                            }
-                        }
-                        needs_redraw = true;
-                    }
-                    AppEvent::PullComplete { branch, worktree_idx, error, has_conflicts } => {
-                        match (error, has_conflicts) {
-                            (None, _) => {
-                                app.set_status_with(StatusSeverity::Success, format!("Pulled '{}'", branch));
-                                let _ = worktree::refresh_worktrees(&mut app);
-                                app.refresh_worktree_status();
-                            }
-                            (Some(_msg), true) => {
-                                // Merge conflict from pull — open conflict resolution dialog
-                                app.set_status_with(
-                                    StatusSeverity::Error,
-                                    format!("Pull '{}' has merge conflicts", branch),
-                                );
-                                app.open_dialog(Dialog::MergeConflict {
-                                    worktree_idx,
-                                    source_branch: format!("origin/{}", branch),
-                                    selected: 0,
-                                });
-                            }
-                            (Some(msg), false) => {
-                                if worktree::git::is_auth_error(&msg) {
-                                    app.set_status_with(
-                                        StatusSeverity::Error,
-                                        format!("Pull '{}' — authentication needed", branch),
-                                    );
-                                    app.open_dialog(Dialog::AuthError {
-                                        operation: "pull".to_string(),
-                                        message: msg,
-                                        selected: 0,
-                                    });
-                                } else {
-                                    // Non-conflict error — open error dialog
-                                    app.set_status_with(
-                                        StatusSeverity::Error,
-                                        format!("Pull '{}' failed", branch),
-                                    );
-                                    app.open_dialog(Dialog::PullError {
-                                        worktree_idx,
-                                        error_message: msg,
-                                        selected: 0,
-                                    });
-                                }
-                            }
-                        }
-                        needs_redraw = true;
-                    }
-                    AppEvent::InitRepoComplete { error, .. } => {
-                        match error {
-                            Some(e) => {
-                                if worktree::git::is_auth_error(&e) {
-                                    app.set_status_with(StatusSeverity::Error, "Clone failed — authentication needed");
-                                    app.open_dialog(Dialog::AuthError {
-                                        operation: "clone".to_string(),
-                                        message: e,
-                                        selected: 0,
-                                    });
-                                } else {
-                                    app.set_status_with(StatusSeverity::Error, format!("Init error: {}", e));
-                                }
-                            }
-                            None => {
-                                app.repo_detected = true;
-                                app.set_status_with(StatusSeverity::Success, "Repository initialized!");
-                                let _ = worktree::refresh_worktrees(&mut app);
-                                // Start the status poller now that we have a repo
-                                if let Ok(mut paths) = status_poller_paths.lock() {
-                                    *paths = worktree::collect_worktree_paths(&app);
-                                }
-                                worktree::spawn_status_poller(
-                                    event_tx.clone(),
-                                    std::sync::Arc::clone(&status_poller_paths),
-                                    std::sync::Arc::clone(&app.git_lock),
-                                );
-                            }
-                        }
-                        needs_redraw = true;
-                    }
-                    AppEvent::ConvertRepoComplete { bare_repo_path: new_path, error } => {
-                        match error {
-                            Some(e) => app.set_status_with(StatusSeverity::Error, format!("Convert error: {}", e)),
-                            None => {
-                                app.bare_repo_path = new_path;
-                                app.repo_detected = true;
-                                app.regular_repo_path = None;
-                                app.set_status_with(StatusSeverity::Success, "Repository converted to bare worktree layout!");
-                                let _ = worktree::refresh_worktrees(&mut app);
-                                // Start the status poller now that we have a repo
-                                if let Ok(mut paths) = status_poller_paths.lock() {
-                                    *paths = worktree::collect_worktree_paths(&app);
-                                }
-                                worktree::spawn_status_poller(
-                                    event_tx.clone(),
-                                    std::sync::Arc::clone(&status_poller_paths),
-                                    std::sync::Arc::clone(&app.git_lock),
-                                );
-                            }
-                        }
-                        needs_redraw = true;
-                    }
-                    AppEvent::TmuxTitlesChanged { updates } => {
-                        session::apply_tmux_title_updates(&app, updates);
-                        // Update the poller's snapshot so it knows the current titles
-                        if let Ok(mut info) = tmux_session_info.lock() {
-                            *info = session::collect_tmux_session_info(&app);
-                        }
-                        needs_redraw = true;
-                    }
-                    AppEvent::ClaudeUsageUpdated { updates } => {
-                        for (session_id, usage) in updates {
-                            app.claude_usage.insert(session_id, usage);
-                        }
-                        needs_redraw = true;
-                    }
-                    AppEvent::GlobalUsageUpdated { usage } => {
-                        app.global_usage = Some(usage);
-                        needs_redraw = true;
-                    }
-                    AppEvent::SummaryReady { session_id, summary } => {
-                        app.agent_summaries.insert(session_id, summary);
-                        needs_redraw = true;
-                    }
-                    AppEvent::ClaudeCommitMessageReady { worktree_idx, message } => {
-                        // Only apply if the dialog is still open and in GeneratingMessage phase
-                        let applies = matches!(
-                            &app.dialog,
-                            Some(Dialog::GitCommit { worktree_idx: wi, phase, .. })
-                            if *wi == worktree_idx && *phase == CommitPhase::GeneratingMessage
-                        );
-                        if applies {
-                            match message {
-                                Ok(msg) => {
-                                    if let Some(Dialog::GitCommit { ref mut commit_message, ref mut phase, ref mut cursor_pos, .. }) = app.dialog {
-                                        *commit_message = msg;
-                                        *cursor_pos = commit_message.chars().count();
-                                        *phase = CommitPhase::Message;
+
+                        // Detect Working→Idle transitions and capture summaries
+                        let sids: Vec<u64> = app.sessions.keys().copied().collect();
+                        for sid in &sids {
+                            if let Some(session) = app.sessions.get(sid) {
+                                let currently_active = session.is_active();
+                                let was_active = session.was_active;
+                                let exited =
+                                    session.exited.load(std::sync::atomic::Ordering::Relaxed);
+
+                                // Transition: was working, now idle/done
+                                if was_active && !currently_active && !exited {
+                                    if let Some(summary) = session::extract_summary(session) {
+                                        app.agent_summaries.insert(*sid, summary);
+                                    } else if let Some(ref tmux_name) = session.tmux_session_name {
+                                        // No XML tags found — fall back to one-shot summary
+                                        session::generate_oneshot_summary(
+                                            *sid,
+                                            tmux_name,
+                                            app.event_tx.clone(),
+                                        );
                                     }
                                 }
-                                Err(e) => {
-                                    if let Some(Dialog::GitCommit { ref mut phase, .. }) = app.dialog {
-                                        *phase = CommitPhase::Message;
-                                    }
-                                    app.set_status(format!("AI message failed: {}", e));
-                                }
                             }
                         }
-                        needs_redraw = true;
+                        // Update was_active flags (separate loop to avoid borrow issues)
+                        for sid in &sids {
+                            if let Some(session) = app.sessions.get_mut(sid) {
+                                session.was_active = session.is_active();
+                            }
+                        }
                     }
-                    AppEvent::UpdateAvailable { latest_version } => {
-                        app.update_available = Some(latest_version.clone());
-                        // Show the update dialog if not skipped, not already shown, and no dialog open
-                        let is_skipped = app.skipped_update_version.as_deref() == Some(latest_version.as_str());
-                        if !is_skipped && !app.update_dialog_shown && app.dialog.is_none() {
-                            app.update_dialog_shown = true;
-                            app.open_dialog(Dialog::UpdateAvailable {
-                                latest_version,
-                                selected: 0,
-                                phase: UpdatePhase::Prompt,
-                            });
-                        }
-                        needs_redraw = true;
-                    }
-                    AppEvent::UpdateDownloadComplete { result, version } => {
-                        match result {
-                            Ok(binary_path) => {
-                                // Transition dialog to Replacing phase
-                                if let Some(Dialog::UpdateAvailable { ref latest_version, .. }) = app.dialog {
-                                    let ver = latest_version.clone();
-                                    app.dialog = Some(Dialog::UpdateAvailable {
-                                        latest_version: ver,
-                                        selected: 0,
-                                        phase: UpdatePhase::Replacing,
-                                    });
-                                }
-                                update::spawn_update_replace(binary_path, version, event_tx.clone());
-                            }
-                            Err(e) => {
-                                if let Some(Dialog::UpdateAvailable { ref latest_version, .. }) = app.dialog {
-                                    let ver = latest_version.clone();
-                                    app.dialog = Some(Dialog::UpdateAvailable {
-                                        latest_version: ver,
-                                        selected: 0,
-                                        phase: UpdatePhase::Failed(e),
-                                    });
-                                }
-                            }
-                        }
-                        needs_redraw = true;
-                    }
-                    AppEvent::UpdateReplaceComplete { result, version } => {
-                        match result {
-                            Ok(()) => {
-                                app.close_dialog();
-                                app.set_status_with(
-                                    StatusSeverity::Success,
-                                    format!("Updated to v{} — restart clawtree to use the new version", version),
-                                );
-                                // Clear the update indicator since we've updated
-                                app.update_available = None;
-                            }
-                            Err(e) => {
-                                if let Some(Dialog::UpdateAvailable { ref latest_version, .. }) = app.dialog {
-                                    let ver = latest_version.clone();
-                                    app.dialog = Some(Dialog::UpdateAvailable {
-                                        latest_version: ver,
-                                        selected: 0,
-                                        phase: UpdatePhase::Failed(e),
-                                    });
-                                }
-                            }
-                        }
-                        needs_redraw = true;
-                    }
-                    AppEvent::WorktreeStatusReady { worktree_path, status, next_refresh_at } => {
-                        // Update the per-worktree cache
-                        app.worktree_statuses.insert(worktree_path.clone(), status.clone());
-                        app.next_status_refresh = Some(next_refresh_at);
-                        // If this is the currently viewed worktree, update the display
-                        if let Some(wi) = app.active_worktree_idx {
-                            if app.worktrees.get(wi).map(|wt| &wt.path) == Some(&worktree_path) {
-                                app.worktree_status = Some(status);
-                                app.clamp_info_panel_cursor();
-                            }
-                        }
-                        needs_redraw = true;
-                    }
-                    AppEvent::Tick => {
-                        // Auto-trigger init/convert dialog on first tick
-                        if let Some(kind) = app.auto_init_pending.take() {
-                            match kind {
-                                app::AutoInitKind::Convert => {
-                                    if let Some(ref repo_path) = app.regular_repo_path {
-                                        let branch = worktree::git::current_branch_name(repo_path)
-                                            .unwrap_or_else(|_| "main".to_string());
-                                        let source = repo_path.clone();
-                                        app.open_dialog(Dialog::ConvertRepo {
-                                            mode: 0,
-                                            target_path_input: String::new(),
-                                            branch_name: branch,
-                                            focused_field: 0,
-                                            source_repo_path: source,
-                                            confirmed: false,
-                                        });
-                                    }
-                                }
-                                app::AutoInitKind::Init => {
-                                    app.open_dialog(Dialog::InitRepo {
-                                        url_input: String::new(),
-                                        branch_input: "main".to_string(),
-                                        focused_field: 0,
-                                    });
-                                }
-                            }
-                        }
 
-                        // Auto-re-enable mouse capture after text selection timeout.
-                        if let Some(disabled_at) = app.mouse_capture_disabled_at {
-                            if !app.mouse_captured && disabled_at.elapsed() > Duration::from_secs(2) {
-                                app.mouse_captured = true;
-                                app.mouse_capture_disabled_at = None;
-                                let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
-                            }
-                        }
+                    // Auto-send next queued prompt when Claude is idle.
+                    // Checks ALL sessions with queues, not just the active one.
+                    // Throttled to ~1 check/sec to avoid hammering tmux.
+                    if app.dialog.is_none() && app.loading_message.is_none() {
+                        let cooldown_ok = app
+                            .prompt_queue_last_send
+                            .map(|t| t.elapsed() > Duration::from_secs(5))
+                            .unwrap_or(true);
+                        let check_ok = app
+                            .prompt_queue_last_check
+                            .map(|t| t.elapsed() > Duration::from_millis(1000))
+                            .unwrap_or(true);
 
-                        // Increment spinner frame (~30fps from 33ms tick)
-                        // We want ~10fps for the spinner, so advance every 3rd tick
-                        app.spinner_frame = app.spinner_frame.wrapping_add(1);
+                        if cooldown_ok && check_ok {
+                            app.prompt_queue_last_check = Some(Instant::now());
+                            // Phase 1: find a session ready to receive a prompt (immutable borrows)
+                            let candidates: Vec<u64> = app
+                                .prompt_queues
+                                .iter()
+                                .filter(|(_, q)| !q.is_empty())
+                                .map(|(sid, _)| *sid)
+                                .collect();
 
-                        // ── Mini mode agent tracking (~1/sec, on every 30th tick) ──
-                        if app.spinner_frame.is_multiple_of(30) {
-                            // Rebuild agent list if in mini mode
-                            if app.screen_mode == ScreenMode::Mini {
-                                app.rebuild_mini_agent_list();
-                            }
-
-                            // Detect Working→Idle transitions and capture summaries
-                            let sids: Vec<u64> = app.sessions.keys().copied().collect();
-                            for sid in &sids {
+                            let mut send_to: Option<(
+                                u64,
+                                Option<String>,
+                                tokio::sync::mpsc::UnboundedSender<bytes::Bytes>,
+                            )> = None;
+                            for sid in &candidates {
                                 if let Some(session) = app.sessions.get(sid) {
-                                    let currently_active = session.is_active();
-                                    let was_active = session.was_active;
-                                    let exited = session.exited.load(std::sync::atomic::Ordering::Relaxed);
-
-                                    // Transition: was working, now idle/done
-                                    if was_active && !currently_active && !exited {
-                                        if let Some(summary) = session::extract_summary(session) {
-                                            app.agent_summaries.insert(*sid, summary);
-                                        } else if let Some(ref tmux_name) = session.tmux_session_name {
-                                            // No XML tags found — fall back to one-shot summary
-                                            session::generate_oneshot_summary(
+                                    if !session.exited.load(Ordering::Relaxed)
+                                        && !session.is_active()
+                                    {
+                                        let settled = session
+                                            .last_output
+                                            .read()
+                                            .ok()
+                                            .map(|t| t.elapsed() > Duration::from_secs(2))
+                                            .unwrap_or(false);
+                                        if settled {
+                                            send_to = Some((
                                                 *sid,
-                                                tmux_name,
-                                                app.event_tx.clone(),
-                                            );
+                                                session.tmux_session_name.clone(),
+                                                session.write_tx.clone(),
+                                            ));
+                                            break;
                                         }
                                     }
                                 }
                             }
-                            // Update was_active flags (separate loop to avoid borrow issues)
-                            for sid in &sids {
-                                if let Some(session) = app.sessions.get_mut(sid) {
-                                    session.was_active = session.is_active();
-                                }
-                            }
-                        }
-
-                        // Auto-send next queued prompt when Claude is idle.
-                        // Checks ALL sessions with queues, not just the active one.
-                        // Throttled to ~1 check/sec to avoid hammering tmux.
-                        if app.dialog.is_none() && app.loading_message.is_none() {
-                            let cooldown_ok = app.prompt_queue_last_send
-                                .map(|t| t.elapsed() > Duration::from_secs(5))
-                                .unwrap_or(true);
-                            let check_ok = app.prompt_queue_last_check
-                                .map(|t| t.elapsed() > Duration::from_millis(1000))
-                                .unwrap_or(true);
-
-                            if cooldown_ok && check_ok {
-                                app.prompt_queue_last_check = Some(Instant::now());
-                                // Phase 1: find a session ready to receive a prompt (immutable borrows)
-                                let candidates: Vec<u64> = app.prompt_queues.iter()
-                                    .filter(|(_, q)| !q.is_empty())
-                                    .map(|(sid, _)| *sid)
-                                    .collect();
-
-                                let mut send_to: Option<(u64, Option<String>, tokio::sync::mpsc::UnboundedSender<bytes::Bytes>)> = None;
-                                for sid in &candidates {
-                                    if let Some(session) = app.sessions.get(sid) {
-                                        if !session.exited.load(Ordering::Relaxed)
-                                            && !session.is_active()
-                                        {
-                                            let settled = session.last_output
-                                                .read()
-                                                .ok()
-                                                .map(|t| t.elapsed() > Duration::from_secs(2))
-                                                .unwrap_or(false);
-                                            if settled {
-                                                send_to = Some((*sid, session.tmux_session_name.clone(), session.write_tx.clone()));
-                                                break;
+                            // Phase 2: send the prompt and submit it.
+                            if let Some((sid, tmux_name, write_tx)) = send_to {
+                                if let Some(queue) = app.prompt_queues.get_mut(&sid) {
+                                    if !queue.is_empty() {
+                                        let prompt = queue.remove(0);
+                                        if let Some(ref tmux) = tmux_name {
+                                            // Use tmux send-keys — the reliable way to
+                                            // type into a tmux pane. -l sends literal text,
+                                            // then a separate Enter key submits.
+                                            let tmux = tmux.clone();
+                                            let prompt_clone = prompt.clone();
+                                            tokio::spawn(async move {
+                                                let _ = std::process::Command::new("tmux")
+                                                    .args([
+                                                        "send-keys",
+                                                        "-t",
+                                                        &tmux,
+                                                        "-l",
+                                                        &prompt_clone,
+                                                    ])
+                                                    .output();
+                                                tokio::time::sleep(Duration::from_millis(100))
+                                                    .await;
+                                                let _ = std::process::Command::new("tmux")
+                                                    .args(["send-keys", "-t", &tmux, "Enter"])
+                                                    .output();
+                                            });
+                                        } else {
+                                            // Non-tmux fallback: write to PTY directly
+                                            let mut payload = prompt.into_bytes();
+                                            payload.push(b'\r');
+                                            let _ = write_tx.send(bytes::Bytes::from(payload));
+                                        }
+                                        app.prompt_queue_last_send = Some(Instant::now());
+                                        // Clamp selected index if this is the active session
+                                        if app.active_session_id == Some(sid) {
+                                            if queue.is_empty() {
+                                                app.prompt_queue_selected = 0;
+                                            } else if app.prompt_queue_selected >= queue.len() {
+                                                app.prompt_queue_selected = queue.len() - 1;
                                             }
                                         }
-                                    }
-                                }
-                                // Phase 2: send the prompt and submit it.
-                                if let Some((sid, tmux_name, write_tx)) = send_to {
-                                    if let Some(queue) = app.prompt_queues.get_mut(&sid) {
-                                        if !queue.is_empty() {
-                                            let prompt = queue.remove(0);
-                                            if let Some(ref tmux) = tmux_name {
-                                                // Use tmux send-keys — the reliable way to
-                                                // type into a tmux pane. -l sends literal text,
-                                                // then a separate Enter key submits.
-                                                let tmux = tmux.clone();
-                                                let prompt_clone = prompt.clone();
-                                                tokio::spawn(async move {
-                                                    let _ = std::process::Command::new("tmux")
-                                                        .args(["send-keys", "-t", &tmux, "-l", &prompt_clone])
-                                                        .output();
-                                                    tokio::time::sleep(Duration::from_millis(100)).await;
-                                                    let _ = std::process::Command::new("tmux")
-                                                        .args(["send-keys", "-t", &tmux, "Enter"])
-                                                        .output();
-                                                });
-                                            } else {
-                                                // Non-tmux fallback: write to PTY directly
-                                                let mut payload = prompt.into_bytes();
-                                                payload.push(b'\r');
-                                                let _ = write_tx.send(bytes::Bytes::from(payload));
-                                            }
-                                            app.prompt_queue_last_send = Some(Instant::now());
-                                            // Clamp selected index if this is the active session
-                                            if app.active_session_id == Some(sid) {
-                                                if queue.is_empty() {
-                                                    app.prompt_queue_selected = 0;
-                                                } else if app.prompt_queue_selected >= queue.len() {
-                                                    app.prompt_queue_selected = queue.len() - 1;
-                                                }
-                                            }
-                                            app.set_status("Queue: sent prompt");
-                                            app.save_prompt_queues();
-                                        }
+                                        app.set_status("Queue: sent prompt");
+                                        app.save_prompt_queues();
                                     }
                                 }
                             }
                         }
-                        needs_redraw = true;
                     }
+                    needs_redraw = true;
                 }
+            }
         }
     }
 
@@ -1294,7 +1505,10 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                 app.refresh_worktree_status();
             }
         }
-        PendingAction::StageAll { worktree_idx, then_claude } => {
+        PendingAction::StageAll {
+            worktree_idx,
+            then_claude,
+        } => {
             if let Err(e) = worktree::stage_all(app, worktree_idx) {
                 app.set_status(format!("Failed to stage all: {}", e));
             }
@@ -1307,7 +1521,10 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                 app.refresh_worktree_status();
             }
         }
-        PendingAction::Commit { worktree_idx, message } => {
+        PendingAction::Commit {
+            worktree_idx,
+            message,
+        } => {
             match worktree::commit(app, worktree_idx, &message) {
                 Ok(()) => {
                     let _ = worktree::refresh_worktrees(app);
@@ -1317,7 +1534,10 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                         app.set_status("Committed — merging...");
                         app.queue_action("Merging...", merge_action);
                     } else {
-                        app.set_status_with(StatusSeverity::Success, "Changes committed successfully");
+                        app.set_status_with(
+                            StatusSeverity::Success,
+                            "Changes committed successfully",
+                        );
                     }
                 }
                 Err(e) => {
@@ -1325,7 +1545,10 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                 }
             }
         }
-        PendingAction::CommitAndPush { worktree_idx, message } => {
+        PendingAction::CommitAndPush {
+            worktree_idx,
+            message,
+        } => {
             match worktree::commit(app, worktree_idx, &message) {
                 Ok(()) => {
                     let _ = worktree::refresh_worktrees(app);
@@ -1370,7 +1593,11 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                             staged.push((c.index_status, c.path.clone()));
                         }
                         if c.work_status != ' ' || c.index_status == '?' {
-                            let status = if c.index_status == '?' { '?' } else { c.work_status };
+                            let status = if c.index_status == '?' {
+                                '?'
+                            } else {
+                                c.work_status
+                            };
                             unstaged.push((status, c.path.clone()));
                         }
                     }
@@ -1410,7 +1637,11 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                             staged.push((c.index_status, c.path.clone()));
                         }
                         if c.work_status != ' ' || c.index_status == '?' {
-                            let status = if c.index_status == '?' { '?' } else { c.work_status };
+                            let status = if c.index_status == '?' {
+                                '?'
+                            } else {
+                                c.work_status
+                            };
                             unstaged.push((status, c.path.clone()));
                         }
                     }
@@ -1436,7 +1667,10 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                 }
             }
         }
-        PendingAction::MergeExecute { source_worktree_idx, target_branch } => {
+        PendingAction::MergeExecute {
+            source_worktree_idx,
+            target_branch,
+        } => {
             let source_name = app
                 .worktrees
                 .get(source_worktree_idx)
@@ -1489,13 +1723,19 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                         }
                         Err(e) => {
                             app.pending_merge = None;
-                            app.set_status(format!("Failed to get status of '{}': {}", source_name, e));
+                            app.set_status(format!(
+                                "Failed to get status of '{}': {}",
+                                source_name, e
+                            ));
                         }
                     }
                     return;
                 }
                 Err(e) => {
-                    app.set_status(format!("Failed to check status of '{}': {}", source_name, e));
+                    app.set_status(format!(
+                        "Failed to check status of '{}': {}",
+                        source_name, e
+                    ));
                     return;
                 }
                 Ok(true) => {}
@@ -1511,7 +1751,10 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                         &target_branch,
                         "",
                     ) {
-                        app.set_status(format!("Failed to create worktree for '{}': {}", target_branch, e));
+                        app.set_status(format!(
+                            "Failed to create worktree for '{}': {}",
+                            target_branch, e
+                        ));
                         return;
                     }
                     if let Err(e) = worktree::refresh_worktrees(app) {
@@ -1521,7 +1764,10 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                     match worktree::find_worktree_for_branch(app, &target_branch) {
                         Some(idx) => idx,
                         None => {
-                            app.set_status(format!("Could not find worktree for '{}'", target_branch));
+                            app.set_status(format!(
+                                "Could not find worktree for '{}'",
+                                target_branch
+                            ));
                             return;
                         }
                     }
@@ -1560,7 +1806,11 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                                     staged.push((c.index_status, c.path.clone()));
                                 }
                                 if c.work_status != ' ' || c.index_status == '?' {
-                                    let status = if c.index_status == '?' { '?' } else { c.work_status };
+                                    let status = if c.index_status == '?' {
+                                        '?'
+                                    } else {
+                                        c.work_status
+                                    };
                                     unstaged.push((status, c.path.clone()));
                                 }
                             }
@@ -1581,13 +1831,19 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                         }
                         Err(e) => {
                             app.pending_merge = None;
-                            app.set_status(format!("Failed to get status of '{}': {}", target_branch, e));
+                            app.set_status(format!(
+                                "Failed to get status of '{}': {}",
+                                target_branch, e
+                            ));
                         }
                     }
                     return;
                 }
                 Err(e) => {
-                    app.set_status(format!("Failed to check status of '{}': {}", target_branch, e));
+                    app.set_status(format!(
+                        "Failed to check status of '{}': {}",
+                        target_branch, e
+                    ));
                     return;
                 }
                 Ok(true) => {}
@@ -1596,13 +1852,14 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
             match worktree::merge_into_worktree(app, target_wt_idx, &source_name) {
                 Ok(worktree::git::MergeResult::Success(output)) => {
                     let detail = output.lines().next().unwrap_or("ok").trim().to_string();
-                    let msg = format!("Merged '{}' into '{}': {}", source_name, target_branch, detail);
+                    let msg = format!(
+                        "Merged '{}' into '{}': {}",
+                        source_name, target_branch, detail
+                    );
                     app.set_status(msg.clone());
                     let _ = worktree::refresh_worktrees(app);
                     app.refresh_worktree_status();
-                    app.open_dialog(Dialog::MergeSuccess {
-                        message: msg,
-                    });
+                    app.open_dialog(Dialog::MergeSuccess { message: msg });
                 }
                 Ok(worktree::git::MergeResult::Conflict) => {
                     app.set_status(format!(
@@ -1625,18 +1882,26 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
 
 /// Re-fetch file status and rebuild the GitCommit dialog lists.
 fn refresh_git_commit_dialog(app: &mut App) {
-    let (worktree_idx, old_section, old_selected, phase, commit_message, cursor_pos) = match &app.dialog {
-        Some(Dialog::GitCommit {
-            worktree_idx,
-            section,
-            selected,
-            phase,
-            commit_message,
-            cursor_pos,
-            ..
-        }) => (*worktree_idx, *section, *selected, *phase, commit_message.clone(), *cursor_pos),
-        _ => return,
-    };
+    let (worktree_idx, old_section, old_selected, phase, commit_message, cursor_pos) =
+        match &app.dialog {
+            Some(Dialog::GitCommit {
+                worktree_idx,
+                section,
+                selected,
+                phase,
+                commit_message,
+                cursor_pos,
+                ..
+            }) => (
+                *worktree_idx,
+                *section,
+                *selected,
+                *phase,
+                commit_message.clone(),
+                *cursor_pos,
+            ),
+            _ => return,
+        };
 
     let changes = match worktree::status_porcelain(app, worktree_idx) {
         Ok(c) => c,
@@ -1653,7 +1918,11 @@ fn refresh_git_commit_dialog(app: &mut App) {
             staged.push((c.index_status, c.path.clone()));
         }
         if c.work_status != ' ' || c.index_status == '?' {
-            let status = if c.index_status == '?' { '?' } else { c.work_status };
+            let status = if c.index_status == '?' {
+                '?'
+            } else {
+                c.work_status
+            };
             unstaged.push((status, c.path.clone()));
         }
     }
@@ -1674,8 +1943,16 @@ fn refresh_git_commit_dialog(app: &mut App) {
         old_section
     };
 
-    let len = if section == 0 { unstaged.len() } else { staged.len() };
-    let selected = if len == 0 { 0 } else { old_selected.min(len - 1) };
+    let len = if section == 0 {
+        unstaged.len()
+    } else {
+        staged.len()
+    };
+    let selected = if len == 0 {
+        0
+    } else {
+        old_selected.min(len - 1)
+    };
 
     app.dialog = Some(Dialog::GitCommit {
         worktree_idx,

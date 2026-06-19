@@ -1,29 +1,33 @@
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use ratatui::Frame;
 
-use crate::app::{App, InputMode, ScreenMode, StatusSeverity};
 use super::theme;
+use crate::app::{App, InputMode, ScreenMode, StatusSeverity};
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let mode_text = match app.screen_mode {
         ScreenMode::Mini => "MINI",
         ScreenMode::MiniDrilldown => "MINI/DRILL",
         ScreenMode::Normal => match app.input_mode {
-            InputMode::Normal => if app.prompt_queue_focused() {
-                "Prompt Queue"
-            } else {
-                "Worktrees"
-            },
+            InputMode::Normal => {
+                if app.prompt_queue_focused() {
+                    "Prompt Queue"
+                } else {
+                    "Worktrees"
+                }
+            }
             InputMode::Terminal => "Claude Code",
             InputMode::Dialog => "DIALOG",
         },
     };
 
     let wide = area.width > 120;
-    let help_text: &str = if app.screen_mode == ScreenMode::Mini && app.mini.focus == crate::app::MiniModeFocus::DetailInput {
+    let help_text: &str = if app.screen_mode == ScreenMode::Mini
+        && app.mini.focus == crate::app::MiniModeFocus::DetailInput
+    {
         if wide {
             "Tab:back to tree  Enter:send  Alt+Enter:newline  F2:normal  ?:help"
         } else {
@@ -43,8 +47,16 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
     } else if !app.repo_detected && app.input_mode != InputMode::Dialog {
         if app.regular_repo_path.is_some() {
-            if wide { "i:init repo  c:convert  ?:help  ^q:quit" } else { "i:init c:convert ?:help ^q:quit" }
-        } else if wide { "i:init repo  ?:help  ^q:quit" } else { "i:init-repo ?:help ^q:quit" }
+            if wide {
+                "i:init repo  c:convert  ?:help  ^q:quit"
+            } else {
+                "i:init c:convert ?:help ^q:quit"
+            }
+        } else if wide {
+            "i:init repo  ?:help  ^q:quit"
+        } else {
+            "i:init-repo ?:help ^q:quit"
+        }
     } else if app.prompt_queue_focused() {
         if wide {
             "Enter:add/edit  d:delete  \u{2191}\u{2193}:navigate  Esc:back  ^p:hide queue"
@@ -53,48 +65,51 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
     } else {
         match app.input_mode {
-            InputMode::Normal => {
-                match app.selected_sidebar_item() {
-                    Some(crate::app::SidebarItem::Session(_, _)) | Some(crate::app::SidebarItem::ProjectSession(_)) => {
-                        if wide {
-                            "c:claude  Shift+c:claude (YOLO)  n:new worktree  Ctrl+P:prompt queue  d:delete  ?:help  Ctrl+Q:quit"
-                        } else {
-                            "c:claude Shift+c:claude (YOLO) n:new-wt Ctrl+P:queue d:del ?:help"
-                        }
-                    }
-                    Some(crate::app::SidebarItem::Worktree(_)) => {
-                        if wide {
-                            "c:claude  Shift+c:claude (YOLO)  n:new worktree  m:merge branch  d:delete  ?:help  Ctrl+Q:quit"
-                        } else {
-                            "c:claude Shift+c:claude (YOLO) n:new-wt m:merge d:del ?:help"
-                        }
-                    }
-                    Some(crate::app::SidebarItem::Project) => {
-                        if wide {
-                            "c:claude  t:terminal  n:new worktree  ?:help  Ctrl+Q:quit"
-                        } else {
-                            "c:claude t:term n:new-wt ?:help ^q:quit"
-                        }
-                    }
-                    Some(crate::app::SidebarItem::Location(_)) => {
-                        if wide {
-                            "c:claude  Shift+c:claude (YOLO)  d:remove location  l:add location  ?:help  Ctrl+Q:quit"
-                        } else {
-                            "c:claude Shift+c:claude (YOLO) d:remove l:add-loc ?:help"
-                        }
-                    }
-                    Some(crate::app::SidebarItem::LocationSession(_, _)) => {
-                        if wide {
-                            "c:claude  Shift+c:claude (YOLO)  d:delete  r:rename  ?:help  Ctrl+Q:quit"
-                        } else {
-                            "c:claude Shift+c:claude (YOLO) d:del r:rename ?:help"
-                        }
-                    }
-                    Some(crate::app::SidebarItem::Terminal(_)) | None => {
-                        if wide { "n:new worktree  ^b:sidebar  ?:help  ^q:quit" } else { "n:new-wt ^b:sidebar ?:help ^q:quit" }
+            InputMode::Normal => match app.selected_sidebar_item() {
+                Some(crate::app::SidebarItem::Session(_, _))
+                | Some(crate::app::SidebarItem::ProjectSession(_)) => {
+                    if wide {
+                        "c:claude  Shift+c:claude (YOLO)  n:new worktree  Ctrl+P:prompt queue  d:delete  ?:help  Ctrl+Q:quit"
+                    } else {
+                        "c:claude Shift+c:claude (YOLO) n:new-wt Ctrl+P:queue d:del ?:help"
                     }
                 }
-            }
+                Some(crate::app::SidebarItem::Worktree(_)) => {
+                    if wide {
+                        "c:claude  Shift+c:claude (YOLO)  n:new worktree  m:merge branch  d:delete  ?:help  Ctrl+Q:quit"
+                    } else {
+                        "c:claude Shift+c:claude (YOLO) n:new-wt m:merge d:del ?:help"
+                    }
+                }
+                Some(crate::app::SidebarItem::Project) => {
+                    if wide {
+                        "c:claude  t:terminal  n:new worktree  ?:help  Ctrl+Q:quit"
+                    } else {
+                        "c:claude t:term n:new-wt ?:help ^q:quit"
+                    }
+                }
+                Some(crate::app::SidebarItem::Location(_)) => {
+                    if wide {
+                        "c:claude  Shift+c:claude (YOLO)  d:remove location  l:add location  ?:help  Ctrl+Q:quit"
+                    } else {
+                        "c:claude Shift+c:claude (YOLO) d:remove l:add-loc ?:help"
+                    }
+                }
+                Some(crate::app::SidebarItem::LocationSession(_, _)) => {
+                    if wide {
+                        "c:claude  Shift+c:claude (YOLO)  d:delete  r:rename  ?:help  Ctrl+Q:quit"
+                    } else {
+                        "c:claude Shift+c:claude (YOLO) d:del r:rename ?:help"
+                    }
+                }
+                Some(crate::app::SidebarItem::Terminal(_)) | None => {
+                    if wide {
+                        "n:new worktree  ^b:sidebar  ?:help  ^q:quit"
+                    } else {
+                        "n:new-wt ^b:sidebar ?:help ^q:quit"
+                    }
+                }
+            },
             InputMode::Terminal => {
                 if wide {
                     "Tab:escape to sidebar  ^p:prompt queue  ^b:toggle sidebar  ^q:quit"
@@ -103,7 +118,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 }
             }
             InputMode::Dialog => {
-                if wide { "Enter:confirm  Esc:cancel  Tab:next field" } else { "Enter:confirm Esc:cancel Tab:next-field" }
+                if wide {
+                    "Enter:confirm  Esc:cancel  Tab:next field"
+                } else {
+                    "Enter:confirm Esc:cancel Tab:next-field"
+                }
             }
         }
     };
@@ -113,7 +132,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         match sev {
             StatusSeverity::Info => Style::default().fg(theme::STATUS_INFO),
             StatusSeverity::Success => Style::default().fg(theme::STATUS_SUCCESS),
-            StatusSeverity::Error => Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
+            StatusSeverity::Error => Style::default()
+                .fg(theme::STATUS_ERROR)
+                .add_modifier(Modifier::BOLD),
         }
     };
     let (status, status_style) = match (&app.status_message, app.status_message_time) {
@@ -134,11 +155,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let mode_bg = match app.screen_mode {
         ScreenMode::Mini | ScreenMode::MiniDrilldown => theme::MODE_MINI_BG,
         ScreenMode::Normal => match app.input_mode {
-            InputMode::Normal => if app.prompt_queue_focused() {
-                theme::BORDER_FOCUSED_PROMPT_QUEUE
-            } else {
-                theme::MODE_NORMAL_BG
-            },
+            InputMode::Normal => {
+                if app.prompt_queue_focused() {
+                    theme::BORDER_FOCUSED_PROMPT_QUEUE
+                } else {
+                    theme::MODE_NORMAL_BG
+                }
+            }
             InputMode::Terminal => theme::get().mode_terminal_bg,
             InputMode::Dialog => theme::MODE_DIALOG_BG,
         },
@@ -194,7 +217,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         },
     ]);
 
-    let paragraph = Paragraph::new(line)
-        .style(Style::default().bg(theme::get().status_bar_bg));
+    let paragraph = Paragraph::new(line).style(Style::default().bg(theme::get().status_bar_bg));
     f.render_widget(paragraph, area);
 }

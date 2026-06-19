@@ -102,7 +102,10 @@ fn test_convert_empty_repo_in_place() {
     // .bare directory should exist
     assert!(dir.join(".bare").is_dir(), ".bare directory not found");
     // .git should be a file, not a directory
-    assert!(dir.join(".git").is_file(), ".git should be a file after conversion");
+    assert!(
+        dir.join(".git").is_file(),
+        ".git should be a file after conversion"
+    );
     // Worktree for the branch should exist
     assert!(
         dir.join("main").is_dir(),
@@ -168,7 +171,10 @@ fn test_detect_bare_repo_with_no_worktrees() {
 
     // detect_bare_repo should still find it even without worktrees
     let detected = git::detect_bare_repo(dir2);
-    assert!(detected.is_some(), "detect_bare_repo should find .bare even without worktrees");
+    assert!(
+        detected.is_some(),
+        "detect_bare_repo should find .bare even without worktrees"
+    );
 
     // list_worktrees should return only the bare entry (no non-bare)
     let entries = git::list_worktrees(dir2).unwrap();
@@ -191,10 +197,7 @@ fn test_init_then_list_worktrees_roundtrip() {
 
     // Must be able to list worktrees and find the main branch
     let entries = git::list_worktrees(dir).unwrap();
-    let branches: Vec<_> = entries
-        .iter()
-        .filter_map(|e| e.branch.as_deref())
-        .collect();
+    let branches: Vec<_> = entries.iter().filter_map(|e| e.branch.as_deref()).collect();
     assert!(
         branches.contains(&"main"),
         "Expected 'main' in worktree branches, got {:?}",

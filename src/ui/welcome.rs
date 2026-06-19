@@ -1,11 +1,11 @@
-use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::Frame;
 
-use crate::app::App;
 use super::theme;
+use crate::app::App;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let has_regular_repo = app.regular_repo_path.is_some();
@@ -91,7 +91,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // ── Info content ────────────────────────────────────────────
     lines.push(Line::from(Span::styled(
         header,
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
@@ -123,16 +125,32 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("Press ", Style::default().fg(Color::Gray)),
-            Span::styled("i", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled(" to initialize a new bare repo workflow", Style::default().fg(Color::Gray)),
+            Span::styled(
+                "i",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " to initialize a new bare repo workflow",
+                Style::default().fg(Color::Gray),
+            ),
         ]));
 
         if has_regular_repo {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled("Press ", Style::default().fg(Color::Gray)),
-                Span::styled("c", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::styled(" to convert existing repo to bare worktree layout", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    "c",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " to convert existing repo to bare worktree layout",
+                    Style::default().fg(Color::Gray),
+                ),
             ]));
         }
     }

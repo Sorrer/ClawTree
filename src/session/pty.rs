@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use portable_pty::{CommandBuilder, native_pty_system, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::Command;
@@ -126,13 +126,24 @@ pub fn tmux_available() -> bool {
 /// Sanitize a string for use in a tmux session name.
 fn sanitize_tmux_name(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
 /// Generate a unique tmux session name for a plain terminal in a worktree.
 pub fn tmux_terminal_session_name(branch: &str, session_id: u64) -> String {
-    let base = format!("{}-term-{}-{}", TMUX_PREFIX, sanitize_tmux_name(branch), session_id);
+    let base = format!(
+        "{}-term-{}-{}",
+        TMUX_PREFIX,
+        sanitize_tmux_name(branch),
+        session_id
+    );
     if tmux_session_exists(&base) {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -146,7 +157,12 @@ pub fn tmux_terminal_session_name(branch: &str, session_id: u64) -> String {
 
 /// Generate a unique tmux session name for a worktree branch + session id.
 pub fn tmux_session_name(branch: &str, session_id: u64) -> String {
-    let base = format!("{}-{}-{}", TMUX_PREFIX, sanitize_tmux_name(branch), session_id);
+    let base = format!(
+        "{}-{}-{}",
+        TMUX_PREFIX,
+        sanitize_tmux_name(branch),
+        session_id
+    );
     // If name already taken, append a suffix
     if tmux_session_exists(&base) {
         let ts = std::time::SystemTime::now()
@@ -424,7 +440,13 @@ pub fn spawn_terminal_pty_tmux(
 /// Query the current working directory of a tmux session's pane.
 pub fn query_tmux_pane_cwd(tmux_name: &str) -> Option<String> {
     let output = Command::new("tmux")
-        .args(["display-message", "-t", tmux_name, "-p", "#{pane_current_path}"])
+        .args([
+            "display-message",
+            "-t",
+            tmux_name,
+            "-p",
+            "#{pane_current_path}",
+        ])
         .output()
         .ok()?;
     if output.status.success() {
@@ -497,7 +519,15 @@ pub fn attach_tmux_session(
 
     drop(pair.slave);
 
-    setup_pty_threads(pair.master, session_id, event_tx, rows, cols, Some(tmux_name.to_string()), existing_title)
+    setup_pty_threads(
+        pair.master,
+        session_id,
+        event_tx,
+        rows,
+        cols,
+        Some(tmux_name.to_string()),
+        existing_title,
+    )
 }
 
 /// Spawn a `claude` process directly in a PTY (no tmux).
@@ -555,9 +585,9 @@ fn setup_pty_threads(
     if let Some(title) = initial_title {
         callbacks.title = title;
     }
-    let parser = Arc::new(RwLock::new(
-        vt100::Parser::new_with_callbacks(rows, cols, 1000, callbacks),
-    ));
+    let parser = Arc::new(RwLock::new(vt100::Parser::new_with_callbacks(
+        rows, cols, 1000, callbacks,
+    )));
     let exited = Arc::new(AtomicBool::new(false));
     let last_output = Arc::new(RwLock::new(Instant::now()));
 
@@ -602,9 +632,7 @@ fn setup_pty_threads(
 
     // ── Writer thread (plain OS thread) ────────────────────────────
     let (write_tx, mut write_rx) = mpsc::unbounded_channel::<bytes::Bytes>();
-    let mut writer = master
-        .take_writer()
-        .context("Failed to take PTY writer")?;
+    let mut writer = master.take_writer().context("Failed to take PTY writer")?;
 
     std::thread::Builder::new()
         .name(format!("pty-writer-{}", session_id))

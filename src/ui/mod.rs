@@ -8,11 +8,11 @@ pub mod terminal_pane;
 pub mod theme;
 pub mod welcome;
 
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::Frame;
 
 use crate::app::{App, ScreenMode};
 
@@ -69,9 +69,9 @@ fn draw_normal(f: &mut Frame, app: &App) {
                     let sidebar_chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
-                            Constraint::Min(5),                         // worktree list
-                            Constraint::Length(terminal_panel_height),  // terminal panel
-                            Constraint::Length(5),                      // global usage
+                            Constraint::Min(5),                        // worktree list
+                            Constraint::Length(terminal_panel_height), // terminal panel
+                            Constraint::Length(5),                     // global usage
                         ])
                         .split(main_chunks[0]);
                     sidebar::draw(f, app, sidebar_chunks[0]);
@@ -82,8 +82,8 @@ fn draw_normal(f: &mut Frame, app: &App) {
                     let sidebar_chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
-                            Constraint::Min(5),                         // worktree list
-                            Constraint::Length(terminal_panel_height),  // terminal panel
+                            Constraint::Min(5),                        // worktree list
+                            Constraint::Length(terminal_panel_height), // terminal panel
                         ])
                         .split(main_chunks[0]);
                     sidebar::draw(f, app, sidebar_chunks[0]);
@@ -93,8 +93,8 @@ fn draw_normal(f: &mut Frame, app: &App) {
                     let sidebar_chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
-                            Constraint::Min(5),     // worktree list
-                            Constraint::Length(5),  // global usage
+                            Constraint::Min(5),    // worktree list
+                            Constraint::Length(5), // global usage
                         ])
                         .split(main_chunks[0]);
                     sidebar::draw(f, app, sidebar_chunks[0]);
@@ -110,8 +110,8 @@ fn draw_normal(f: &mut Frame, app: &App) {
             let pane_chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Min(5),                             // terminal pane
-                    Constraint::Length(app.queue_panel_height()),   // prompt queue
+                    Constraint::Min(5),                           // terminal pane
+                    Constraint::Length(app.queue_panel_height()), // prompt queue
                 ])
                 .split(main_chunks[1]);
 
@@ -174,7 +174,12 @@ pub(crate) fn draw_loading_overlay(f: &mut Frame, message: &str) {
 
     let line = Line::from(vec![
         Span::styled("  ", Style::default()),
-        Span::styled(message, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            message,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
     ]);
     f.render_widget(Paragraph::new(line), inner);
 }

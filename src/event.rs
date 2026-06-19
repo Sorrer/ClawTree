@@ -22,9 +22,7 @@ pub enum AppEvent {
         error: Option<String>,
     },
     /// Background repo init completed.
-    InitRepoComplete {
-        error: Option<String>,
-    },
+    InitRepoComplete { error: Option<String> },
     /// Background repo conversion completed.
     ConvertRepoComplete {
         bare_repo_path: PathBuf,
@@ -45,9 +43,7 @@ pub enum AppEvent {
         has_conflicts: bool,
     },
     /// Tmux title(s) changed — maps session_id to new title.
-    TmuxTitlesChanged {
-        updates: Vec<(u64, String)>,
-    },
+    TmuxTitlesChanged { updates: Vec<(u64, String)> },
     /// Background git status fetch completed for a worktree.
     WorktreeStatusReady {
         worktree_path: PathBuf,
@@ -55,27 +51,18 @@ pub enum AppEvent {
         next_refresh_at: Instant,
     },
     /// Claude Code context usage data updated from debug logs.
-    ClaudeUsageUpdated {
-        updates: Vec<(u64, ClaudeUsage)>,
-    },
+    ClaudeUsageUpdated { updates: Vec<(u64, ClaudeUsage)> },
     /// Global account-level usage data updated from the Anthropic API.
-    GlobalUsageUpdated {
-        usage: GlobalUsage,
-    },
+    GlobalUsageUpdated { usage: GlobalUsage },
     /// A one-shot Claude summary completed for a session.
-    SummaryReady {
-        session_id: u64,
-        summary: String,
-    },
+    SummaryReady { session_id: u64, summary: String },
     /// Claude-generated commit message is ready.
     ClaudeCommitMessageReady {
         worktree_idx: usize,
         message: Result<String, String>,
     },
     /// A newer version is available on GitHub Releases.
-    UpdateAvailable {
-        latest_version: String,
-    },
+    UpdateAvailable { latest_version: String },
     /// Background update download completed.
     UpdateDownloadComplete {
         result: Result<PathBuf, String>,

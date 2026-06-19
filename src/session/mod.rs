@@ -131,7 +131,9 @@ impl Session {
 
         for (i, line) in bottom_lines.iter().enumerate() {
             let trimmed = line.trim().trim_matches('\u{a0}').trim();
-            if trimmed.is_empty() { continue; }
+            if trimmed.is_empty() {
+                continue;
+            }
 
             let stripped = trimmed
                 .trim_start_matches(['│', '┃', '|'])
@@ -139,13 +141,13 @@ impl Session {
                 .trim()
                 .trim_matches('\u{a0}')
                 .trim();
-            if stripped.is_empty() { continue; }
+            if stripped.is_empty() {
+                continue;
+            }
 
             if Self::starts_with_prompt(stripped) {
                 prompt_idx = Some(i);
-                let after = stripped
-                    .trim_start_matches(['❯', '›'])
-                    .trim();
+                let after = stripped.trim_start_matches(['❯', '›']).trim();
                 prompt_has_text = !after.is_empty();
                 break;
             }
@@ -168,7 +170,9 @@ impl Session {
         // `─` characters as the input area separator.
         for line in &bottom_lines[(idx + 1)..] {
             let above = line.trim();
-            if above.is_empty() { continue; }
+            if above.is_empty() {
+                continue;
+            }
 
             // Skip lines that are empty inside their borders
             let inner = above
@@ -177,7 +181,9 @@ impl Session {
                 .trim()
                 .trim_matches('\u{a0}')
                 .trim();
-            if inner.is_empty() { continue; }
+            if inner.is_empty() {
+                continue;
+            }
 
             // Horizontal separator: box-drawing T-junctions
             if above.contains('├') || above.contains('┣') {
@@ -211,7 +217,10 @@ impl Session {
         if total < 10 {
             return false;
         }
-        let horiz = s.chars().filter(|&c| c == '─' || c == '━' || c == '╌' || c == '═').count();
+        let horiz = s
+            .chars()
+            .filter(|&c| c == '─' || c == '━' || c == '╌' || c == '═')
+            .count();
         horiz > total / 2
     }
 
@@ -335,7 +344,8 @@ pub fn extract_summary(session: &Session) -> Option<String> {
         return Some(tagged);
     }
 
-    let lines: Vec<&str> = content.lines()
+    let lines: Vec<&str> = content
+        .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .collect();
@@ -359,7 +369,10 @@ pub fn extract_summary(session: &Session) -> Option<String> {
             continue;
         }
         // Skip pure box-drawing lines (borders)
-        if stripped.chars().all(|c| "─━┌┐└┘├┤┬┴┼╭╮╰╯".contains(c) || c == ' ') {
+        if stripped
+            .chars()
+            .all(|c| "─━┌┐└┘├┤┬┴┼╭╮╰╯".contains(c) || c == ' ')
+        {
             continue;
         }
         // Clean box-drawing chars from the line
@@ -435,9 +448,7 @@ pub fn generate_oneshot_summary(
             .args(["capture-pane", "-t", &tmux_name, "-p", "-S", "-200"])
             .output();
         let content = match capture {
-            Ok(out) if out.status.success() => {
-                String::from_utf8_lossy(&out.stdout).to_string()
-            }
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
             _ => return,
         };
 
@@ -491,8 +502,16 @@ pub fn generate_oneshot_summary(
 
 /// Spawn a new Claude session in the given worktree.
 /// If `initial_prompt` is Some, it is passed as a CLI argument so Claude starts working on it immediately.
-pub fn spawn_session(app: &mut App, worktree_idx: usize, terminal_size: (u16, u16), skip_permissions: bool, initial_prompt: Option<&str>) -> anyhow::Result<u64> {
-    let wt = app.worktrees.get(worktree_idx)
+pub fn spawn_session(
+    app: &mut App,
+    worktree_idx: usize,
+    terminal_size: (u16, u16),
+    skip_permissions: bool,
+    initial_prompt: Option<&str>,
+) -> anyhow::Result<u64> {
+    let wt = app
+        .worktrees
+        .get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
 
     let session_id = app.next_session_id;
@@ -552,12 +571,18 @@ pub fn spawn_session(app: &mut App, worktree_idx: usize, terminal_size: (u16, u1
 }
 
 /// Spawn a plain terminal shell session in the given worktree (tmux only).
-pub fn spawn_terminal_session(app: &mut App, worktree_idx: usize, terminal_size: (u16, u16)) -> anyhow::Result<u64> {
+pub fn spawn_terminal_session(
+    app: &mut App,
+    worktree_idx: usize,
+    terminal_size: (u16, u16),
+) -> anyhow::Result<u64> {
     if !app.tmux_available {
         anyhow::bail!("tmux is required for terminal sessions");
     }
 
-    let wt = app.worktrees.get(worktree_idx)
+    let wt = app
+        .worktrees
+        .get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
 
     let session_id = app.next_session_id;
@@ -575,7 +600,9 @@ pub fn spawn_terminal_session(app: &mut App, worktree_idx: usize, terminal_size:
         &tmux_name,
     )?;
 
-    let label = wt.path.file_name()
+    let label = wt
+        .path
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "terminal".to_string());
 
@@ -603,7 +630,11 @@ pub fn spawn_terminal_session(app: &mut App, worktree_idx: usize, terminal_size:
 }
 
 /// Spawn a Claude session at the bare repo root (for the Project overview).
-pub fn spawn_root_session(app: &mut App, terminal_size: (u16, u16), skip_permissions: bool) -> anyhow::Result<u64> {
+pub fn spawn_root_session(
+    app: &mut App,
+    terminal_size: (u16, u16),
+    skip_permissions: bool,
+) -> anyhow::Result<u64> {
     if !app.tmux_available {
         anyhow::bail!("tmux is required for root sessions");
     }
@@ -650,7 +681,10 @@ pub fn spawn_root_session(app: &mut App, terminal_size: (u16, u16), skip_permiss
 }
 
 /// Spawn a plain terminal at the bare repo root (for the Project overview).
-pub fn spawn_root_terminal_session(app: &mut App, terminal_size: (u16, u16)) -> anyhow::Result<u64> {
+pub fn spawn_root_terminal_session(
+    app: &mut App,
+    terminal_size: (u16, u16),
+) -> anyhow::Result<u64> {
     if !app.tmux_available {
         anyhow::bail!("tmux is required for terminal sessions");
     }
@@ -695,17 +729,25 @@ pub fn spawn_root_terminal_session(app: &mut App, terminal_size: (u16, u16)) -> 
 }
 
 /// Spawn a Claude session in an extra location directory.
-pub fn spawn_location_session(app: &mut App, location_idx: usize, terminal_size: (u16, u16), skip_permissions: bool) -> anyhow::Result<u64> {
+pub fn spawn_location_session(
+    app: &mut App,
+    location_idx: usize,
+    terminal_size: (u16, u16),
+    skip_permissions: bool,
+) -> anyhow::Result<u64> {
     if !app.tmux_available {
         anyhow::bail!("tmux is required for location sessions");
     }
 
-    let loc = app.locations.get(location_idx)
+    let loc = app
+        .locations
+        .get(location_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid location index"))?;
 
     let loc_path = loc.path.clone();
     let loc_label = loc.name.clone().unwrap_or_else(|| {
-        loc_path.file_name()
+        loc_path
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "location".to_string())
     });
@@ -832,7 +874,8 @@ pub fn collect_tmux_session_info(app: &App) -> Vec<TmuxSessionInfo> {
             s.tmux_session_name.as_ref().map(|name| TmuxSessionInfo {
                 session_id: s.id,
                 tmux_name: name.clone(),
-                current_title: s.parser
+                current_title: s
+                    .parser
                     .try_read()
                     .ok()
                     .map(|p| p.callbacks().title.clone())
@@ -908,7 +951,9 @@ fn calculate_pane_size(app: &App, terminal_rows: u16, terminal_cols: u16) -> (u1
             } else {
                 0
             };
-            let pane_cols = terminal_cols.saturating_sub(sidebar_width).saturating_sub(2);
+            let pane_cols = terminal_cols
+                .saturating_sub(sidebar_width)
+                .saturating_sub(2);
 
             let queue_height = if app.prompt_queue_visible && app.active_session_id.is_some() {
                 app.queue_panel_height()
@@ -932,14 +977,18 @@ pub fn resize_all(app: &App, rows: u16, cols: u16) {
             // Unnecessary PTY resize sends SIGWINCH to Claude (via tmux) even
             // when the size hasn't changed, causing Claude to redraw and
             // push content into scrollback — the cumulative "extra newline" bug.
-            let already_correct = session.parser.try_read()
+            let already_correct = session
+                .parser
+                .try_read()
                 .map(|p| p.screen().size() == (pane_rows, pane_cols))
                 .unwrap_or(false);
 
             if !already_correct {
                 tracing::info!(
                     "RESIZE-ALL session {} resizing to {}x{}",
-                    session.id, pane_cols, pane_rows
+                    session.id,
+                    pane_cols,
+                    pane_rows
                 );
 
                 // Resize parser first so it's ready for new-size output before
@@ -966,9 +1015,12 @@ pub fn resize_all(app: &App, rows: u16, cols: u16) {
                 let _ = std::process::Command::new("tmux")
                     .args([
                         "resize-window",
-                        "-t", tmux_name,
-                        "-x", &pane_cols.to_string(),
-                        "-y", &pane_rows.to_string(),
+                        "-t",
+                        tmux_name,
+                        "-x",
+                        &pane_cols.to_string(),
+                        "-y",
+                        &pane_rows.to_string(),
                     ])
                     .output();
             }
@@ -994,18 +1046,20 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
 
     for (tmux_name, wt_path) in tmux_sessions {
         // Find which worktree this session belongs to
-        let wt_idx = app.worktrees.iter().position(|wt| {
-            wt.path == wt_path || wt_path.starts_with(&wt.path)
-        });
+        let wt_idx = app
+            .worktrees
+            .iter()
+            .position(|wt| wt.path == wt_path || wt_path.starts_with(&wt.path));
 
         // Check if this is a root/project session (path matches bare repo)
-        let is_root = wt_idx.is_none() && (wt_path == app.bare_repo_path || wt_path.starts_with(&app.bare_repo_path));
+        let is_root = wt_idx.is_none()
+            && (wt_path == app.bare_repo_path || wt_path.starts_with(&app.bare_repo_path));
 
         // Check if this session belongs to an extra location
         let loc_idx = if wt_idx.is_none() && !is_root {
-            app.locations.iter().position(|loc| {
-                wt_path == loc.path || wt_path.starts_with(&loc.path)
-            })
+            app.locations
+                .iter()
+                .position(|loc| wt_path == loc.path || wt_path.starts_with(&loc.path))
         } else {
             None
         };
@@ -1139,11 +1193,9 @@ pub fn spawn_claude_usage_poller(
                     let mut claimed_paths: std::collections::HashSet<String> =
                         path_cache.values().cloned().collect();
                     for info in &unclaimed {
-                        if let Some(debug_path) = discover_debug_file_for_session(
-                            &info.tmux_name,
-                            &home,
-                            &claimed_paths,
-                        ) {
+                        if let Some(debug_path) =
+                            discover_debug_file_for_session(&info.tmux_name, &home, &claimed_paths)
+                        {
                             claimed_paths.insert(debug_path.clone());
                             path_cache.insert(info.session_id, debug_path);
                         }
@@ -1260,9 +1312,7 @@ fn match_debug_file_by_timestamp(
         if let Some(file_epoch) = read_first_line_epoch(&path_str) {
             let diff = file_epoch - target_epoch;
             // Must be within 0-5 seconds after process start
-            if (0..=5).contains(&diff)
-                && best.as_ref().map(|(d, _)| diff < *d).unwrap_or(true)
-            {
+            if (0..=5).contains(&diff) && best.as_ref().map(|(d, _)| diff < *d).unwrap_or(true) {
                 best = Some((diff, path_str));
             }
         }
@@ -1400,7 +1450,8 @@ fn read_oauth_token() -> Option<String> {
             return None;
         }
     };
-    let token = json.get("claudeAiOauth")
+    let token = json
+        .get("claudeAiOauth")
         .and_then(|o| o.get("accessToken"))
         .and_then(|t| t.as_str())
         .map(|s| s.to_string());
@@ -1419,9 +1470,12 @@ fn poll_global_usage() -> Result<GlobalUsage, ()> {
     let output = std::process::Command::new("curl")
         .args([
             "-s",
-            "--max-time", "10",
-            "-H", &format!("Authorization: Bearer {}", token),
-            "-H", "anthropic-beta: oauth-2025-04-20",
+            "--max-time",
+            "10",
+            "-H",
+            &format!("Authorization: Bearer {}", token),
+            "-H",
+            "anthropic-beta: oauth-2025-04-20",
             "https://api.anthropic.com/api/oauth/usage",
         ])
         .output()
@@ -1453,20 +1507,38 @@ fn poll_global_usage() -> Result<GlobalUsage, ()> {
     })?;
 
     // seven_day_sonnet may be null when unused
-    let (sonnet_7d_pct, sonnet_7d_reset) = json.get("seven_day_sonnet")
+    let (sonnet_7d_pct, sonnet_7d_reset) = json
+        .get("seven_day_sonnet")
         .and_then(|v| v.as_object())
         .map(|snt| {
             let pct = snt.get("utilization").and_then(|v| v.as_f64());
-            let reset = snt.get("resets_at").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let reset = snt
+                .get("resets_at")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             (pct, reset)
         })
         .unwrap_or((None, None));
 
     Ok(GlobalUsage {
-        five_hour_pct: five_hour.get("utilization").and_then(|v| v.as_f64()).ok_or(())?,
-        five_hour_reset: five_hour.get("resets_at").and_then(|v| v.as_str()).ok_or(())?.to_string(),
-        seven_day_pct: seven_day.get("utilization").and_then(|v| v.as_f64()).ok_or(())?,
-        seven_day_reset: seven_day.get("resets_at").and_then(|v| v.as_str()).ok_or(())?.to_string(),
+        five_hour_pct: five_hour
+            .get("utilization")
+            .and_then(|v| v.as_f64())
+            .ok_or(())?,
+        five_hour_reset: five_hour
+            .get("resets_at")
+            .and_then(|v| v.as_str())
+            .ok_or(())?
+            .to_string(),
+        seven_day_pct: seven_day
+            .get("utilization")
+            .and_then(|v| v.as_f64())
+            .ok_or(())?,
+        seven_day_reset: seven_day
+            .get("resets_at")
+            .and_then(|v| v.as_str())
+            .ok_or(())?
+            .to_string(),
         sonnet_7d_pct,
         sonnet_7d_reset,
     })
@@ -1628,7 +1700,8 @@ mod tests {
 
     #[test]
     fn test_extract_tagged_output_with_borders() {
-        let content = "│ <IMPORTANT_CLAWTREE_OUTPUT> │\n│ Summary here │\n│ </IMPORTANT_CLAWTREE_OUTPUT> │\n";
+        let content =
+            "│ <IMPORTANT_CLAWTREE_OUTPUT> │\n│ Summary here │\n│ </IMPORTANT_CLAWTREE_OUTPUT> │\n";
         let result = extract_clawtree_tagged_output(content);
         assert_eq!(result, Some("Summary here".to_string()));
     }

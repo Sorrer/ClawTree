@@ -33,7 +33,10 @@ fn test_detect_bare_repo_none() {
 
     // Empty directory — no git repo
     let detected = git::detect_bare_repo(dir);
-    assert!(detected.is_none(), "unexpectedly detected a bare repo in empty dir");
+    assert!(
+        detected.is_none(),
+        "unexpectedly detected a bare repo in empty dir"
+    );
 }
 
 #[test]
@@ -56,5 +59,8 @@ fn test_detect_regular_repo_ignores_git_file() {
     // A bare repo worktree has a .git *file*, not a .git directory
     let main_wt = dir.join("main");
     let detected = git::detect_regular_repo(&main_wt);
-    assert!(detected.is_none(), "detect_regular_repo should not match .git files (bare worktrees)");
+    assert!(
+        detected.is_none(),
+        "detect_regular_repo should not match .git files (bare worktrees)"
+    );
 }

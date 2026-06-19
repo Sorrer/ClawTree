@@ -162,6 +162,7 @@ pub struct SavedPrompt {
 ///   - surrounding single/double quotes (e.g. a pasted `"~/my folder"`)
 ///   - a leading `~` / `~/...` → `$HOME`
 ///   - environment variables `$VAR` and `${VAR}` (unset vars are left literal)
+///
 /// Relative paths (`./`, `../`) are intentionally left alone — `canonicalize`
 /// already resolves them against the current directory.
 pub fn expand_path(input: &str) -> PathBuf {
@@ -315,46 +316,155 @@ pub fn context_actions_for_item(item: &SidebarItem, wt_available: bool) -> Vec<C
     match item {
         SidebarItem::Project => {
             vec![
-                ContextAction { label: "New Claude".into(), hotkey: "c".into(), kind: ContextActionKind::NewClaude },
-                ContextAction { label: "New Terminal".into(), hotkey: "t".into(), kind: ContextActionKind::NewTerminal },
-                ContextAction { label: "New Worktree".into(), hotkey: "n".into(), kind: ContextActionKind::NewWorktree },
+                ContextAction {
+                    label: "New Claude".into(),
+                    hotkey: "c".into(),
+                    kind: ContextActionKind::NewClaude,
+                },
+                ContextAction {
+                    label: "New Terminal".into(),
+                    hotkey: "t".into(),
+                    kind: ContextActionKind::NewTerminal,
+                },
+                ContextAction {
+                    label: "New Worktree".into(),
+                    hotkey: "n".into(),
+                    kind: ContextActionKind::NewWorktree,
+                },
             ]
         }
         SidebarItem::Worktree(_) => {
             let mut actions = vec![
-                ContextAction { label: "New Claude".into(), hotkey: "c".into(), kind: ContextActionKind::NewClaude },
-                ContextAction { label: "New Claude (YOLO)".into(), hotkey: "C".into(), kind: ContextActionKind::NewClaudeYolo },
-                ContextAction { label: "New Terminal".into(), hotkey: "t".into(), kind: ContextActionKind::NewTerminal },
-                ContextAction { label: "Stage & Commit".into(), hotkey: "s".into(), kind: ContextActionKind::StageCommit },
-                ContextAction { label: "Stage All + AI Commit".into(), hotkey: "^s".into(), kind: ContextActionKind::StageAllClaudeCommit },
-                ContextAction { label: "Push".into(), hotkey: "p".into(), kind: ContextActionKind::Push },
-                ContextAction { label: "Pull".into(), hotkey: "P".into(), kind: ContextActionKind::Pull },
-                ContextAction { label: "Merge Branch".into(), hotkey: "m".into(), kind: ContextActionKind::MergeBranch },
-                ContextAction { label: "New Worktree".into(), hotkey: "n".into(), kind: ContextActionKind::NewWorktree },
-                ContextAction { label: "Copy Last URL".into(), hotkey: "u".into(), kind: ContextActionKind::CopyLastUrl },
-                ContextAction { label: "Open Last URL".into(), hotkey: "U".into(), kind: ContextActionKind::OpenLastUrl },
-                ContextAction { label: "Delete Worktree".into(), hotkey: "d".into(), kind: ContextActionKind::DeleteWorktree },
-                ContextAction { label: "Force Delete Worktree".into(), hotkey: "D".into(), kind: ContextActionKind::ForceDeleteWorktree },
+                ContextAction {
+                    label: "New Claude".into(),
+                    hotkey: "c".into(),
+                    kind: ContextActionKind::NewClaude,
+                },
+                ContextAction {
+                    label: "New Claude (YOLO)".into(),
+                    hotkey: "C".into(),
+                    kind: ContextActionKind::NewClaudeYolo,
+                },
+                ContextAction {
+                    label: "New Terminal".into(),
+                    hotkey: "t".into(),
+                    kind: ContextActionKind::NewTerminal,
+                },
+                ContextAction {
+                    label: "Stage & Commit".into(),
+                    hotkey: "s".into(),
+                    kind: ContextActionKind::StageCommit,
+                },
+                ContextAction {
+                    label: "Stage All + AI Commit".into(),
+                    hotkey: "^s".into(),
+                    kind: ContextActionKind::StageAllClaudeCommit,
+                },
+                ContextAction {
+                    label: "Push".into(),
+                    hotkey: "p".into(),
+                    kind: ContextActionKind::Push,
+                },
+                ContextAction {
+                    label: "Pull".into(),
+                    hotkey: "P".into(),
+                    kind: ContextActionKind::Pull,
+                },
+                ContextAction {
+                    label: "Merge Branch".into(),
+                    hotkey: "m".into(),
+                    kind: ContextActionKind::MergeBranch,
+                },
+                ContextAction {
+                    label: "New Worktree".into(),
+                    hotkey: "n".into(),
+                    kind: ContextActionKind::NewWorktree,
+                },
+                ContextAction {
+                    label: "Copy Last URL".into(),
+                    hotkey: "u".into(),
+                    kind: ContextActionKind::CopyLastUrl,
+                },
+                ContextAction {
+                    label: "Open Last URL".into(),
+                    hotkey: "U".into(),
+                    kind: ContextActionKind::OpenLastUrl,
+                },
+                ContextAction {
+                    label: "Delete Worktree".into(),
+                    hotkey: "d".into(),
+                    kind: ContextActionKind::DeleteWorktree,
+                },
+                ContextAction {
+                    label: "Force Delete Worktree".into(),
+                    hotkey: "D".into(),
+                    kind: ContextActionKind::ForceDeleteWorktree,
+                },
             ];
             if wt_available {
-                actions.insert(actions.len() - 2, ContextAction { label: "Windows Terminal".into(), hotkey: "w".into(), kind: ContextActionKind::OpenWindowsTerminal });
-                actions.insert(actions.len() - 2, ContextAction { label: "Win Terminal + Claude".into(), hotkey: "W".into(), kind: ContextActionKind::OpenWindowsTerminalClaude });
+                actions.insert(
+                    actions.len() - 2,
+                    ContextAction {
+                        label: "Windows Terminal".into(),
+                        hotkey: "w".into(),
+                        kind: ContextActionKind::OpenWindowsTerminal,
+                    },
+                );
+                actions.insert(
+                    actions.len() - 2,
+                    ContextAction {
+                        label: "Win Terminal + Claude".into(),
+                        hotkey: "W".into(),
+                        kind: ContextActionKind::OpenWindowsTerminalClaude,
+                    },
+                );
             }
             actions
         }
-        SidebarItem::ProjectSession(_) | SidebarItem::Session(_, _) | SidebarItem::Terminal(_) | SidebarItem::LocationSession(_, _) => {
+        SidebarItem::ProjectSession(_)
+        | SidebarItem::Session(_, _)
+        | SidebarItem::Terminal(_)
+        | SidebarItem::LocationSession(_, _) => {
             vec![
-                ContextAction { label: "Rename Session".into(), hotkey: "r".into(), kind: ContextActionKind::RenameSession },
-                ContextAction { label: "Copy Last URL".into(), hotkey: "u".into(), kind: ContextActionKind::CopyLastUrl },
-                ContextAction { label: "Open Last URL".into(), hotkey: "U".into(), kind: ContextActionKind::OpenLastUrl },
-                ContextAction { label: "Delete Session".into(), hotkey: "d".into(), kind: ContextActionKind::DeleteSession },
+                ContextAction {
+                    label: "Rename Session".into(),
+                    hotkey: "r".into(),
+                    kind: ContextActionKind::RenameSession,
+                },
+                ContextAction {
+                    label: "Copy Last URL".into(),
+                    hotkey: "u".into(),
+                    kind: ContextActionKind::CopyLastUrl,
+                },
+                ContextAction {
+                    label: "Open Last URL".into(),
+                    hotkey: "U".into(),
+                    kind: ContextActionKind::OpenLastUrl,
+                },
+                ContextAction {
+                    label: "Delete Session".into(),
+                    hotkey: "d".into(),
+                    kind: ContextActionKind::DeleteSession,
+                },
             ]
         }
         SidebarItem::Location(_) => {
             vec![
-                ContextAction { label: "New Claude".into(), hotkey: "c".into(), kind: ContextActionKind::NewClaude },
-                ContextAction { label: "New Claude (YOLO)".into(), hotkey: "C".into(), kind: ContextActionKind::NewClaudeYolo },
-                ContextAction { label: "Remove Location".into(), hotkey: "d".into(), kind: ContextActionKind::RemoveLocation },
+                ContextAction {
+                    label: "New Claude".into(),
+                    hotkey: "c".into(),
+                    kind: ContextActionKind::NewClaude,
+                },
+                ContextAction {
+                    label: "New Claude (YOLO)".into(),
+                    hotkey: "C".into(),
+                    kind: ContextActionKind::NewClaudeYolo,
+                },
+                ContextAction {
+                    label: "Remove Location".into(),
+                    hotkey: "d".into(),
+                    kind: ContextActionKind::RemoveLocation,
+                },
             ]
         }
     }
@@ -397,10 +507,7 @@ pub enum Dialog {
         focused_field: usize,
     },
     /// Rename/nickname a session.
-    RenameSession {
-        session_id: u64,
-        input: String,
-    },
+    RenameSession { session_id: u64, input: String },
     /// Merge resulted in conflicts — choose how to resolve.
     MergeConflict {
         worktree_idx: usize,
@@ -414,9 +521,7 @@ pub enum Dialog {
         selected: usize,              // 0=Commit, 1=Claude, 2=Ignore, 3=Cancel
     },
     /// Merge completed successfully — show result.
-    MergeSuccess {
-        message: String,
-    },
+    MergeSuccess { message: String },
     /// Convert an existing regular repo to bare worktree layout.
     ConvertRepo {
         /// 0 = in-place, 1 = different location
@@ -436,13 +541,13 @@ pub enum Dialog {
     PullError {
         worktree_idx: usize,
         error_message: String,
-        selected: usize,   // 0=Claude, 1=Claude (skip perms), 2=Dismiss
+        selected: usize, // 0=Claude, 1=Claude (skip perms), 2=Dismiss
     },
     /// Git authentication failed — show friendly instructions.
     AuthError {
-        operation: String,  // "push", "pull", "clone"
-        message: String,    // the raw git error
-        selected: usize,    // 0 = Dismiss
+        operation: String, // "push", "pull", "clone"
+        message: String,   // the raw git error
+        selected: usize,   // 0 = Dismiss
     },
     /// Right-click / "+" context menu for sidebar items.
     ContextMenu {
@@ -453,7 +558,7 @@ pub enum Dialog {
     /// A newer version is available — offer to update in-place.
     UpdateAvailable {
         latest_version: String,
-        selected: usize,           // 0=Update now, 1=Dismiss, 2=Skip this version
+        selected: usize, // 0=Update now, 1=Dismiss, 2=Skip this version
         phase: UpdatePhase,
     },
     /// Add an extra location directory.
@@ -465,13 +570,13 @@ pub enum Dialog {
     /// Interactive staging and commit UI.
     GitCommit {
         worktree_idx: usize,
-        unstaged: Vec<(char, String)>,  // (status_char, path)
-        staged: Vec<(char, String)>,    // (status_char, path)
-        section: usize,                 // 0=unstaged, 1=staged
-        selected: usize,                // index within current section
+        unstaged: Vec<(char, String)>, // (status_char, path)
+        staged: Vec<(char, String)>,   // (status_char, path)
+        section: usize,                // 0=unstaged, 1=staged
+        selected: usize,               // index within current section
         phase: CommitPhase,
         commit_message: String,
-        cursor_pos: usize,              // character offset into commit_message
+        cursor_pos: usize, // character offset into commit_message
     },
 }
 
@@ -522,14 +627,33 @@ pub enum ConfirmAction {
 /// The main loop draws a loading overlay first, then runs the action.
 #[derive(Debug)]
 pub enum PendingAction {
-    StageFile { worktree_idx: usize, file: String },
-    UnstageFile { worktree_idx: usize, file: String },
-    StageAll { worktree_idx: usize, then_claude: bool },
-    Commit { worktree_idx: usize, message: String },
-    CommitAndPush { worktree_idx: usize, message: String },
+    StageFile {
+        worktree_idx: usize,
+        file: String,
+    },
+    UnstageFile {
+        worktree_idx: usize,
+        file: String,
+    },
+    StageAll {
+        worktree_idx: usize,
+        then_claude: bool,
+    },
+    Commit {
+        worktree_idx: usize,
+        message: String,
+    },
+    CommitAndPush {
+        worktree_idx: usize,
+        message: String,
+    },
     RefreshWorktreeStatus,
-    OpenStageCommit { worktree_idx: usize },
-    StageAllAndCommitClaude { worktree_idx: usize },
+    OpenStageCommit {
+        worktree_idx: usize,
+    },
+    StageAllAndCommitClaude {
+        worktree_idx: usize,
+    },
     MergeExecute {
         source_worktree_idx: usize,
         target_branch: String,
@@ -554,7 +678,7 @@ pub enum SidebarItem {
     ProjectSession(usize),
     Worktree(usize),
     Session(usize, usize), // (worktree_index, session_index within worktree)
-    Terminal(usize),        // index into app.terminal_ids
+    Terminal(usize),       // index into app.terminal_ids
     /// An extra location directory (index into app.locations).
     Location(usize),
     /// A session under an extra location (location_index, session_index).
@@ -586,8 +710,8 @@ pub struct App {
     pub project_expanded: bool,
     pub worktree_status: Option<WorktreeStatus>,
     /// Cursor position for interactive file list in the info panel.
-    pub info_panel_section: usize,  // 0=unstaged, 1=staged
-    pub info_panel_cursor: usize,   // index within current section
+    pub info_panel_section: usize, // 0=unstaged, 1=staged
+    pub info_panel_cursor: usize, // index within current section
     /// Scroll offset for the worktree info panel content.
     pub info_panel_scroll: usize,
     pub dialog: Option<Dialog>,
@@ -698,7 +822,13 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(bare_repo_path: PathBuf, event_tx: mpsc::UnboundedSender<AppEvent>, repo_detected: bool, tmux_available: bool, wt_available: bool) -> Self {
+    pub fn new(
+        bare_repo_path: PathBuf,
+        event_tx: mpsc::UnboundedSender<AppEvent>,
+        repo_detected: bool,
+        tmux_available: bool,
+        wt_available: bool,
+    ) -> Self {
         Self {
             bare_repo_path,
             worktrees: Vec::new(),
@@ -832,7 +962,8 @@ impl App {
             self.sidebar_items.push(SidebarItem::Location(li));
             if loc.expanded {
                 for (si, _sid) in loc.session_ids.iter().enumerate() {
-                    self.sidebar_items.push(SidebarItem::LocationSession(li, si));
+                    self.sidebar_items
+                        .push(SidebarItem::LocationSession(li, si));
                 }
             }
         }
@@ -854,7 +985,9 @@ impl App {
                 self.sidebar_panel = SidebarPanel::Worktrees;
             }
         }
-        if !self.terminal_panel_items.is_empty() && self.terminal_panel_selected >= self.terminal_panel_items.len() {
+        if !self.terminal_panel_items.is_empty()
+            && self.terminal_panel_selected >= self.terminal_panel_items.len()
+        {
             self.terminal_panel_selected = self.terminal_panel_items.len() - 1;
         }
     }
@@ -862,7 +995,10 @@ impl App {
     pub fn selected_sidebar_item(&self) -> Option<SidebarItem> {
         match self.sidebar_panel {
             SidebarPanel::Worktrees => self.sidebar_items.get(self.sidebar_selected).copied(),
-            SidebarPanel::Terminals => self.terminal_panel_items.get(self.terminal_panel_selected).copied(),
+            SidebarPanel::Terminals => self
+                .terminal_panel_items
+                .get(self.terminal_panel_selected)
+                .copied(),
         }
     }
 
@@ -1069,7 +1205,8 @@ impl App {
             if let Ok(status) = worktree::fetch_worktree_status(self, wi) {
                 // Update the per-worktree cache
                 if let Some(wt) = self.worktrees.get(wi) {
-                    self.worktree_statuses.insert(wt.path.clone(), status.clone());
+                    self.worktree_statuses
+                        .insert(wt.path.clone(), status.clone());
                 }
                 self.worktree_status = Some(status);
             }
@@ -1102,7 +1239,11 @@ impl App {
                     staged.push((c.index_status, c.path.clone()));
                 }
                 if c.work_status != ' ' || c.index_status == '?' {
-                    let s = if c.index_status == '?' { '?' } else { c.work_status };
+                    let s = if c.index_status == '?' {
+                        '?'
+                    } else {
+                        c.work_status
+                    };
                     unstaged.push((s, c.path.clone()));
                 }
             }
@@ -1119,7 +1260,11 @@ impl App {
         } else if self.info_panel_section == 1 && staged.is_empty() && !unstaged.is_empty() {
             self.info_panel_section = 0;
         }
-        let len = if self.info_panel_section == 0 { unstaged.len() } else { staged.len() };
+        let len = if self.info_panel_section == 0 {
+            unstaged.len()
+        } else {
+            staged.len()
+        };
         if len == 0 {
             self.info_panel_cursor = 0;
         } else if self.info_panel_cursor >= len {
@@ -1131,7 +1276,10 @@ impl App {
     /// content (matching the line vector built in `draw_worktree_info`).
     pub fn info_panel_cursor_line(&self) -> usize {
         let (unstaged, staged) = self.info_panel_file_lists();
-        let has_files = self.worktree_status.as_ref().is_some_and(|s| !s.files.is_empty());
+        let has_files = self
+            .worktree_status
+            .as_ref()
+            .is_some_and(|s| !s.files.is_empty());
         if !has_files {
             return 0;
         }
@@ -1140,11 +1288,19 @@ impl App {
         let unstaged_start = 5; // first unstaged file line
         if self.info_panel_section == 0 {
             // Cursor is in the unstaged section
-            let item_count = if unstaged.is_empty() { 1 } else { unstaged.len() };
+            let item_count = if unstaged.is_empty() {
+                1
+            } else {
+                unstaged.len()
+            };
             return unstaged_start + self.info_panel_cursor.min(item_count.saturating_sub(1));
         }
         // Section 1 (staged): skip unstaged items + blank + staged header
-        let unstaged_lines = if unstaged.is_empty() { 1 } else { unstaged.len() };
+        let unstaged_lines = if unstaged.is_empty() {
+            1
+        } else {
+            unstaged.len()
+        };
         let staged_start = unstaged_start + unstaged_lines + 2; // blank + staged header
         staged_start + self.info_panel_cursor.min(staged.len().saturating_sub(1))
     }
@@ -1434,21 +1590,33 @@ mod expand_path_tests {
     #[test]
     fn strips_surrounding_quotes() {
         std::env::set_var("HOME", "/home/tester");
-        assert_eq!(expand_path("\"~/my folder\""), PathBuf::from("/home/tester/my folder"));
+        assert_eq!(
+            expand_path("\"~/my folder\""),
+            PathBuf::from("/home/tester/my folder")
+        );
         assert_eq!(expand_path("'/tmp/x'"), PathBuf::from("/tmp/x"));
     }
 
     #[test]
     fn expands_env_vars() {
         std::env::set_var("CLAWTREE_TEST_DIR", "/opt/data");
-        assert_eq!(expand_path("$CLAWTREE_TEST_DIR/sub"), PathBuf::from("/opt/data/sub"));
-        assert_eq!(expand_path("${CLAWTREE_TEST_DIR}/sub"), PathBuf::from("/opt/data/sub"));
+        assert_eq!(
+            expand_path("$CLAWTREE_TEST_DIR/sub"),
+            PathBuf::from("/opt/data/sub")
+        );
+        assert_eq!(
+            expand_path("${CLAWTREE_TEST_DIR}/sub"),
+            PathBuf::from("/opt/data/sub")
+        );
     }
 
     #[test]
     fn leaves_unset_vars_and_relative_literal() {
         std::env::remove_var("CLAWTREE_NOPE");
-        assert_eq!(expand_path("$CLAWTREE_NOPE/x"), PathBuf::from("$CLAWTREE_NOPE/x"));
+        assert_eq!(
+            expand_path("$CLAWTREE_NOPE/x"),
+            PathBuf::from("$CLAWTREE_NOPE/x")
+        );
         assert_eq!(expand_path("./rel"), PathBuf::from("./rel"));
         assert_eq!(expand_path("../up"), PathBuf::from("../up"));
     }

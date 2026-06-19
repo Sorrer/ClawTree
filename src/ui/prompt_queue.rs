@@ -1,20 +1,32 @@
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::Frame;
 
-use crate::app::App;
 use super::theme;
+use crate::app::App;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let focused = app.prompt_queue_focused();
     let queue = app.active_prompt_queue();
     let queue_len = queue.len();
 
-    let border_color = if focused { theme::BORDER_FOCUSED_PROMPT_QUEUE } else { theme::BORDER_UNFOCUSED };
-    let border_mod = if focused { Modifier::BOLD } else { Modifier::empty() };
-    let border_type = if focused { BorderType::Thick } else { BorderType::Plain };
+    let border_color = if focused {
+        theme::BORDER_FOCUSED_PROMPT_QUEUE
+    } else {
+        theme::BORDER_UNFOCUSED
+    };
+    let border_mod = if focused {
+        Modifier::BOLD
+    } else {
+        Modifier::empty()
+    };
+    let border_type = if focused {
+        BorderType::Thick
+    } else {
+        BorderType::Plain
+    };
     let title = if focused {
         format!(" ▸ Prompt Queue ({}) ", queue_len)
     } else {
@@ -69,9 +81,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         };
 
         let style = if is_editing {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::ITALIC)
         } else if is_selected && focused {
-            Style::default().fg(Color::White).bg(theme::get().sidebar_sel_bg)
+            Style::default()
+                .fg(Color::White)
+                .bg(theme::get().sidebar_sel_bg)
         } else {
             Style::default().fg(Color::Gray)
         };
@@ -95,7 +111,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             (" ", "")
         } else {
             let end = cursor_pos + after.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
-            (&app.prompt_queue_input[cursor_pos..end], &app.prompt_queue_input[end..])
+            (
+                &app.prompt_queue_input[cursor_pos..end],
+                &app.prompt_queue_input[end..],
+            )
         };
 
         let prefix_span = Span::styled("> ", Style::default().fg(Color::Cyan));
@@ -105,7 +124,12 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Black).bg(Color::Cyan),
         );
         let after_span = Span::styled(rest.to_string(), Style::default().fg(Color::White));
-        lines.push(Line::from(vec![prefix_span, before_span, cursor_span, after_span]));
+        lines.push(Line::from(vec![
+            prefix_span,
+            before_span,
+            cursor_span,
+            after_span,
+        ]));
     } else {
         let hint = "^p:toggle/focus";
         lines.push(Line::from(Span::styled(

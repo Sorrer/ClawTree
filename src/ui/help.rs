@@ -1,8 +1,8 @@
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs};
+use ratatui::Frame;
 
 use crate::app::App;
 use crate::keys::{KeyContext, KeyEntry};
@@ -38,7 +38,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .constraints([
             Constraint::Length(1), // tabs
             Constraint::Length(1), // separator
-            Constraint::Min(1),   // key list
+            Constraint::Min(1),    // key list
             Constraint::Length(1), // separator
             Constraint::Length(1), // footer help
         ])
@@ -67,7 +67,11 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let tabs = Tabs::new(titles)
         .style(Style::default().fg(Color::White))
-        .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .select(app.help_tab)
         .divider(Span::styled("|", Style::default().fg(Color::DarkGray)));
 
@@ -116,7 +120,9 @@ pub fn draw(f: &mut Frame, app: &App) {
             display_items.push(ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("  {:width$}", key, width = key_col_width),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(*desc, Style::default().fg(Color::White)),
             ])));

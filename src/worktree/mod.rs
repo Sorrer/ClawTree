@@ -50,10 +50,7 @@ pub fn refresh_worktrees(app: &mut App) -> Result<()> {
         .into_iter()
         .filter(|e| !e.is_bare) // Don't show the bare repo itself
         .map(|e| {
-            let session_ids = old_sessions
-                .get(&e.path)
-                .cloned()
-                .unwrap_or_default();
+            let session_ids = old_sessions.get(&e.path).cloned().unwrap_or_default();
             let expanded = old_expanded
                 .get(&e.path)
                 .copied()
@@ -98,9 +95,12 @@ fn kill_worktree_sessions(app: &mut App, worktree_path: &Path) {
         }
     }
     // Kill terminal sessions whose worktree_path matches
-    let terminal_sids: Vec<u64> = app.terminal_ids.iter()
+    let terminal_sids: Vec<u64> = app
+        .terminal_ids
+        .iter()
         .filter(|&&tid| {
-            app.sessions.get(&tid)
+            app.sessions
+                .get(&tid)
                 .map(|s| s.worktree_path == worktree_path)
                 .unwrap_or(false)
         })
@@ -113,7 +113,9 @@ fn kill_worktree_sessions(app: &mut App, worktree_path: &Path) {
 
 /// Check if a worktree's working tree is clean (all changes committed).
 pub fn is_worktree_clean(app: &App, worktree_idx: usize) -> Result<bool> {
-    let wt = app.worktrees.get(worktree_idx)
+    let wt = app
+        .worktrees
+        .get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
     git::is_worktree_clean(&wt.path)
 }
@@ -124,8 +126,14 @@ pub fn find_worktree_for_branch(app: &App, branch: &str) -> Option<usize> {
 }
 
 /// Merge a source branch into a target worktree's branch.
-pub fn merge_into_worktree(app: &App, worktree_idx: usize, source_branch: &str) -> Result<git::MergeResult> {
-    let wt = app.worktrees.get(worktree_idx)
+pub fn merge_into_worktree(
+    app: &App,
+    worktree_idx: usize,
+    source_branch: &str,
+) -> Result<git::MergeResult> {
+    let wt = app
+        .worktrees
+        .get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
     git::merge_branch(&wt.path, source_branch)
 }
@@ -138,20 +146,29 @@ pub fn merge_in_progress(app: &App, worktree_idx: usize) -> Option<String> {
 
 /// Abort a merge in progress on the given worktree.
 pub fn merge_abort(app: &App, worktree_idx: usize) -> Result<()> {
-    let wt = app.worktrees.get(worktree_idx)
+    let wt = app
+        .worktrees
+        .get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
     git::merge_abort(&wt.path)
 }
 
 /// Fetch worktree status (file changes, recent commits, HEAD subject) for display.
 pub fn fetch_worktree_status(app: &App, worktree_idx: usize) -> Result<WorktreeStatus> {
-    let wt = app.worktrees.get(worktree_idx)
+    let wt = app
+        .worktrees
+        .get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
     let files = git::status_porcelain(&wt.path)?;
     let recent_commits = git::log_oneline(&wt.path, 10).unwrap_or_default();
     let head_subject = git::head_subject(&wt.path).unwrap_or_default();
     let unpushed_commits = git::unpushed_commits(&wt.path);
-    Ok(WorktreeStatus { files, recent_commits, head_subject, unpushed_commits })
+    Ok(WorktreeStatus {
+        files,
+        recent_commits,
+        head_subject,
+        unpushed_commits,
+    })
 }
 
 /// Fetch worktree status by path (no App reference needed).
@@ -161,7 +178,12 @@ pub fn fetch_worktree_status_by_path(path: &Path) -> Result<WorktreeStatus> {
     let recent_commits = git::log_oneline(path, 10).unwrap_or_default();
     let head_subject = git::head_subject(path).unwrap_or_default();
     let unpushed_commits = git::unpushed_commits(path);
-    Ok(WorktreeStatus { files, recent_commits, head_subject, unpushed_commits })
+    Ok(WorktreeStatus {
+        files,
+        recent_commits,
+        head_subject,
+        unpushed_commits,
+    })
 }
 
 /// Background refresh interval for worktree status polling.
@@ -182,10 +204,8 @@ pub fn spawn_status_poller(
         .name("status-poller".into())
         .spawn(move || {
             loop {
-                let paths: Vec<PathBuf> = worktree_paths
-                    .lock()
-                    .map(|p| p.clone())
-                    .unwrap_or_default();
+                let paths: Vec<PathBuf> =
+                    worktree_paths.lock().map(|p| p.clone()).unwrap_or_default();
 
                 if paths.is_empty() {
                     std::thread::sleep(Duration::from_secs(1));
@@ -239,42 +259,54 @@ pub fn available_branches(app: &App) -> Result<Vec<String>> {
 
 /// Get file status for a worktree (porcelain format).
 pub fn status_porcelain(app: &App, worktree_idx: usize) -> Result<Vec<git::FileChange>> {
-    let wt = app.worktrees.get(worktree_idx)
+    let wt = app
+        .worktrees
+        .get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
     git::status_porcelain(&wt.path)
 }
 
 /// Stage a single file in a worktree.
 pub fn stage_file(app: &App, worktree_idx: usize, file: &str) -> Result<()> {
-    let wt = app.worktrees.get(worktree_idx)
+    let wt = app
+        .worktrees
+        .get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
     git::stage_file(&wt.path, file)
 }
 
 /// Unstage a single file in a worktree.
 pub fn unstage_file(app: &App, worktree_idx: usize, file: &str) -> Result<()> {
-    let wt = app.worktrees.get(worktree_idx)
+    let wt = app
+        .worktrees
+        .get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
     git::unstage_file(&wt.path, file)
 }
 
 /// Stage all files in a worktree.
 pub fn stage_all(app: &App, worktree_idx: usize) -> Result<()> {
-    let wt = app.worktrees.get(worktree_idx)
+    let wt = app
+        .worktrees
+        .get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
     git::stage_all(&wt.path)
 }
 
 /// Get the diff of staged changes in a worktree.
 pub fn diff_staged(app: &App, worktree_idx: usize) -> Result<String> {
-    let wt = app.worktrees.get(worktree_idx)
+    let wt = app
+        .worktrees
+        .get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
     git::diff_staged(&wt.path)
 }
 
 /// Commit staged changes in a worktree.
 pub fn commit(app: &App, worktree_idx: usize, message: &str) -> Result<()> {
-    let wt = app.worktrees.get(worktree_idx)
+    let wt = app
+        .worktrees
+        .get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
     git::commit(&wt.path, message)
 }

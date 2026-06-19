@@ -1,5 +1,5 @@
-use std::sync::OnceLock;
 use ratatui::style::Color;
+use std::sync::OnceLock;
 
 // ══════════════════════════════════════════════════════════════════════
 // Color mode detection & runtime theme
@@ -119,7 +119,9 @@ pub fn init(mode: Option<ColorMode>) {
 
 /// Get the active theme. Panics if [`init`] was never called.
 pub fn get() -> &'static Theme {
-    THEME.get().expect("theme::init() must be called before theme::get()")
+    THEME
+        .get()
+        .expect("theme::init() must be called before theme::get()")
 }
 
 // ══════════════════════════════════════════════════════════════════════

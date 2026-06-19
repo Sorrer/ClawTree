@@ -1,12 +1,12 @@
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::Frame;
 use std::sync::atomic::Ordering;
 
-use crate::app::{AgentStatus, App, MiniModeFocus, SidebarItem};
 use super::theme;
+use crate::app::{AgentStatus, App, MiniModeFocus, SidebarItem};
 
 /// Get the current spinner character based on the app's frame counter.
 fn spinner_char(app: &App) -> char {
@@ -44,10 +44,7 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
     // Split horizontally: 30% sidebar, 70% detail pane (matching normal mode proportions)
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(30),
-            Constraint::Percentage(70),
-        ])
+        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(area);
 
     // Record mini mode areas for mouse hit-testing
@@ -73,12 +70,22 @@ fn draw_tree_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.mini.focus == MiniModeFocus::AgentList;
 
     let border_style = if is_focused {
-        Style::default().fg(theme::BORDER_FOCUSED_SIDEBAR).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme::BORDER_FOCUSED_SIDEBAR)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::BORDER_UNFOCUSED)
     };
-    let border_type = if is_focused { BorderType::Thick } else { BorderType::Plain };
-    let title = if is_focused { " ▸ Agents " } else { " Agents " };
+    let border_type = if is_focused {
+        BorderType::Thick
+    } else {
+        BorderType::Plain
+    };
+    let title = if is_focused {
+        " ▸ Agents "
+    } else {
+        " Agents "
+    };
 
     let block = Block::default()
         .title(title)
@@ -101,7 +108,9 @@ fn draw_tree_sidebar(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let items: Vec<ListItem> = app.mini.items
+    let items: Vec<ListItem> = app
+        .mini
+        .items
         .iter()
         .enumerate()
         .map(|(idx, item)| {
@@ -110,9 +119,13 @@ fn draw_tree_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 SidebarItem::Project => ListItem::new(Line::from(vec![])),
                 SidebarItem::ProjectSession(_) => ListItem::new(Line::from(vec![])),
                 SidebarItem::Worktree(wi) => render_worktree(app, *wi, is_selected, inner_width),
-                SidebarItem::Session(wi, si) => render_session(app, *wi, *si, is_selected, inner_width),
+                SidebarItem::Session(wi, si) => {
+                    render_session(app, *wi, *si, is_selected, inner_width)
+                }
                 SidebarItem::Terminal(_) => ListItem::new(Line::from(vec![])),
-                SidebarItem::Location(_) | SidebarItem::LocationSession(_, _) => ListItem::new(Line::from(vec![])),
+                SidebarItem::Location(_) | SidebarItem::LocationSession(_, _) => {
+                    ListItem::new(Line::from(vec![]))
+                }
             }
         })
         .collect();
@@ -127,11 +140,17 @@ fn draw_detail_pane(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.mini.focus == MiniModeFocus::DetailInput;
 
     let border_style = if is_focused {
-        Style::default().fg(theme::get().border_focused_terminal).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme::get().border_focused_terminal)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::BORDER_UNFOCUSED)
     };
-    let border_type = if is_focused { BorderType::Thick } else { BorderType::Plain };
+    let border_type = if is_focused {
+        BorderType::Thick
+    } else {
+        BorderType::Plain
+    };
 
     // Determine what's selected
     match app.mini.items.get(app.mini.selected).copied() {
@@ -141,8 +160,12 @@ fn draw_detail_pane(f: &mut Frame, app: &App, area: Rect) {
         Some(SidebarItem::Worktree(wi)) => {
             draw_worktree_detail(f, app, area, wi, border_style, border_type);
         }
-        Some(SidebarItem::Project) | Some(SidebarItem::ProjectSession(_)) | Some(SidebarItem::Terminal(_))
-        | Some(SidebarItem::Location(_)) | Some(SidebarItem::LocationSession(_, _)) | None => {
+        Some(SidebarItem::Project)
+        | Some(SidebarItem::ProjectSession(_))
+        | Some(SidebarItem::Terminal(_))
+        | Some(SidebarItem::Location(_))
+        | Some(SidebarItem::LocationSession(_, _))
+        | None => {
             let block = Block::default()
                 .title(" Details ")
                 .borders(Borders::ALL)
@@ -236,13 +259,17 @@ fn draw_session_detail(
     };
 
     // Usage info
-    let usage_text = app.claude_usage.get(&sid).map(|u| {
-        if u.effective_window > 0 {
-            format!("Context: {}%", u.usage_pct())
-        } else {
-            String::new()
-        }
-    }).unwrap_or_default();
+    let usage_text = app
+        .claude_usage
+        .get(&sid)
+        .map(|u| {
+            if u.effective_window > 0 {
+                format!("Context: {}%", u.usage_pct())
+            } else {
+                String::new()
+            }
+        })
+        .unwrap_or_default();
 
     // Build content lines
     let mut lines: Vec<Line> = Vec::new();
@@ -255,9 +282,13 @@ fn draw_session_detail(
         ),
         Span::styled(
             status_text,
-            Style::default().fg(status_color).add_modifier(
-                if status == AgentStatus::NeedsInput { Modifier::BOLD } else { Modifier::empty() }
-            ),
+            Style::default()
+                .fg(status_color)
+                .add_modifier(if status == AgentStatus::NeedsInput {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
         ),
         Span::styled(
             format!("  {}", wt.branch),
@@ -274,7 +305,10 @@ fn draw_session_detail(
 
     // Separator
     let sep = "─".repeat(inner.width.saturating_sub(2) as usize);
-    lines.push(Line::styled(format!(" {}", sep), Style::default().fg(Color::DarkGray)));
+    lines.push(Line::styled(
+        format!(" {}", sep),
+        Style::default().fg(Color::DarkGray),
+    ));
 
     // Summary section
     lines.push(Line::raw(""));
@@ -313,7 +347,11 @@ fn draw_session_detail(
     } else {
         0
     };
-    let effective_input_height = if input_height > 0 { input_line_count } else { 0 };
+    let effective_input_height = if input_height > 0 {
+        input_line_count
+    } else {
+        0
+    };
 
     let summary_area = Rect {
         x: inner.x,
@@ -337,11 +375,17 @@ fn draw_session_detail(
 
         let sep2 = "─".repeat(inner.width.saturating_sub(2) as usize);
         let cursor_style = if is_focused {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::RAPID_BLINK)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::RAPID_BLINK)
         } else {
             Style::default().fg(Color::DarkGray)
         };
-        let prompt_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+        let prompt_color = if is_focused {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
 
         let hint_text = if is_focused {
             " Tab:back  Enter:send  Alt+Enter:newline"
@@ -351,9 +395,10 @@ fn draw_session_detail(
 
         let mut input_lines = vec![
             Line::styled(format!(" {}", sep2), Style::default().fg(Color::DarkGray)),
-            Line::from(vec![
-                Span::styled(hint_text, Style::default().fg(Color::DarkGray)),
-            ]),
+            Line::from(vec![Span::styled(
+                hint_text,
+                Style::default().fg(Color::DarkGray),
+            )]),
         ];
 
         // Render multi-line input: first line gets the prompt, rest are indented
@@ -414,13 +459,29 @@ fn draw_worktree_detail(
     }
 
     let total = wt.session_ids.len();
-    let alive = wt.session_ids.iter().filter(|sid| {
-        app.sessions.get(sid).map(|s| !s.exited.load(Ordering::SeqCst)).unwrap_or(false)
-    }).count();
-    let working = wt.session_ids.iter().filter(|sid| {
-        app.sessions.get(sid).map(|s| s.is_active()).unwrap_or(false)
-    }).count();
-    let idle = total.saturating_sub(working).saturating_sub(total.saturating_sub(alive));
+    let alive = wt
+        .session_ids
+        .iter()
+        .filter(|sid| {
+            app.sessions
+                .get(sid)
+                .map(|s| !s.exited.load(Ordering::SeqCst))
+                .unwrap_or(false)
+        })
+        .count();
+    let working = wt
+        .session_ids
+        .iter()
+        .filter(|sid| {
+            app.sessions
+                .get(sid)
+                .map(|s| s.is_active())
+                .unwrap_or(false)
+        })
+        .count();
+    let idle = total
+        .saturating_sub(working)
+        .saturating_sub(total.saturating_sub(alive));
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -432,14 +493,23 @@ fn draw_worktree_detail(
     if total > 0 {
         lines.push(Line::from(vec![
             Span::styled("   ", Style::default()),
-            Span::styled(format!("{} working", working), Style::default().fg(theme::AGENT_WORKING)),
+            Span::styled(
+                format!("{} working", working),
+                Style::default().fg(theme::AGENT_WORKING),
+            ),
             Span::styled("  ", Style::default()),
-            Span::styled(format!("{} idle", idle), Style::default().fg(theme::AGENT_IDLE)),
+            Span::styled(
+                format!("{} idle", idle),
+                Style::default().fg(theme::AGENT_IDLE),
+            ),
         ]));
     }
 
     let sep = "─".repeat(inner.width.saturating_sub(2) as usize);
-    lines.push(Line::styled(format!(" {}", sep), Style::default().fg(Color::DarkGray)));
+    lines.push(Line::styled(
+        format!(" {}", sep),
+        Style::default().fg(Color::DarkGray),
+    ));
     lines.push(Line::raw(""));
 
     // Show brief summary for each agent in this worktree
@@ -449,12 +519,15 @@ fn draw_worktree_detail(
             .and_then(|s| s.nickname.clone())
             .or_else(|| session.and_then(|s| s.terminal_title()))
             .unwrap_or_else(|| format!("Agent-{}", sid));
-        let clean = name.trim_start_matches('✳')
+        let clean = name
+            .trim_start_matches('✳')
             .trim_start_matches('⠂')
             .trim_start_matches('⠐')
             .trim_start();
 
-        let status = session.map(|s| s.agent_status()).unwrap_or(AgentStatus::Exited);
+        let status = session
+            .map(|s| s.agent_status())
+            .unwrap_or(AgentStatus::Exited);
         let (status_text, status_color) = match status {
             AgentStatus::Working => ("working", theme::AGENT_WORKING),
             AgentStatus::Idle => ("idle", theme::AGENT_IDLE),
@@ -464,13 +537,19 @@ fn draw_worktree_detail(
 
         lines.push(Line::from(vec![
             Span::styled(format!(" {}", clean), Style::default().fg(Color::White)),
-            Span::styled(format!(" ({})", status_text), Style::default().fg(status_color)),
+            Span::styled(
+                format!(" ({})", status_text),
+                Style::default().fg(status_color),
+            ),
         ]));
 
         if let Some(summary) = app.agent_summaries.get(&sid) {
             let first_line = summary.lines().next().unwrap_or("");
             let truncated = if first_line.len() > (inner.width as usize).saturating_sub(4) {
-                format!("{}...", &first_line[..(inner.width as usize).saturating_sub(7).max(3)])
+                format!(
+                    "{}...",
+                    &first_line[..(inner.width as usize).saturating_sub(7).max(3)]
+                )
             } else {
                 first_line.to_string()
             };
@@ -493,33 +572,54 @@ fn draw_worktree_detail(
 
 // ── Tree item renderers ────────────────────────────────────────────
 
-fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) -> ListItem<'static> {
+fn render_worktree(
+    app: &App,
+    wi: usize,
+    is_selected: bool,
+    inner_width: usize,
+) -> ListItem<'static> {
     let wt = &app.worktrees[wi];
     let icon = if wt.expanded { "▼" } else { "▶" };
 
     let total = wt.session_ids.len();
-    let alive = wt.session_ids.iter().filter(|sid| {
-        app.sessions.get(sid)
-            .map(|s| !s.exited.load(Ordering::SeqCst))
-            .unwrap_or(false)
-    }).count();
-    let working = wt.session_ids.iter().filter(|sid| {
-        app.sessions.get(sid)
-            .map(|s| s.is_active())
-            .unwrap_or(false)
-    }).count();
+    let alive = wt
+        .session_ids
+        .iter()
+        .filter(|sid| {
+            app.sessions
+                .get(sid)
+                .map(|s| !s.exited.load(Ordering::SeqCst))
+                .unwrap_or(false)
+        })
+        .count();
+    let working = wt
+        .session_ids
+        .iter()
+        .filter(|sid| {
+            app.sessions
+                .get(sid)
+                .map(|s| s.is_active())
+                .unwrap_or(false)
+        })
+        .count();
 
-    let bg = if is_selected { theme::get().sidebar_sel_bg } else { Color::Reset };
-    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+    let bg = if is_selected {
+        theme::get().sidebar_sel_bg
+    } else {
+        Color::Reset
+    };
+    let bold = if is_selected {
+        Modifier::BOLD
+    } else {
+        Modifier::empty()
+    };
 
-    let branch_style = Style::default()
-        .fg(Color::White)
-        .bg(bg)
-        .add_modifier(bold);
+    let branch_style = Style::default().fg(Color::White).bg(bg).add_modifier(bold);
 
-    let mut spans = vec![
-        Span::styled(format!("{} {}", icon, wt.branch), branch_style),
-    ];
+    let mut spans = vec![Span::styled(
+        format!("{} {}", icon, wt.branch),
+        branch_style,
+    )];
 
     if total > 0 {
         spans.push(Span::styled(
@@ -546,14 +646,28 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, inner_width: usize) 
     ListItem::new(Line::from(spans))
 }
 
-fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_width: usize) -> ListItem<'static> {
+fn render_session(
+    app: &App,
+    wi: usize,
+    si: usize,
+    is_selected: bool,
+    inner_width: usize,
+) -> ListItem<'static> {
     let wt = &app.worktrees[wi];
     let sid = wt.session_ids[si];
     let session = app.sessions.get(&sid);
     let is_terminal = session.map(|s| s.is_terminal).unwrap_or(false);
 
-    let bg = if is_selected { theme::get().sidebar_sel_bg } else { Color::Reset };
-    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+    let bg = if is_selected {
+        theme::get().sidebar_sel_bg
+    } else {
+        Color::Reset
+    };
+    let bold = if is_selected {
+        Modifier::BOLD
+    } else {
+        Modifier::empty()
+    };
 
     if is_terminal {
         let is_exited = session
@@ -580,10 +694,22 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
         };
 
         let tag = "[terminal]";
-        let tag_fg = if is_exited { Color::DarkGray } else { Color::Green };
+        let tag_fg = if is_exited {
+            Color::DarkGray
+        } else {
+            Color::Green
+        };
         let name_fg = if is_selected {
-            if is_exited { Color::Gray } else { Color::White }
-        } else if is_exited { Color::DarkGray } else { Color::Gray };
+            if is_exited {
+                Color::Gray
+            } else {
+                Color::White
+            }
+        } else if is_exited {
+            Color::DarkGray
+        } else {
+            Color::Gray
+        };
 
         let prefix_len = 2 + tag.len() + 1; // "  [terminal] "
         let max_name = inner_width.saturating_sub(prefix_len);
@@ -599,9 +725,15 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
 
         let mut spans = vec![
             Span::styled("  ", Style::default().bg(bg)),
-            Span::styled(tag.to_string(), Style::default().fg(tag_fg).bg(bg).add_modifier(bold)),
+            Span::styled(
+                tag.to_string(),
+                Style::default().fg(tag_fg).bg(bg).add_modifier(bold),
+            ),
             Span::styled(" ", Style::default().bg(bg)),
-            Span::styled(truncated, Style::default().fg(name_fg).bg(bg).add_modifier(bold)),
+            Span::styled(
+                truncated,
+                Style::default().fg(name_fg).bg(bg).add_modifier(bold),
+            ),
         ];
 
         let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
@@ -621,7 +753,9 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
     let display_name = nickname.unwrap_or_else(|| {
         title
             .unwrap_or_else(|| {
-                session.map(|s| s.label.clone()).unwrap_or_else(|| "???".to_string())
+                session
+                    .map(|s| s.label.clone())
+                    .unwrap_or_else(|| "???".to_string())
             })
             .trim_start_matches('✳')
             .trim_start_matches('⠂')
@@ -630,7 +764,9 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
             .to_string()
     });
 
-    let status = session.map(|s| s.agent_status()).unwrap_or(AgentStatus::Exited);
+    let status = session
+        .map(|s| s.agent_status())
+        .unwrap_or(AgentStatus::Exited);
 
     let (status_icon, fg): (String, Color) = match status {
         AgentStatus::Exited => ("✗".to_string(), Color::DarkGray),
@@ -669,9 +805,10 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, inner_widt
 
     let text = format!("{}{}", prefix, truncated);
 
-    let mut spans = vec![
-        Span::styled(text, Style::default().fg(sel_fg).bg(bg).add_modifier(bold)),
-    ];
+    let mut spans = vec![Span::styled(
+        text,
+        Style::default().fg(sel_fg).bg(bg).add_modifier(bold),
+    )];
 
     if let Some(usage) = usage_str {
         let usage_color = if status == AgentStatus::NeedsInput {
@@ -707,7 +844,10 @@ fn draw_worktree_selector(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     if app.worktrees.is_empty() {
-        lines.push(Line::styled(" No worktrees available.", Style::default().fg(Color::DarkGray)));
+        lines.push(Line::styled(
+            " No worktrees available.",
+            Style::default().fg(Color::DarkGray),
+        ));
     } else {
         for (i, wt) in app.worktrees.iter().enumerate() {
             let is_selected = i == app.mini.target_worktree_idx;
@@ -720,8 +860,22 @@ fn draw_worktree_selector(f: &mut Frame, app: &App, area: Rect) {
             };
 
             lines.push(Line::from(vec![
-                Span::styled(selector, Style::default().fg(if is_selected { Color::White } else { Color::DarkGray })),
-                Span::styled(wt.branch.clone(), Style::default().fg(if is_selected { Color::Cyan } else { Color::White })),
+                Span::styled(
+                    selector,
+                    Style::default().fg(if is_selected {
+                        Color::White
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    wt.branch.clone(),
+                    Style::default().fg(if is_selected {
+                        Color::Cyan
+                    } else {
+                        Color::White
+                    }),
+                ),
                 Span::styled(count_text, Style::default().fg(Color::DarkGray)),
             ]));
         }
@@ -739,7 +893,9 @@ fn draw_worktree_selector(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_prompt_input(f: &mut Frame, app: &App, area: Rect) {
-    let wt_name = app.worktrees.get(app.mini.target_worktree_idx)
+    let wt_name = app
+        .worktrees
+        .get(app.mini.target_worktree_idx)
         .map(|wt| wt.branch.as_str())
         .unwrap_or("???");
 
@@ -751,12 +907,17 @@ fn draw_prompt_input(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     let mut lines = vec![
-        Line::styled(" Enter a prompt for the agent:", Style::default().fg(Color::DarkGray)),
+        Line::styled(
+            " Enter a prompt for the agent:",
+            Style::default().fg(Color::DarkGray),
+        ),
         Line::raw(""),
     ];
 
     // Render multi-line prompt input
-    let cursor_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::RAPID_BLINK);
+    let cursor_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::RAPID_BLINK);
     let text_parts: Vec<&str> = app.mini.prompt_input.split('\n').collect();
     for (i, part) in text_parts.iter().enumerate() {
         if i == 0 {
@@ -808,7 +969,10 @@ fn draw_saved_prompts(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     if app.saved_prompts.is_empty() {
-        lines.push(Line::styled(" No saved prompts. Press 'a' to save current input.", Style::default().fg(Color::DarkGray)));
+        lines.push(Line::styled(
+            " No saved prompts. Press 'a' to save current input.",
+            Style::default().fg(Color::DarkGray),
+        ));
     } else {
         for (i, sp) in app.saved_prompts.iter().enumerate() {
             let is_selected = i == app.mini.saved_prompt_selected;
@@ -821,9 +985,26 @@ fn draw_saved_prompts(f: &mut Frame, app: &App, area: Rect) {
             };
 
             lines.push(Line::from(vec![
-                Span::styled(selector, Style::default().fg(if is_selected { Color::White } else { Color::DarkGray })),
-                Span::styled(format!("[{}] ", sp.name), Style::default().fg(Color::Yellow)),
-                Span::styled(preview, Style::default().fg(if is_selected { Color::White } else { Color::DarkGray })),
+                Span::styled(
+                    selector,
+                    Style::default().fg(if is_selected {
+                        Color::White
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    format!("[{}] ", sp.name),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(
+                    preview,
+                    Style::default().fg(if is_selected {
+                        Color::White
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
             ]));
         }
     }
@@ -878,10 +1059,18 @@ pub fn draw_drilldown(f: &mut Frame, app: &App) {
     let header = Line::from(vec![
         Span::styled(
             " MINI ",
-            Style::default().fg(Color::Black).bg(theme::MODE_MINI_BG).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme::MODE_MINI_BG)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled(&agent_name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            &agent_name,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" | ", Style::default().fg(Color::DarkGray)),
         Span::styled(status_text, Style::default().fg(status_color)),
         Span::styled(" | ", Style::default().fg(Color::DarkGray)),

@@ -17,8 +17,10 @@ pub fn screen_to_vt100(app: &App, col: u16, row: u16) -> Option<(u16, u16)> {
     if inner.width == 0 || inner.height == 0 {
         return None;
     }
-    if col < inner.x || col >= inner.x + inner.width
-        || row < inner.y || row >= inner.y + inner.height
+    if col < inner.x
+        || col >= inner.x + inner.width
+        || row < inner.y
+        || row >= inner.y + inner.height
     {
         return None;
     }
@@ -53,7 +55,11 @@ pub fn extract_text_from_screen(
             break;
         }
         let col_start = if row == start.0 { start.1 } else { 0 };
-        let col_end = if row == end.0 { end.1 } else { screen_cols.saturating_sub(1) };
+        let col_end = if row == end.0 {
+            end.1
+        } else {
+            screen_cols.saturating_sub(1)
+        };
 
         let mut line = String::new();
         let mut col = col_start;
@@ -118,7 +124,9 @@ fn copy_via_osc52(text: &str) -> Result<(), String> {
     let encoded = base64_encode(text.as_bytes());
     let seq = format!("\x1b]52;c;{}\x07", encoded);
     let mut stdout = std::io::stdout();
-    stdout.write_all(seq.as_bytes()).map_err(|e| e.to_string())?;
+    stdout
+        .write_all(seq.as_bytes())
+        .map_err(|e| e.to_string())?;
     stdout.flush().map_err(|e| e.to_string())
 }
 
@@ -159,7 +167,11 @@ fn try_clipboard_cmd(program: &str, args: &[&str], data: &[u8]) -> Result<(), ()
     }
     drop(child.stdin.take()); // close stdin so the child can finish
     let status = child.wait().map_err(|_| ())?;
-    if status.success() { Ok(()) } else { Err(()) }
+    if status.success() {
+        Ok(())
+    } else {
+        Err(())
+    }
 }
 
 /// Extract text from plain-text content (e.g. tmux capture without -e) by
@@ -177,7 +189,11 @@ pub fn extract_text_from_plain(content: &str, start: (u16, u16), end: (u16, u16)
         let line = lines_vec[row_idx];
         let chars: Vec<char> = line.chars().collect();
         let col_start = if row == start.0 { start.1 as usize } else { 0 };
-        let col_end = if row == end.0 { end.1 as usize } else { chars.len().saturating_sub(1) };
+        let col_end = if row == end.0 {
+            end.1 as usize
+        } else {
+            chars.len().saturating_sub(1)
+        };
         let col_end = col_end.min(chars.len().saturating_sub(1));
 
         if col_start <= col_end && col_start < chars.len() {
@@ -203,7 +219,11 @@ pub fn url_at_position(app: &App, col: u16, row: u16) -> Option<usize> {
     if inner.width == 0 || inner.height == 0 {
         return None;
     }
-    if col < inner.x || col >= inner.x + inner.width || row < inner.y || row >= inner.y + inner.height {
+    if col < inner.x
+        || col >= inner.x + inner.width
+        || row < inner.y
+        || row >= inner.y + inner.height
+    {
         return None;
     }
     // Convert screen coordinates to terminal-relative coordinates
@@ -277,10 +297,19 @@ fn handle_left_click(app: &mut App, col: u16, row: u16) -> bool {
             if let Some(app::Dialog::ContextMenu { item, actions, .. }) = app.dialog.take() {
                 if action_row < actions.len() {
                     app.close_dialog();
-                    keys::execute_context_action(app, &item, &actions[action_row].kind, app.last_terminal_size);
+                    keys::execute_context_action(
+                        app,
+                        &item,
+                        &actions[action_row].kind,
+                        app.last_terminal_size,
+                    );
                 } else {
                     // Clicked footer or padding — put the dialog back
-                    app.open_dialog(app::Dialog::ContextMenu { item, selected: None, actions });
+                    app.open_dialog(app::Dialog::ContextMenu {
+                        item,
+                        selected: None,
+                        actions,
+                    });
                 }
                 return true;
             }
@@ -531,7 +560,11 @@ fn handle_normal_scroll(app: &mut App, col: u16, row: u16, up: bool) -> bool {
     let queue_area = app.areas.prompt_queue.get();
 
     if point_in_rect(col, row, sidebar_area) {
-        if up { app.sidebar_up(); } else { app.sidebar_down(); }
+        if up {
+            app.sidebar_up();
+        } else {
+            app.sidebar_down();
+        }
         return true;
     }
     if point_in_rect(col, row, queue_area) {
@@ -586,7 +619,11 @@ fn scroll_info_panel(app: &mut App, up: bool) {
     }
     // Also move cursor within file lists for focused navigation
     let (unstaged, staged) = app.info_panel_file_lists();
-    let section_len = if app.info_panel_section == 0 { unstaged.len() } else { staged.len() };
+    let section_len = if app.info_panel_section == 0 {
+        unstaged.len()
+    } else {
+        staged.len()
+    };
     if section_len == 0 {
         return;
     }

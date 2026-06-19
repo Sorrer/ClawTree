@@ -12,7 +12,9 @@ fn test_create_worktree_new_branch() {
 
     assert!(dir.join("feature-a").is_dir());
     let entries = git::list_worktrees(dir).unwrap();
-    let feature = entries.iter().find(|e| e.branch.as_deref() == Some("feature-a"));
+    let feature = entries
+        .iter()
+        .find(|e| e.branch.as_deref() == Some("feature-a"));
     assert!(feature.is_some(), "feature-a worktree not found in list");
 }
 

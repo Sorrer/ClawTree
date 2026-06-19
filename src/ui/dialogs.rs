@@ -1,13 +1,15 @@
 use std::path::Path;
 
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::Frame;
 
-use crate::app::{App, CommitPhase, ContextAction, ContextActionKind, Dialog, SidebarItem, UpdatePhase};
 use super::theme;
+use crate::app::{
+    App, CommitPhase, ContextAction, ContextActionKind, Dialog, SidebarItem, UpdatePhase,
+};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let dialog = match &app.dialog {
@@ -34,7 +36,9 @@ pub fn draw(f: &mut Frame, app: &App) {
             draw_merge(f, app, source_name, branches, *selected);
         }
         Dialog::Confirm { message, .. } => draw_confirm(f, app, message),
-        Dialog::ConfirmDangerous { message, input, .. } => draw_confirm_dangerous(f, app, message, input),
+        Dialog::ConfirmDangerous { message, input, .. } => {
+            draw_confirm_dangerous(f, app, message, input)
+        }
         Dialog::InitRepo {
             url_input,
             branch_input,
@@ -83,7 +87,18 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .get(*worktree_idx)
                 .map(|w| w.branch.as_str())
                 .unwrap_or("???");
-            draw_git_commit(f, app, branch_name, unstaged, staged, *section, *selected, *phase, commit_message, *cursor_pos);
+            draw_git_commit(
+                f,
+                app,
+                branch_name,
+                unstaged,
+                staged,
+                *section,
+                *selected,
+                *phase,
+                commit_message,
+                *cursor_pos,
+            );
         }
         Dialog::PullError {
             worktree_idx,
@@ -126,7 +141,16 @@ pub fn draw(f: &mut Frame, app: &App) {
             source_repo_path,
             confirmed,
         } => {
-            draw_convert_repo(f, app, source_repo_path, *mode, target_path_input, branch_name, *focused_field, *confirmed);
+            draw_convert_repo(
+                f,
+                app,
+                source_repo_path,
+                *mode,
+                target_path_input,
+                branch_name,
+                *focused_field,
+                *confirmed,
+            );
         }
         Dialog::AddLocation { path_input, error } => {
             draw_add_location(f, app, path_input, error.as_deref());
@@ -186,13 +210,14 @@ fn draw_create_worktree(f: &mut Frame, app: &App, branch: &str, base: &str, focu
         Style::default().fg(Color::Gray)
     };
     f.render_widget(
-        Paragraph::new("Branch name (also used as directory name):")
-            .style(branch_label_style),
+        Paragraph::new("Branch name (also used as directory name):").style(branch_label_style),
         chunks[0],
     );
 
     let branch_style = if focused == 0 {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Cyan)
     };
@@ -212,13 +237,14 @@ fn draw_create_worktree(f: &mut Frame, app: &App, branch: &str, base: &str, focu
         Style::default().fg(Color::Gray)
     };
     f.render_widget(
-        Paragraph::new("Base branch:")
-            .style(base_label_style),
+        Paragraph::new("Base branch:").style(base_label_style),
         chunks[3],
     );
 
     let base_style = if focused == 1 {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Cyan)
     };
@@ -260,7 +286,7 @@ fn draw_merge(f: &mut Frame, app: &App, source: &str, branches: &[String], selec
         .constraints([
             Constraint::Length(1), // target info
             Constraint::Length(1), // separator
-            Constraint::Min(1),   // branch list
+            Constraint::Min(1),    // branch list
             Constraint::Length(1), // help
         ])
         .split(inner);
@@ -268,15 +294,19 @@ fn draw_merge(f: &mut Frame, app: &App, source: &str, branches: &[String], selec
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("Merge ", Style::default().fg(Color::Gray)),
-            Span::styled(source, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                source,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" into:", Style::default().fg(Color::Gray)),
         ])),
         chunks[0],
     );
 
     f.render_widget(
-        Paragraph::new("Select target branch:")
-            .style(Style::default().fg(Color::Gray)),
+        Paragraph::new("Select target branch:").style(Style::default().fg(Color::Gray)),
         chunks[1],
     );
 
@@ -348,8 +378,7 @@ fn draw_confirm(f: &mut Frame, app: &App, message: &str) {
     );
 
     f.render_widget(
-        Paragraph::new("Enter: yes  Esc: no")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new("Enter: yes  Esc: no").style(Style::default().fg(Color::DarkGray)),
         chunks[2],
     );
 }
@@ -362,7 +391,11 @@ fn draw_confirm_dangerous(f: &mut Frame, app: &App, message: &str, input: &str) 
     let block = Block::default()
         .title(" ⚠ WARNING ⚠ ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::DIALOG_DESTRUCTIVE).add_modifier(Modifier::BOLD));
+        .border_style(
+            Style::default()
+                .fg(theme::DIALOG_DESTRUCTIVE)
+                .add_modifier(Modifier::BOLD),
+        );
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -380,27 +413,23 @@ fn draw_confirm_dangerous(f: &mut Frame, app: &App, message: &str, input: &str) 
         .split(inner);
 
     f.render_widget(
-        Paragraph::new(message)
-            .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Paragraph::new(message).style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
         chunks[0],
     );
 
     f.render_widget(
-        Paragraph::new("Type 'yes' to confirm:")
-            .style(Style::default().fg(Color::Yellow)),
+        Paragraph::new("Type 'yes' to confirm:").style(Style::default().fg(Color::Yellow)),
         chunks[2],
     );
 
     let input_display = format!("> {}_", input);
     f.render_widget(
-        Paragraph::new(input_display)
-            .style(Style::default().fg(Color::White)),
+        Paragraph::new(input_display).style(Style::default().fg(Color::White)),
         chunks[3],
     );
 
     f.render_widget(
-        Paragraph::new("Esc: cancel")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new("Esc: cancel").style(Style::default().fg(Color::DarkGray)),
         chunks[5],
     );
 }
@@ -433,12 +462,16 @@ fn draw_init_repo(f: &mut Frame, app: &App, url: &str, branch: &str, focused: us
         .split(inner);
 
     let url_style = if focused == 0 {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
     };
     let branch_style = if focused == 1 {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
     };
@@ -494,7 +527,13 @@ fn draw_init_repo(f: &mut Frame, app: &App, url: &str, branch: &str, focused: us
 }
 
 fn draw_merge_conflict(f: &mut Frame, app: &App, branch: &str, selected: usize) {
-    let options = ["VS Code", "JetBrains", "Claude", "Claude (skip perms)", "Abort merge"];
+    let options = [
+        "VS Code",
+        "JetBrains",
+        "Claude",
+        "Claude (skip perms)",
+        "Abort merge",
+    ];
     let height = (options.len() as u16) + 6;
     let area = centered_rect(50, height, f.area());
     app.areas.dialog.set(area);
@@ -513,7 +552,7 @@ fn draw_merge_conflict(f: &mut Frame, app: &App, branch: &str, selected: usize) 
         .constraints([
             Constraint::Length(1), // conflict message
             Constraint::Length(1), // separator
-            Constraint::Min(1),   // option list
+            Constraint::Min(1),    // option list
             Constraint::Length(1), // help
         ])
         .split(inner);
@@ -541,9 +580,7 @@ fn draw_merge_conflict(f: &mut Frame, app: &App, branch: &str, selected: usize) 
             let style = if idx == options.len() - 1 {
                 // Abort option in red
                 if is_sel {
-                    Style::default()
-                        .fg(Color::Red)
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::Red)
                 }
@@ -601,12 +638,12 @@ fn draw_pull_error(f: &mut Frame, app: &App, branch: &str, error_message: &str, 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),                           // header
-            Constraint::Length(1),                           // separator
-            Constraint::Length(error_display_lines as u16),  // error message
-            Constraint::Length(1),                           // separator
-            Constraint::Min(1),                              // option list
-            Constraint::Length(1),                            // help
+            Constraint::Length(1),                          // header
+            Constraint::Length(1),                          // separator
+            Constraint::Length(error_display_lines as u16), // error message
+            Constraint::Length(1),                          // separator
+            Constraint::Min(1),                             // option list
+            Constraint::Length(1),                          // help
         ])
         .split(inner);
 
@@ -627,12 +664,17 @@ fn draw_pull_error(f: &mut Frame, app: &App, branch: &str, error_message: &str, 
     let display_text: String = error_lines
         .iter()
         .take(8)
-        .map(|l| if l.len() > wrap_width { &l[..wrap_width] } else { l })
+        .map(|l| {
+            if l.len() > wrap_width {
+                &l[..wrap_width]
+            } else {
+                l
+            }
+        })
         .collect::<Vec<&str>>()
         .join("\n");
     f.render_widget(
-        Paragraph::new(display_text)
-            .style(Style::default().fg(Color::Yellow)),
+        Paragraph::new(display_text).style(Style::default().fg(Color::Yellow)),
         chunks[2],
     );
 
@@ -675,7 +717,13 @@ fn draw_pull_error(f: &mut Frame, app: &App, branch: &str, error_message: &str, 
     );
 }
 
-fn draw_auth_error(f: &mut Frame, app: &App, operation: &str, error_message: &str, selected: usize) {
+fn draw_auth_error(
+    f: &mut Frame,
+    app: &App,
+    operation: &str,
+    error_message: &str,
+    selected: usize,
+) {
     // Calculate error display lines (wrap at ~56 chars to fit in dialog)
     let wrap_width = 56usize;
     let error_lines: Vec<&str> = error_message.lines().collect();
@@ -706,15 +754,15 @@ fn draw_auth_error(f: &mut Frame, app: &App, operation: &str, error_message: &st
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),                           // header
-            Constraint::Length(1),                           // separator
-            Constraint::Length(error_display_lines as u16),  // error message
-            Constraint::Length(1),                           // separator
-            Constraint::Length(1),                           // instructions
-            Constraint::Length(3),                           // auth hints
-            Constraint::Length(1),                           // separator
-            Constraint::Length(1),                           // dismiss option
-            Constraint::Length(1),                           // help
+            Constraint::Length(1),                          // header
+            Constraint::Length(1),                          // separator
+            Constraint::Length(error_display_lines as u16), // error message
+            Constraint::Length(1),                          // separator
+            Constraint::Length(1),                          // instructions
+            Constraint::Length(3),                          // auth hints
+            Constraint::Length(1),                          // separator
+            Constraint::Length(1),                          // dismiss option
+            Constraint::Length(1),                          // help
         ])
         .split(inner);
 
@@ -742,12 +790,17 @@ fn draw_auth_error(f: &mut Frame, app: &App, operation: &str, error_message: &st
     let display_text: String = error_lines
         .iter()
         .take(8)
-        .map(|l| if l.len() > wrap_width { &l[..wrap_width] } else { l })
+        .map(|l| {
+            if l.len() > wrap_width {
+                &l[..wrap_width]
+            } else {
+                l
+            }
+        })
         .collect::<Vec<&str>>()
         .join("\n");
     f.render_widget(
-        Paragraph::new(display_text)
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(display_text).style(Style::default().fg(Color::DarkGray)),
         chunks[2],
     );
 
@@ -792,8 +845,7 @@ fn draw_auth_error(f: &mut Frame, app: &App, operation: &str, error_message: &st
     );
 
     f.render_widget(
-        Paragraph::new("Enter: dismiss  Esc: dismiss")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new("Enter: dismiss  Esc: dismiss").style(Style::default().fg(Color::DarkGray)),
         chunks[8],
     );
 }
@@ -822,8 +874,7 @@ fn draw_rename_session(f: &mut Frame, app: &App, name: &str) {
         .split(inner);
 
     f.render_widget(
-        Paragraph::new("Nickname (empty to clear):")
-            .style(Style::default().fg(Color::Gray)),
+        Paragraph::new("Nickname (empty to clear):").style(Style::default().fg(Color::Gray)),
         chunks[0],
     );
 
@@ -838,8 +889,7 @@ fn draw_rename_session(f: &mut Frame, app: &App, name: &str) {
     );
 
     f.render_widget(
-        Paragraph::new("Enter: save  Esc: cancel")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new("Enter: save  Esc: cancel").style(Style::default().fg(Color::DarkGray)),
         chunks[3],
     );
 }
@@ -869,8 +919,7 @@ fn draw_add_location(f: &mut Frame, app: &App, path_input: &str, error: Option<&
         .split(inner);
 
     f.render_widget(
-        Paragraph::new("Directory path:")
-            .style(Style::default().fg(Color::Gray)),
+        Paragraph::new("Directory path:").style(Style::default().fg(Color::Gray)),
         chunks[0],
     );
 
@@ -895,8 +944,7 @@ fn draw_add_location(f: &mut Frame, app: &App, path_input: &str, error: Option<&
     }
 
     f.render_widget(
-        Paragraph::new("Enter: add  Esc: cancel")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new("Enter: add  Esc: cancel").style(Style::default().fg(Color::DarkGray)),
         chunks[4],
     );
 }
@@ -927,12 +975,12 @@ fn draw_dirty_worktree(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),                     // info line
-            Constraint::Length(1),                     // blank
-            Constraint::Length(visible_files as u16),  // file list
-            Constraint::Length(1),                     // blank
-            Constraint::Length(options.len() as u16),  // options
-            Constraint::Length(1),                     // help
+            Constraint::Length(1),                    // info line
+            Constraint::Length(1),                    // blank
+            Constraint::Length(visible_files as u16), // file list
+            Constraint::Length(1),                    // blank
+            Constraint::Length(options.len() as u16), // options
+            Constraint::Length(1),                    // help
         ])
         .split(inner);
 
@@ -945,7 +993,10 @@ fn draw_dirty_worktree(
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("' has uncommitted changes:", Style::default().fg(Color::Gray)),
+            Span::styled(
+                "' has uncommitted changes:",
+                Style::default().fg(Color::Gray),
+            ),
         ])),
         chunks[0],
     );
@@ -956,10 +1007,7 @@ fn draw_dirty_worktree(
         .take(visible_files)
         .map(|(status, path)| {
             ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!(" {}  ", status),
-                    Style::default().fg(Color::Yellow),
-                ),
+                Span::styled(format!(" {}  ", status), Style::default().fg(Color::Yellow)),
                 Span::styled(path.as_str(), Style::default().fg(Color::White)),
             ]))
         })
@@ -975,9 +1023,7 @@ fn draw_dirty_worktree(
             let marker = if is_sel { ">" } else { " " };
             let style = if idx == options.len() - 1 {
                 if is_sel {
-                    Style::default()
-                        .fg(Color::Red)
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::Red)
                 }
@@ -1047,8 +1093,7 @@ fn draw_merge_success(f: &mut Frame, app: &App, message: &str) {
     );
 
     f.render_widget(
-        Paragraph::new("Enter/Esc: dismiss")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new("Enter/Esc: dismiss").style(Style::default().fg(Color::DarkGray)),
         chunks[3],
     );
 }
@@ -1113,7 +1158,9 @@ fn draw_git_commit_staging(
 
     // Reclaim unused space from whichever section didn't need it all
     let unstaged_visible = {
-        let staged_unused = available_for_files.saturating_sub(unstaged_visible).saturating_sub(staged_visible);
+        let staged_unused = available_for_files
+            .saturating_sub(unstaged_visible)
+            .saturating_sub(staged_visible);
         (unstaged.len() as u16).min(unstaged_visible + staged_unused)
     };
 
@@ -1133,11 +1180,11 @@ fn draw_git_commit_staging(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),                       // unstaged header
-            Constraint::Length(unstaged_visible),        // unstaged files
-            Constraint::Length(1),                       // staged header
-            Constraint::Length(staged_visible),          // staged files
-            Constraint::Length(1),                       // help
+            Constraint::Length(1),                // unstaged header
+            Constraint::Length(unstaged_visible), // unstaged files
+            Constraint::Length(1),                // staged header
+            Constraint::Length(staged_visible),   // staged files
+            Constraint::Length(1),                // help
         ])
         .split(inner);
 
@@ -1155,18 +1202,32 @@ fn draw_git_commit_staging(
 
     // Unstaged header
     let unstaged_hdr_style = if section == 0 {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     let unstaged_scroll_hint = if unstaged.len() as u16 > unstaged_visible {
-        format!(" [{}/{}]", (selected + 1).min(unstaged.len()), unstaged.len())
+        format!(
+            " [{}/{}]",
+            (selected + 1).min(unstaged.len()),
+            unstaged.len()
+        )
     } else {
         String::new()
     };
     f.render_widget(
-        Paragraph::new(format!("── Unstaged ({}) ──{}", unstaged.len(), if section == 0 { &unstaged_scroll_hint } else { "" }))
-            .style(unstaged_hdr_style),
+        Paragraph::new(format!(
+            "── Unstaged ({}) ──{}",
+            unstaged.len(),
+            if section == 0 {
+                &unstaged_scroll_hint
+            } else {
+                ""
+            }
+        ))
+        .style(unstaged_hdr_style),
         chunks[0],
     );
 
@@ -1196,7 +1257,9 @@ fn draw_git_commit_staging(
 
     // Staged header
     let staged_hdr_style = if section == 1 {
-        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -1206,8 +1269,16 @@ fn draw_git_commit_staging(
         String::new()
     };
     f.render_widget(
-        Paragraph::new(format!("── Staged ({}) ──{}", staged.len(), if section == 1 { &staged_scroll_hint } else { "" }))
-            .style(staged_hdr_style),
+        Paragraph::new(format!(
+            "── Staged ({}) ──{}",
+            staged.len(),
+            if section == 1 {
+                &staged_scroll_hint
+            } else {
+                ""
+            }
+        ))
+        .style(staged_hdr_style),
         chunks[2],
     );
 
@@ -1236,18 +1307,15 @@ fn draw_git_commit_staging(
     f.render_widget(List::new(staged_items), chunks[3]);
 
     f.render_widget(
-        Paragraph::new("Space: stage/unstage  a: all  c: commit  ^c: AI commit  ^a: all+AI  Esc: cancel")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(
+            "Space: stage/unstage  a: all  c: commit  ^c: AI commit  ^a: all+AI  Esc: cancel",
+        )
+        .style(Style::default().fg(Color::DarkGray)),
         chunks[4],
     );
 }
 
-fn draw_git_commit_generating(
-    f: &mut Frame,
-    app: &App,
-    branch: &str,
-    staged: &[(char, String)],
-) {
+fn draw_git_commit_generating(f: &mut Frame, app: &App, branch: &str, staged: &[(char, String)]) {
     let max_height = (f.area().height as f32 * 0.6) as u16;
     let fixed_rows = 5; // staged header + blank + spinner + help + borders
     let staged_visible = (staged.len() as u16).min(max_height.saturating_sub(fixed_rows));
@@ -1267,17 +1335,20 @@ fn draw_git_commit_generating(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),                // staged header
-            Constraint::Length(staged_visible),   // staged files
-            Constraint::Length(1),                // blank
-            Constraint::Length(1),                // spinner
-            Constraint::Length(1),                // help
+            Constraint::Length(1),              // staged header
+            Constraint::Length(staged_visible), // staged files
+            Constraint::Length(1),              // blank
+            Constraint::Length(1),              // spinner
+            Constraint::Length(1),              // help
         ])
         .split(inner);
 
     f.render_widget(
-        Paragraph::new(format!("── Staged ({}) ──", staged.len()))
-            .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Paragraph::new(format!("── Staged ({}) ──", staged.len())).style(
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
         chunks[0],
     );
 
@@ -1298,14 +1369,15 @@ fn draw_git_commit_generating(
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!("{} Generating commit message with Claude...", spinner),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ))),
         chunks[3],
     );
 
     f.render_widget(
-        Paragraph::new("Esc: cancel")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new("Esc: cancel").style(Style::default().fg(Color::DarkGray)),
         chunks[4],
     );
 }
@@ -1343,7 +1415,8 @@ fn draw_git_commit_message(
     let max_msg_lines = max_height.saturating_sub(7); // reserve for header, staged, label, help, borders
     let msg_visible = msg_line_count.min(max_msg_lines).max(3); // at least 3 lines for the message area
     let fixed_rows = 5; // staged header + blank + label + help + borders
-    let staged_visible = (staged.len() as u16).min(max_height.saturating_sub(fixed_rows + msg_visible));
+    let staged_visible =
+        (staged.len() as u16).min(max_height.saturating_sub(fixed_rows + msg_visible));
     let height = staged_visible + msg_visible + fixed_rows;
     let area = centered_rect(60, height, f.area());
     app.areas.dialog.set(area);
@@ -1360,17 +1433,20 @@ fn draw_git_commit_message(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),                     // staged header
-            Constraint::Length(staged_visible),        // staged files
-            Constraint::Length(1),                     // blank/label
-            Constraint::Length(msg_visible),           // message area
-            Constraint::Length(1),                     // help
+            Constraint::Length(1),              // staged header
+            Constraint::Length(staged_visible), // staged files
+            Constraint::Length(1),              // blank/label
+            Constraint::Length(msg_visible),    // message area
+            Constraint::Length(1),              // help
         ])
         .split(inner);
 
     f.render_widget(
-        Paragraph::new(format!("── Staged ({}) ──", staged.len()))
-            .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Paragraph::new(format!("── Staged ({}) ──", staged.len())).style(
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
         chunks[0],
     );
 
@@ -1420,7 +1496,14 @@ fn draw_git_commit_message(
     } else {
         let mut lines: Vec<Line> = commit_message
             .split('\n')
-            .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))))
+            .map(|l| {
+                Line::from(Span::styled(
+                    l.to_string(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            })
             .collect();
         if lines.is_empty() {
             lines.push(Line::from(""));
@@ -1428,10 +1511,7 @@ fn draw_git_commit_message(
         lines
     };
 
-    f.render_widget(
-        Paragraph::new(msg_lines).scroll((scroll, 0)),
-        chunks[3],
-    );
+    f.render_widget(Paragraph::new(msg_lines).scroll((scroll, 0)), chunks[3]);
 
     // Place the terminal cursor at the correct position
     let msg_area = chunks[3];
@@ -1474,9 +1554,13 @@ fn draw_convert_repo(
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let warn_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        let warn_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
         let text_style = Style::default().fg(Color::Gray);
-        let key_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+        let key_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -1524,7 +1608,10 @@ fn draw_convert_repo(
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("Source: ", text_style),
-                Span::styled(source_path.display().to_string(), Style::default().fg(Color::White)),
+                Span::styled(
+                    source_path.display().to_string(),
+                    Style::default().fg(Color::White),
+                ),
             ])),
             chunks[6],
         );
@@ -1583,8 +1670,7 @@ fn draw_convert_repo(
 
     // Source path (read-only)
     f.render_widget(
-        Paragraph::new("Source repository:")
-            .style(Style::default().fg(Color::Gray)),
+        Paragraph::new("Source repository:").style(Style::default().fg(Color::Gray)),
         chunks[idx],
     );
     idx += 1;
@@ -1606,8 +1692,11 @@ fn draw_convert_repo(
     // Mode selector
     let mode_prefix = if focused == 0 { cursor } else { no_cursor };
     f.render_widget(
-        Paragraph::new(format!("{}Conversion mode (Left/Right to toggle):", mode_prefix))
-            .style(label_style),
+        Paragraph::new(format!(
+            "{}Conversion mode (Left/Right to toggle):",
+            mode_prefix
+        ))
+        .style(label_style),
         chunks[idx],
     );
     idx += 1;
@@ -1616,7 +1705,10 @@ fn draw_convert_repo(
     let location_marker = if mode == 1 { "[x]" } else { "[ ]" };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            format!("{}{} In-place    {} Different location", no_cursor, inplace_marker, location_marker),
+            format!(
+                "{}{} In-place    {} Different location",
+                no_cursor, inplace_marker, location_marker
+            ),
             value_style,
         ))),
         chunks[idx],
@@ -1627,14 +1719,17 @@ fn draw_convert_repo(
     if mode == 1 {
         let target_prefix = if focused == 1 { cursor } else { no_cursor };
         f.render_widget(
-            Paragraph::new(format!("{}Target directory:", target_prefix))
-                .style(label_style),
+            Paragraph::new(format!("{}Target directory:", target_prefix)).style(label_style),
             chunks[idx],
         );
         idx += 1;
 
         let target_display = if focused == 1 {
-            if target_path.is_empty() { "_".to_string() } else { format!("{}_", target_path) }
+            if target_path.is_empty() {
+                "_".to_string()
+            } else {
+                format!("{}_", target_path)
+            }
         } else {
             target_path.to_string()
         };
@@ -1651,8 +1746,7 @@ fn draw_convert_repo(
     // Branch name
     let branch_prefix = if focused == 2 { cursor } else { no_cursor };
     f.render_widget(
-        Paragraph::new(format!("{}Branch name:", branch_prefix))
-            .style(label_style),
+        Paragraph::new(format!("{}Branch name:", branch_prefix)).style(label_style),
         chunks[idx],
     );
     idx += 1;
@@ -1679,7 +1773,13 @@ fn draw_convert_repo(
     );
 }
 
-fn draw_update_available(f: &mut Frame, app: &App, latest_version: &str, selected: usize, phase: &UpdatePhase) {
+fn draw_update_available(
+    f: &mut Frame,
+    app: &App,
+    latest_version: &str,
+    selected: usize,
+    phase: &UpdatePhase,
+) {
     let current_version = option_env!("CLAWTREE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
 
     match phase {
@@ -1701,11 +1801,11 @@ fn draw_update_available(f: &mut Frame, app: &App, latest_version: &str, selecte
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(1), // version info
-                    Constraint::Length(1), // separator
-                    Constraint::Length(1), // prompt
+                    Constraint::Length(1),                    // version info
+                    Constraint::Length(1),                    // separator
+                    Constraint::Length(1),                    // prompt
                     Constraint::Length(options.len() as u16), // options
-                    Constraint::Length(1), // help
+                    Constraint::Length(1),                    // help
                 ])
                 .split(inner);
 
@@ -1717,7 +1817,9 @@ fn draw_update_available(f: &mut Frame, app: &App, latest_version: &str, selecte
                     Span::styled("v", Style::default().fg(Color::DarkGray)),
                     Span::styled(
                         latest_version,
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ])),
                 chunks[0],
@@ -1795,7 +1897,9 @@ fn draw_update_available(f: &mut Frame, app: &App, latest_version: &str, selecte
                     Span::styled("Updating to ", Style::default().fg(Color::Gray)),
                     Span::styled(
                         format!("v{}", latest_version),
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ])),
                 chunks[0],
@@ -1806,7 +1910,9 @@ fn draw_update_available(f: &mut Frame, app: &App, latest_version: &str, selecte
             f.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     format!("{} Downloading and verifying...", spinner),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ))),
                 chunks[2],
             );
@@ -1839,7 +1945,9 @@ fn draw_update_available(f: &mut Frame, app: &App, latest_version: &str, selecte
                     Span::styled("Updating to ", Style::default().fg(Color::Gray)),
                     Span::styled(
                         format!("v{}", latest_version),
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ])),
                 chunks[0],
@@ -1850,7 +1958,9 @@ fn draw_update_available(f: &mut Frame, app: &App, latest_version: &str, selecte
             f.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     format!("{} Installing update...", spinner),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ))),
                 chunks[2],
             );
@@ -1875,10 +1985,10 @@ fn draw_update_available(f: &mut Frame, app: &App, latest_version: &str, selecte
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1),           // header
-                    Constraint::Length(1),            // separator
-                    Constraint::Length(error_lines),  // error message
-                    Constraint::Length(1),            // ok
-                    Constraint::Length(1),            // help
+                    Constraint::Length(1),           // separator
+                    Constraint::Length(error_lines), // error message
+                    Constraint::Length(1),           // ok
+                    Constraint::Length(1),           // help
                 ])
                 .split(inner);
 
@@ -1911,8 +2021,7 @@ fn draw_update_available(f: &mut Frame, app: &App, latest_version: &str, selecte
             );
 
             f.render_widget(
-                Paragraph::new("Enter/Esc: dismiss")
-                    .style(Style::default().fg(Color::DarkGray)),
+                Paragraph::new("Enter/Esc: dismiss").style(Style::default().fg(Color::DarkGray)),
                 chunks[4],
             );
         }
@@ -1931,53 +2040,69 @@ fn draw_context_menu(
     // Determine title from the item
     let title = match item {
         SidebarItem::Project => " clawtree ".to_string(),
-        SidebarItem::Worktree(wi) => {
-            app.worktrees.get(*wi)
-                .map(|wt| format!(" {} ", wt.branch))
-                .unwrap_or_else(|| " Actions ".to_string())
-        }
-        SidebarItem::Session(wi, si) => {
-            app.worktrees.get(*wi)
-                .and_then(|wt| wt.session_ids.get(*si))
-                .and_then(|sid| app.sessions.get(sid))
-                .and_then(|s| s.nickname.clone().or_else(|| s.terminal_title()).or_else(|| Some(s.label.clone())))
-                .map(|n| format!(" {} ", n))
-                .unwrap_or_else(|| " Actions ".to_string())
-        }
-        SidebarItem::ProjectSession(si) => {
-            app.project_session_ids.get(*si)
-                .and_then(|sid| app.sessions.get(sid))
-                .and_then(|s| s.nickname.clone().or_else(|| s.terminal_title()).or_else(|| Some(s.label.clone())))
-                .map(|n| format!(" {} ", n))
-                .unwrap_or_else(|| " Actions ".to_string())
-        }
-        SidebarItem::Terminal(ti) => {
-            app.terminal_ids.get(*ti)
-                .and_then(|sid| app.sessions.get(sid))
-                .and_then(|s| s.nickname.clone().or_else(|| Some(s.label.clone())))
-                .map(|n| format!(" {} ", n))
-                .unwrap_or_else(|| " Actions ".to_string())
-        }
-        SidebarItem::Location(li) => {
-            app.locations.get(*li)
-                .map(|loc| {
-                    let name = loc.name.clone().unwrap_or_else(|| {
-                        loc.path.file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| loc.path.to_string_lossy().to_string())
-                    });
-                    format!(" {} ", name)
-                })
-                .unwrap_or_else(|| " Actions ".to_string())
-        }
-        SidebarItem::LocationSession(li, si) => {
-            app.locations.get(*li)
-                .and_then(|loc| loc.session_ids.get(*si))
-                .and_then(|sid| app.sessions.get(sid))
-                .and_then(|s| s.nickname.clone().or_else(|| s.terminal_title()).or_else(|| Some(s.label.clone())))
-                .map(|n| format!(" {} ", n))
-                .unwrap_or_else(|| " Actions ".to_string())
-        }
+        SidebarItem::Worktree(wi) => app
+            .worktrees
+            .get(*wi)
+            .map(|wt| format!(" {} ", wt.branch))
+            .unwrap_or_else(|| " Actions ".to_string()),
+        SidebarItem::Session(wi, si) => app
+            .worktrees
+            .get(*wi)
+            .and_then(|wt| wt.session_ids.get(*si))
+            .and_then(|sid| app.sessions.get(sid))
+            .and_then(|s| {
+                s.nickname
+                    .clone()
+                    .or_else(|| s.terminal_title())
+                    .or_else(|| Some(s.label.clone()))
+            })
+            .map(|n| format!(" {} ", n))
+            .unwrap_or_else(|| " Actions ".to_string()),
+        SidebarItem::ProjectSession(si) => app
+            .project_session_ids
+            .get(*si)
+            .and_then(|sid| app.sessions.get(sid))
+            .and_then(|s| {
+                s.nickname
+                    .clone()
+                    .or_else(|| s.terminal_title())
+                    .or_else(|| Some(s.label.clone()))
+            })
+            .map(|n| format!(" {} ", n))
+            .unwrap_or_else(|| " Actions ".to_string()),
+        SidebarItem::Terminal(ti) => app
+            .terminal_ids
+            .get(*ti)
+            .and_then(|sid| app.sessions.get(sid))
+            .and_then(|s| s.nickname.clone().or_else(|| Some(s.label.clone())))
+            .map(|n| format!(" {} ", n))
+            .unwrap_or_else(|| " Actions ".to_string()),
+        SidebarItem::Location(li) => app
+            .locations
+            .get(*li)
+            .map(|loc| {
+                let name = loc.name.clone().unwrap_or_else(|| {
+                    loc.path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| loc.path.to_string_lossy().to_string())
+                });
+                format!(" {} ", name)
+            })
+            .unwrap_or_else(|| " Actions ".to_string()),
+        SidebarItem::LocationSession(li, si) => app
+            .locations
+            .get(*li)
+            .and_then(|loc| loc.session_ids.get(*si))
+            .and_then(|sid| app.sessions.get(sid))
+            .and_then(|s| {
+                s.nickname
+                    .clone()
+                    .or_else(|| s.terminal_title())
+                    .or_else(|| Some(s.label.clone()))
+            })
+            .map(|n| format!(" {} ", n))
+            .unwrap_or_else(|| " Actions ".to_string()),
     };
 
     // Description lines shown only for the Project menu
@@ -1990,7 +2115,11 @@ fn draw_context_menu(
     app.areas.dialog.set(area);
     f.render_widget(Clear, area);
 
-    let border_color = if is_project { theme::get().brand_claw } else { theme::DIALOG_NEUTRAL };
+    let border_color = if is_project {
+        theme::get().brand_claw
+    } else {
+        theme::DIALOG_NEUTRAL
+    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -2005,7 +2134,7 @@ fn draw_context_menu(
             .constraints([
                 Constraint::Length(desc_height), // description
                 Constraint::Min(1),              // action list
-                Constraint::Length(1),            // help
+                Constraint::Length(1),           // help
             ])
             .split(inner)
     } else {
@@ -2066,8 +2195,8 @@ fn draw_context_menu(
             let is_destructive = matches!(
                 action.kind,
                 ContextActionKind::DeleteWorktree
-                | ContextActionKind::ForceDeleteWorktree
-                | ContextActionKind::DeleteSession
+                    | ContextActionKind::ForceDeleteWorktree
+                    | ContextActionKind::DeleteSession
             );
 
             let marker = if is_sel { " > " } else { "   " };
@@ -2085,13 +2214,26 @@ fn draw_context_menu(
             } else {
                 Color::White
             };
-            let bold_mod = if is_sel { Modifier::BOLD } else { Modifier::empty() };
+            let bold_mod = if is_sel {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            };
 
             ListItem::new(Line::from(vec![
-                Span::styled(marker.to_string(), Style::default().fg(fg).add_modifier(bold_mod)),
-                Span::styled(label.clone(), Style::default().fg(fg).add_modifier(bold_mod)),
+                Span::styled(
+                    marker.to_string(),
+                    Style::default().fg(fg).add_modifier(bold_mod),
+                ),
+                Span::styled(
+                    label.clone(),
+                    Style::default().fg(fg).add_modifier(bold_mod),
+                ),
                 Span::styled(padded, Style::default()),
-                Span::styled(format!("[{}]", hotkey), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("[{}]", hotkey),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]))
         })
         .collect();

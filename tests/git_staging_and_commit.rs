@@ -51,7 +51,14 @@ fn test_stage_all() {
     git::stage_all(&wt).unwrap();
 
     let changes = git::status_porcelain(&wt).unwrap();
-    assert!(changes.iter().all(|c| c.index_status == 'A'), "not all files staged: {:?}", changes.iter().map(|c| (c.index_status, &c.path)).collect::<Vec<_>>());
+    assert!(
+        changes.iter().all(|c| c.index_status == 'A'),
+        "not all files staged: {:?}",
+        changes
+            .iter()
+            .map(|c| (c.index_status, &c.path))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -127,7 +134,11 @@ fn test_log_oneline() {
     git::commit(&wt, "Second change").unwrap();
 
     let log = git::log_oneline(&wt, 5).unwrap();
-    assert!(log.len() >= 2, "expected at least 2 log entries, got {}", log.len());
+    assert!(
+        log.len() >= 2,
+        "expected at least 2 log entries, got {}",
+        log.len()
+    );
     assert!(log[0].contains("Second change"));
     assert!(log[1].contains("First change"));
 }

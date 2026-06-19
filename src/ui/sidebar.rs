@@ -1,13 +1,13 @@
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem};
+use ratatui::Frame;
 use std::sync::atomic::Ordering;
 
-use crate::app::{AgentStatus, App, FocusTarget, SidebarItem, SidebarPanel};
 use super::theme;
+use crate::app::{AgentStatus, App, FocusTarget, SidebarItem, SidebarPanel};
 
 /// Get the current spinner character based on the app's frame counter.
 fn spinner_char(app: &App) -> char {
@@ -22,15 +22,25 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let has_terminals = !app.terminal_ids.is_empty();
 
     let border_style = if is_focused {
-        Style::default().fg(theme::BORDER_FOCUSED_SIDEBAR).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme::BORDER_FOCUSED_SIDEBAR)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::BORDER_UNFOCUSED)
     };
 
-    let border_type = if is_focused { BorderType::Thick } else { BorderType::Plain };
+    let border_type = if is_focused {
+        BorderType::Thick
+    } else {
+        BorderType::Plain
+    };
 
     // Only show ▸ indicator when this sub-panel is active
-    let title = if is_focused && in_worktrees_panel { " ▸ Worktrees " } else { " Worktrees " };
+    let title = if is_focused && in_worktrees_panel {
+        " ▸ Worktrees "
+    } else {
+        " Worktrees "
+    };
 
     // Remove bottom border when terminals panel is below (they share the edge)
     let borders = if has_terminals {
@@ -55,9 +65,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             let is_selected = in_worktrees_panel && idx == app.sidebar_selected;
             let is_hovered = app.sidebar_hovered == Some(idx);
             match item {
-                SidebarItem::Project => {
-                    render_project(app, is_selected, is_hovered, inner_width)
-                }
+                SidebarItem::Project => render_project(app, is_selected, is_hovered, inner_width),
                 SidebarItem::Worktree(wi) => {
                     render_worktree(app, *wi, is_selected, is_hovered, inner_width)
                 }
@@ -88,21 +96,34 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
-fn render_project(app: &App, is_selected: bool, is_hovered: bool, inner_width: usize) -> ListItem<'static> {
-    let project_name = app.bare_repo_path
+fn render_project(
+    app: &App,
+    is_selected: bool,
+    is_hovered: bool,
+    inner_width: usize,
+) -> ListItem<'static> {
+    let project_name = app
+        .bare_repo_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "Project".to_string());
 
     let has_bg = is_selected || is_hovered;
     let t = theme::get();
-    let bg = if is_selected { t.sidebar_sel_bg } else if is_hovered { t.sidebar_hover_bg } else { Color::Reset };
+    let bg = if is_selected {
+        t.sidebar_sel_bg
+    } else if is_hovered {
+        t.sidebar_hover_bg
+    } else {
+        Color::Reset
+    };
     let bold = Modifier::BOLD;
 
     let label = format!("◆ {}", project_name);
-    let mut spans = vec![
-        Span::styled(label, Style::default().fg(t.brand_claw).bg(bg).add_modifier(bold)),
-    ];
+    let mut spans = vec![Span::styled(
+        label,
+        Style::default().fg(t.brand_claw).bg(bg).add_modifier(bold),
+    )];
 
     // Pad to full width
     let text_len: usize = spans.iter().map(|s| s.width()).sum();
@@ -110,7 +131,13 @@ fn render_project(app: &App, is_selected: bool, is_hovered: bool, inner_width: u
         let pad = inner_width - text_len;
         if is_hovered && pad >= 2 {
             spans.push(Span::styled(" ".repeat(pad - 2), Style::default().bg(bg)));
-            spans.push(Span::styled("+ ", Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(
+                "+ ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
         } else {
             spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
         }
@@ -119,7 +146,13 @@ fn render_project(app: &App, is_selected: bool, is_hovered: bool, inner_width: u
     ListItem::new(Line::from(spans))
 }
 
-fn render_project_session(app: &App, si: usize, is_selected: bool, is_hovered: bool, inner_width: usize) -> ListItem<'static> {
+fn render_project_session(
+    app: &App,
+    si: usize,
+    is_selected: bool,
+    is_hovered: bool,
+    inner_width: usize,
+) -> ListItem<'static> {
     let sid = app.project_session_ids[si];
     let session = app.sessions.get(&sid);
     let is_active_session = app.active_session_id == Some(sid);
@@ -133,7 +166,11 @@ fn render_project_session(app: &App, si: usize, is_selected: bool, is_hovered: b
         (false, false, true) => t.sidebar_hover_bg,
         (false, false, false) => Color::Reset,
     };
-    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+    let bold = if is_selected {
+        Modifier::BOLD
+    } else {
+        Modifier::empty()
+    };
 
     let status = session
         .map(|s| s.agent_status())
@@ -173,13 +210,16 @@ fn render_project_session(app: &App, si: usize, is_selected: bool, is_hovered: b
         fg
     };
 
-    let usage_suffix = app.claude_usage.get(&sid).map(|u| {
-        (format!(" {}%", u.usage_pct()), Color::DarkGray)
-    });
+    let usage_suffix = app
+        .claude_usage
+        .get(&sid)
+        .map(|u| (format!(" {}%", u.usage_pct()), Color::DarkGray));
 
     let prefix = format!("  {} ", status_icon);
     let suffix_len = usage_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
-    let max_name = inner_width.saturating_sub(prefix.len()).saturating_sub(suffix_len);
+    let max_name = inner_width
+        .saturating_sub(prefix.len())
+        .saturating_sub(suffix_len);
     let truncated = if display_name.len() > max_name && max_name > 1 {
         let mut end = max_name.saturating_sub(1);
         while end > 0 && !display_name.is_char_boundary(end) {
@@ -190,11 +230,21 @@ fn render_project_session(app: &App, si: usize, is_selected: bool, is_hovered: b
         display_name
     };
 
-    let name_fg = if in_plan_mode { theme::AGENT_PLANNING } else { sel_fg };
+    let name_fg = if in_plan_mode {
+        theme::AGENT_PLANNING
+    } else {
+        sel_fg
+    };
 
     let mut spans = vec![
-        Span::styled(prefix, Style::default().fg(sel_fg).bg(bg).add_modifier(bold)),
-        Span::styled(truncated, Style::default().fg(name_fg).bg(bg).add_modifier(bold)),
+        Span::styled(
+            prefix,
+            Style::default().fg(sel_fg).bg(bg).add_modifier(bold),
+        ),
+        Span::styled(
+            truncated,
+            Style::default().fg(name_fg).bg(bg).add_modifier(bold),
+        ),
     ];
 
     if let Some((usage_text, usage_color)) = usage_suffix {
@@ -208,59 +258,85 @@ fn render_project_session(app: &App, si: usize, is_selected: bool, is_hovered: b
     if has_bg && text_len < inner_width {
         let pad = inner_width - text_len;
         if is_hovered && pad >= 2 {
-            spans.push(Span::styled(
-                " ".repeat(pad - 2),
-                Style::default().bg(bg),
-            ));
+            spans.push(Span::styled(" ".repeat(pad - 2), Style::default().bg(bg)));
             spans.push(Span::styled(
                 "+ ",
-                Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
             ));
         } else {
-            spans.push(Span::styled(
-                " ".repeat(pad),
-                Style::default().bg(bg),
-            ));
+            spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
         }
     }
 
     ListItem::new(Line::from(spans))
 }
 
-fn render_worktree(app: &App, wi: usize, is_selected: bool, is_hovered: bool, inner_width: usize) -> ListItem<'static> {
+fn render_worktree(
+    app: &App,
+    wi: usize,
+    is_selected: bool,
+    is_hovered: bool,
+    inner_width: usize,
+) -> ListItem<'static> {
     let wt = &app.worktrees[wi];
     let icon = if wt.expanded { "▼" } else { "▶" };
 
     let total = wt.session_ids.len();
-    let alive = wt.session_ids.iter().filter(|sid| {
-        app.sessions.get(sid)
-            .map(|s| !s.exited.load(Ordering::SeqCst))
-            .unwrap_or(false)
-    }).count();
-    let working = wt.session_ids.iter().filter(|sid| {
-        app.sessions.get(sid)
-            .map(|s| s.is_active())
-            .unwrap_or(false)
-    }).count();
-    let needs_input = wt.session_ids.iter().filter(|sid| {
-        app.sessions.get(sid)
-            .map(|s| s.agent_status() == AgentStatus::NeedsInput)
-            .unwrap_or(false)
-    }).count();
+    let alive = wt
+        .session_ids
+        .iter()
+        .filter(|sid| {
+            app.sessions
+                .get(sid)
+                .map(|s| !s.exited.load(Ordering::SeqCst))
+                .unwrap_or(false)
+        })
+        .count();
+    let working = wt
+        .session_ids
+        .iter()
+        .filter(|sid| {
+            app.sessions
+                .get(sid)
+                .map(|s| s.is_active())
+                .unwrap_or(false)
+        })
+        .count();
+    let needs_input = wt
+        .session_ids
+        .iter()
+        .filter(|sid| {
+            app.sessions
+                .get(sid)
+                .map(|s| s.agent_status() == AgentStatus::NeedsInput)
+                .unwrap_or(false)
+        })
+        .count();
 
     let has_bg = is_selected || is_hovered;
     let t = theme::get();
-    let bg = if is_selected { t.sidebar_sel_bg } else if is_hovered { t.sidebar_hover_bg } else { Color::Reset };
-    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+    let bg = if is_selected {
+        t.sidebar_sel_bg
+    } else if is_hovered {
+        t.sidebar_hover_bg
+    } else {
+        Color::Reset
+    };
+    let bold = if is_selected {
+        Modifier::BOLD
+    } else {
+        Modifier::empty()
+    };
 
-    let branch_style = Style::default()
-        .fg(Color::White)
-        .bg(bg)
-        .add_modifier(bold);
+    let branch_style = Style::default().fg(Color::White).bg(bg).add_modifier(bold);
 
-    let mut spans = vec![
-        Span::styled(format!("{} {}", icon, wt.branch), branch_style),
-    ];
+    let mut spans = vec![Span::styled(
+        format!("{} {}", icon, wt.branch),
+        branch_style,
+    )];
 
     // Show yellow asterisk if worktree has uncommitted or unpushed changes
     if let Some(status) = app.worktree_statuses.get(&wt.path) {
@@ -299,26 +375,30 @@ fn render_worktree(app: &App, wi: usize, is_selected: bool, is_hovered: bool, in
         // Reserve space for "+" button on hover
         let pad = inner_width - text_len;
         if is_hovered && pad >= 2 {
-            spans.push(Span::styled(
-                " ".repeat(pad - 2),
-                Style::default().bg(bg),
-            ));
+            spans.push(Span::styled(" ".repeat(pad - 2), Style::default().bg(bg)));
             spans.push(Span::styled(
                 "+ ",
-                Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
             ));
         } else {
-            spans.push(Span::styled(
-                " ".repeat(pad),
-                Style::default().bg(bg),
-            ));
+            spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
         }
     }
 
     ListItem::new(Line::from(spans))
 }
 
-fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, is_hovered: bool, inner_width: usize) -> ListItem<'static> {
+fn render_session(
+    app: &App,
+    wi: usize,
+    si: usize,
+    is_selected: bool,
+    is_hovered: bool,
+    inner_width: usize,
+) -> ListItem<'static> {
     let wt = &app.worktrees[wi];
     let sid = wt.session_ids[si];
     let session = app.sessions.get(&sid);
@@ -335,10 +415,23 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, is_hovered
         (false, false, true) => t.sidebar_hover_bg,
         (false, false, false) => Color::Reset,
     };
-    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+    let bold = if is_selected {
+        Modifier::BOLD
+    } else {
+        Modifier::empty()
+    };
 
     if is_terminal {
-        return render_terminal_session(app, session, sid, has_bg, is_hovered, bg, bold, inner_width);
+        return render_terminal_session(
+            app,
+            session,
+            sid,
+            has_bg,
+            is_hovered,
+            bg,
+            bold,
+            inner_width,
+        );
     }
 
     let status = session
@@ -383,14 +476,17 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, is_hovered
     };
 
     // Build context usage suffix if available (percentage display, greyed text)
-    let usage_suffix = app.claude_usage.get(&sid).map(|u| {
-        (format!(" {}%", u.usage_pct()), Color::DarkGray)
-    });
+    let usage_suffix = app
+        .claude_usage
+        .get(&sid)
+        .map(|u| (format!(" {}%", u.usage_pct()), Color::DarkGray));
 
     // Truncate to fit sidebar width (account for usage suffix)
     let prefix = format!("  {} ", status_icon);
     let suffix_len = usage_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
-    let max_name = inner_width.saturating_sub(prefix.len()).saturating_sub(suffix_len);
+    let max_name = inner_width
+        .saturating_sub(prefix.len())
+        .saturating_sub(suffix_len);
     let truncated = if display_name.len() > max_name && max_name > 1 {
         let mut end = max_name.saturating_sub(1);
         // Walk back to a valid char boundary
@@ -403,11 +499,21 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, is_hovered
     };
 
     // Tint session name purple when in plan mode
-    let name_fg = if in_plan_mode { theme::AGENT_PLANNING } else { sel_fg };
+    let name_fg = if in_plan_mode {
+        theme::AGENT_PLANNING
+    } else {
+        sel_fg
+    };
 
     let mut spans = vec![
-        Span::styled(prefix, Style::default().fg(sel_fg).bg(bg).add_modifier(bold)),
-        Span::styled(truncated, Style::default().fg(name_fg).bg(bg).add_modifier(bold)),
+        Span::styled(
+            prefix,
+            Style::default().fg(sel_fg).bg(bg).add_modifier(bold),
+        ),
+        Span::styled(
+            truncated,
+            Style::default().fg(name_fg).bg(bg).add_modifier(bold),
+        ),
     ];
 
     // Append usage indicator
@@ -423,19 +529,16 @@ fn render_session(app: &App, wi: usize, si: usize, is_selected: bool, is_hovered
     if has_bg && text_len < inner_width {
         let pad = inner_width - text_len;
         if is_hovered && pad >= 2 {
-            spans.push(Span::styled(
-                " ".repeat(pad - 2),
-                Style::default().bg(bg),
-            ));
+            spans.push(Span::styled(" ".repeat(pad - 2), Style::default().bg(bg)));
             spans.push(Span::styled(
                 "+ ",
-                Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
             ));
         } else {
-            spans.push(Span::styled(
-                " ".repeat(pad),
-                Style::default().bg(bg),
-            ));
+            spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
         }
     }
 
@@ -480,10 +583,22 @@ fn render_terminal_session(
     };
 
     let tag = "[terminal]";
-    let tag_fg = if is_exited { Color::DarkGray } else { Color::Green };
+    let tag_fg = if is_exited {
+        Color::DarkGray
+    } else {
+        Color::Green
+    };
     let name_fg = if has_bg {
-        if is_exited { Color::Gray } else { Color::White }
-    } else if is_exited { Color::DarkGray } else { Color::Gray };
+        if is_exited {
+            Color::Gray
+        } else {
+            Color::White
+        }
+    } else if is_exited {
+        Color::DarkGray
+    } else {
+        Color::Gray
+    };
 
     let prefix = format!("  {} ", tag);
     let max_name = inner_width.saturating_sub(prefix.len());
@@ -499,9 +614,15 @@ fn render_terminal_session(
 
     let mut spans = vec![
         Span::styled("  ", Style::default().bg(bg)),
-        Span::styled(tag.to_string(), Style::default().fg(tag_fg).bg(bg).add_modifier(bold)),
+        Span::styled(
+            tag.to_string(),
+            Style::default().fg(tag_fg).bg(bg).add_modifier(bold),
+        ),
         Span::styled(" ", Style::default().bg(bg)),
-        Span::styled(truncated, Style::default().fg(name_fg).bg(bg).add_modifier(bold)),
+        Span::styled(
+            truncated,
+            Style::default().fg(name_fg).bg(bg).add_modifier(bold),
+        ),
     ];
 
     // Pad to full width so the highlight covers the whole row
@@ -509,19 +630,16 @@ fn render_terminal_session(
     if has_bg && text_len < inner_width {
         let pad = inner_width - text_len;
         if is_hovered && pad >= 2 {
-            spans.push(Span::styled(
-                " ".repeat(pad - 2),
-                Style::default().bg(bg),
-            ));
+            spans.push(Span::styled(" ".repeat(pad - 2), Style::default().bg(bg)));
             spans.push(Span::styled(
                 "+ ",
-                Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
             ));
         } else {
-            spans.push(Span::styled(
-                " ".repeat(pad),
-                Style::default().bg(bg),
-            ));
+            spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
         }
     }
 
@@ -535,13 +653,19 @@ pub fn draw_terminal_panel(f: &mut Frame, app: &App, area: Rect) {
 
     // Use same border style as the Worktrees panel for visual consistency
     let border_style = if is_focused {
-        Style::default().fg(theme::BORDER_FOCUSED_SIDEBAR).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme::BORDER_FOCUSED_SIDEBAR)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::BORDER_UNFOCUSED)
     };
 
     // Only show ▸ indicator when this sub-panel is active
-    let title = if is_focused && in_terminal_panel { " ▸ Terminals " } else { " Terminals " };
+    let title = if is_focused && in_terminal_panel {
+        " ▸ Terminals "
+    } else {
+        " Terminals "
+    };
 
     // Use T-junction corners to visually connect with the Worktrees panel above
     let mut border_set = if is_focused {
@@ -581,8 +705,21 @@ pub fn draw_terminal_panel(f: &mut Frame, app: &App, area: Rect) {
                             (false, false, true) => t.sidebar_hover_bg,
                             (false, false, false) => Color::Reset,
                         };
-                        let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
-                        render_terminal_session(app, session, sid, has_bg, is_hovered, bg, bold, inner_width)
+                        let bold = if is_selected {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        };
+                        render_terminal_session(
+                            app,
+                            session,
+                            sid,
+                            has_bg,
+                            is_hovered,
+                            bg,
+                            bold,
+                            inner_width,
+                        )
                     } else {
                         ListItem::new(Line::from(vec![]))
                     }
@@ -625,8 +762,20 @@ pub fn draw_global_usage(f: &mut Frame, app: &App, area: Rect) {
     let bar_width: usize = 6;
     let inner_w = inner.width as usize;
 
-    let five_hour_line = format_usage_line("5h", usage.five_hour_pct, &usage.five_hour_reset, bar_width, inner_w);
-    let seven_day_line = format_usage_line("7d", usage.seven_day_pct, &usage.seven_day_reset, bar_width, inner_w);
+    let five_hour_line = format_usage_line(
+        "5h",
+        usage.five_hour_pct,
+        &usage.five_hour_reset,
+        bar_width,
+        inner_w,
+    );
+    let seven_day_line = format_usage_line(
+        "7d",
+        usage.seven_day_pct,
+        &usage.seven_day_reset,
+        bar_width,
+        inner_w,
+    );
 
     let mut lines = vec![five_hour_line];
     if inner.height >= 2 {
@@ -642,7 +791,13 @@ pub fn draw_global_usage(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Format a single usage line with label, percentage, mini bar, and reset datetime.
-fn format_usage_line(label: &str, pct: f64, reset_iso: &str, bar_width: usize, inner_w: usize) -> Line<'static> {
+fn format_usage_line(
+    label: &str,
+    pct: f64,
+    reset_iso: &str,
+    bar_width: usize,
+    inner_w: usize,
+) -> Line<'static> {
     let pct_clamped = pct.clamp(0.0, 100.0);
     let filled = ((pct_clamped / 100.0) * bar_width as f64).round() as usize;
     let empty = bar_width.saturating_sub(filled);
@@ -697,7 +852,9 @@ fn format_reset_datetime(iso: &str) -> String {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     let tz = if !unsafe { libc::localtime_r(&epoch, &mut tm) }.is_null() && !tm.tm_zone.is_null() {
         unsafe { std::ffi::CStr::from_ptr(tm.tm_zone) }
-            .to_str().unwrap_or("??").to_string()
+            .to_str()
+            .unwrap_or("??")
+            .to_string()
     } else {
         local.format("%Z").to_string()
     };
@@ -705,41 +862,66 @@ fn format_reset_datetime(iso: &str) -> String {
     format!("{} {}", local.format("%b %-d %H:%M"), tz)
 }
 
-fn render_location(app: &App, li: usize, is_selected: bool, is_hovered: bool, inner_width: usize) -> ListItem<'static> {
+fn render_location(
+    app: &App,
+    li: usize,
+    is_selected: bool,
+    is_hovered: bool,
+    inner_width: usize,
+) -> ListItem<'static> {
     let loc = &app.locations[li];
     let icon = if loc.expanded { "▼" } else { "▶" };
 
     let display_name = loc.name.clone().unwrap_or_else(|| {
-        loc.path.file_name()
+        loc.path
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| loc.path.to_string_lossy().to_string())
     });
 
     let total = loc.session_ids.len();
-    let alive = loc.session_ids.iter().filter(|sid| {
-        app.sessions.get(sid)
-            .map(|s| !s.exited.load(Ordering::SeqCst))
-            .unwrap_or(false)
-    }).count();
-    let working = loc.session_ids.iter().filter(|sid| {
-        app.sessions.get(sid)
-            .map(|s| s.is_active())
-            .unwrap_or(false)
-    }).count();
+    let alive = loc
+        .session_ids
+        .iter()
+        .filter(|sid| {
+            app.sessions
+                .get(sid)
+                .map(|s| !s.exited.load(Ordering::SeqCst))
+                .unwrap_or(false)
+        })
+        .count();
+    let working = loc
+        .session_ids
+        .iter()
+        .filter(|sid| {
+            app.sessions
+                .get(sid)
+                .map(|s| s.is_active())
+                .unwrap_or(false)
+        })
+        .count();
 
     let has_bg = is_selected || is_hovered;
     let t = theme::get();
-    let bg = if is_selected { t.sidebar_sel_bg } else if is_hovered { t.sidebar_hover_bg } else { Color::Reset };
-    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+    let bg = if is_selected {
+        t.sidebar_sel_bg
+    } else if is_hovered {
+        t.sidebar_hover_bg
+    } else {
+        Color::Reset
+    };
+    let bold = if is_selected {
+        Modifier::BOLD
+    } else {
+        Modifier::empty()
+    };
 
-    let label_style = Style::default()
-        .fg(Color::Cyan)
-        .bg(bg)
-        .add_modifier(bold);
+    let label_style = Style::default().fg(Color::Cyan).bg(bg).add_modifier(bold);
 
-    let mut spans = vec![
-        Span::styled(format!("{} ◇ {}", icon, display_name), label_style),
-    ];
+    let mut spans = vec![Span::styled(
+        format!("{} ◇ {}", icon, display_name),
+        label_style,
+    )];
 
     if total > 0 {
         spans.push(Span::styled(
@@ -759,7 +941,13 @@ fn render_location(app: &App, li: usize, is_selected: bool, is_hovered: bool, in
         let pad = inner_width - text_len;
         if is_hovered && pad >= 2 {
             spans.push(Span::styled(" ".repeat(pad - 2), Style::default().bg(bg)));
-            spans.push(Span::styled("+ ", Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(
+                "+ ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
         } else {
             spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
         }
@@ -768,7 +956,14 @@ fn render_location(app: &App, li: usize, is_selected: bool, is_hovered: bool, in
     ListItem::new(Line::from(spans))
 }
 
-fn render_location_session(app: &App, li: usize, si: usize, is_selected: bool, is_hovered: bool, inner_width: usize) -> ListItem<'static> {
+fn render_location_session(
+    app: &App,
+    li: usize,
+    si: usize,
+    is_selected: bool,
+    is_hovered: bool,
+    inner_width: usize,
+) -> ListItem<'static> {
     let loc = &app.locations[li];
     let sid = loc.session_ids[si];
     let session = app.sessions.get(&sid);
@@ -783,7 +978,11 @@ fn render_location_session(app: &App, li: usize, si: usize, is_selected: bool, i
         (false, false, true) => t.sidebar_hover_bg,
         (false, false, false) => Color::Reset,
     };
-    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+    let bold = if is_selected {
+        Modifier::BOLD
+    } else {
+        Modifier::empty()
+    };
 
     let status = session
         .map(|s| s.agent_status())
@@ -823,13 +1022,16 @@ fn render_location_session(app: &App, li: usize, si: usize, is_selected: bool, i
         fg
     };
 
-    let usage_suffix = app.claude_usage.get(&sid).map(|u| {
-        (format!(" {}%", u.usage_pct()), Color::DarkGray)
-    });
+    let usage_suffix = app
+        .claude_usage
+        .get(&sid)
+        .map(|u| (format!(" {}%", u.usage_pct()), Color::DarkGray));
 
     let prefix = format!("  {} ", status_icon);
     let suffix_len = usage_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
-    let max_name = inner_width.saturating_sub(prefix.len()).saturating_sub(suffix_len);
+    let max_name = inner_width
+        .saturating_sub(prefix.len())
+        .saturating_sub(suffix_len);
     let truncated = if display_name.len() > max_name && max_name > 1 {
         let mut end = max_name.saturating_sub(1);
         while end > 0 && !display_name.is_char_boundary(end) {
@@ -840,15 +1042,28 @@ fn render_location_session(app: &App, li: usize, si: usize, is_selected: bool, i
         display_name
     };
 
-    let name_fg = if in_plan_mode { theme::AGENT_PLANNING } else { sel_fg };
+    let name_fg = if in_plan_mode {
+        theme::AGENT_PLANNING
+    } else {
+        sel_fg
+    };
 
     let mut spans = vec![
-        Span::styled(prefix, Style::default().fg(sel_fg).bg(bg).add_modifier(bold)),
-        Span::styled(truncated, Style::default().fg(name_fg).bg(bg).add_modifier(bold)),
+        Span::styled(
+            prefix,
+            Style::default().fg(sel_fg).bg(bg).add_modifier(bold),
+        ),
+        Span::styled(
+            truncated,
+            Style::default().fg(name_fg).bg(bg).add_modifier(bold),
+        ),
     ];
 
     if let Some((usage_text, usage_color)) = usage_suffix {
-        spans.push(Span::styled(usage_text, Style::default().fg(usage_color).bg(bg)));
+        spans.push(Span::styled(
+            usage_text,
+            Style::default().fg(usage_color).bg(bg),
+        ));
     }
 
     let text_len: usize = spans.iter().map(|s| s.width()).sum();
@@ -856,7 +1071,13 @@ fn render_location_session(app: &App, li: usize, si: usize, is_selected: bool, i
         let pad = inner_width - text_len;
         if is_hovered && pad >= 2 {
             spans.push(Span::styled(" ".repeat(pad - 2), Style::default().bg(bg)));
-            spans.push(Span::styled("+ ", Style::default().fg(Color::Cyan).bg(bg).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(
+                "+ ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
         } else {
             spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
         }
@@ -864,4 +1085,3 @@ fn render_location_session(app: &App, li: usize, si: usize, is_selected: bool, i
 
     ListItem::new(Line::from(spans))
 }
-

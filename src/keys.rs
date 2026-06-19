@@ -4,7 +4,11 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, CommitPhase, ConfirmAction, ContextActionKind, Dialog, FocusTarget, InputMode, MiniModeFocus, PendingAction, ScreenMode, SidebarItem, SavedPrompt, StatusSeverity, UpdatePhase};
+use crate::app::{
+    App, CommitPhase, ConfirmAction, ContextActionKind, Dialog, FocusTarget, InputMode,
+    MiniModeFocus, PendingAction, SavedPrompt, ScreenMode, SidebarItem, StatusSeverity,
+    UpdatePhase,
+};
 use crate::session;
 use crate::ui::terminal_pane;
 use crate::url;
@@ -81,7 +85,11 @@ impl KeyContext {
     pub fn display_row_count(&self, wt_available: bool) -> usize {
         let mut rows: usize = 0;
         let mut first_section = true;
-        for entry in self.keys().iter().chain(self.extra_keys(wt_available).iter()) {
+        for entry in self
+            .keys()
+            .iter()
+            .chain(self.extra_keys(wt_available).iter())
+        {
             if entry.0.is_empty() {
                 // section header: blank line before (except first) + header line
                 if first_section {
@@ -100,141 +108,141 @@ impl KeyContext {
 
 const GLOBAL_KEYS: &[KeyEntry] = &[
     section("Application"),
-    ("Ctrl + Q",    "Quit application"),
-    ("?",           "Show/hide this help"),
+    ("Ctrl + Q", "Quit application"),
+    ("?", "Show/hide this help"),
     section("Panels"),
-    ("Ctrl + B",    "Toggle sidebar"),
-    ("Ctrl + P",    "Toggle prompt queue"),
-    ("F2",          "Toggle Mini Mode"),
+    ("Ctrl + B", "Toggle sidebar"),
+    ("Ctrl + P", "Toggle prompt queue"),
+    ("F2", "Toggle Mini Mode"),
     section("Mouse"),
-    ("Click",       "Enable text selection (any key restores scroll)"),
+    ("Click", "Enable text selection (any key restores scroll)"),
 ];
 
 const SIDEBAR_KEYS: &[KeyEntry] = &[
     section("Navigation"),
-    ("Tab",                     "Focus terminal / info panel"),
-    ("j / Down",                "Navigate down"),
-    ("k / Up",                  "Navigate up"),
-    ("Shift + G",               "Jump to bottom"),
-    ("Home / End",              "Jump to top / bottom"),
-    ("PgUp / PgDn",             "Scroll terminal"),
+    ("Tab", "Focus terminal / info panel"),
+    ("j / Down", "Navigate down"),
+    ("k / Up", "Navigate up"),
+    ("Shift + G", "Jump to bottom"),
+    ("Home / End", "Jump to top / bottom"),
+    ("PgUp / PgDn", "Scroll terminal"),
     section("Selection"),
-    ("Enter",                   "Activate selected item"),
-    ("Space",                   "Toggle expand/collapse"),
-    ("z / Shift + Z",           "Collapse / expand all worktrees"),
+    ("Enter", "Activate selected item"),
+    ("Space", "Toggle expand/collapse"),
+    ("z / Shift + Z", "Collapse / expand all worktrees"),
     section("Sessions & Agents"),
-    ("c",                       "claude"),
-    ("Shift + c",               "claude (YOLO)"),
-    ("t",                       "New terminal session"),
-    ("r",                       "Rename/nickname session"),
+    ("c", "claude"),
+    ("Shift + c", "claude (YOLO)"),
+    ("t", "New terminal session"),
+    ("r", "Rename/nickname session"),
     section("Worktree Management"),
-    ("n",                       "New worktree"),
-    ("d",                       "Delete session/worktree"),
-    ("Shift + D",               "Force-delete worktree"),
-    ("F5 / Ctrl + R",           "Refresh worktrees"),
+    ("n", "New worktree"),
+    ("d", "Delete session/worktree"),
+    ("Shift + D", "Force-delete worktree"),
+    ("F5 / Ctrl + R", "Refresh worktrees"),
     section("Git Operations"),
-    ("m",                       "Merge branch"),
-    ("s",                       "Stage & commit"),
-    ("Ctrl + s",                "Stage all & commit with Claude"),
-    ("p",                       "Push branch to remote"),
-    ("Shift + p",               "Pull branch from remote"),
+    ("m", "Merge branch"),
+    ("s", "Stage & commit"),
+    ("Ctrl + s", "Stage all & commit with Claude"),
+    ("p", "Push branch to remote"),
+    ("Shift + p", "Pull branch from remote"),
     section("Locations"),
-    ("l",                       "Add extra location"),
+    ("l", "Add extra location"),
     section("URLs"),
-    ("u",                       "Copy last URL to clipboard"),
-    ("Shift + U",               "Open last URL in browser"),
+    ("u", "Copy last URL to clipboard"),
+    ("Shift + U", "Open last URL in browser"),
 ];
 
 /// Additional sidebar keys shown only when wt.exe is available.
 const SIDEBAR_KEYS_WT: &[KeyEntry] = &[
     section("Windows Terminal"),
-    ("w",                       "Open Windows Terminal tab"),
-    ("Shift + W",               "Windows Terminal + Claude"),
+    ("w", "Open Windows Terminal tab"),
+    ("Shift + W", "Windows Terminal + Claude"),
 ];
 
 const TERMINAL_KEYS: &[KeyEntry] = &[
     section("Navigation"),
-    ("Tab",                     "Back to sidebar / prompt queue"),
-    ("PgUp / PgDn",             "Scroll through history"),
+    ("Tab", "Back to sidebar / prompt queue"),
+    ("PgUp / PgDn", "Scroll through history"),
     section("URLs"),
-    ("Ctrl + U",                "Copy last URL to clipboard"),
+    ("Ctrl + U", "Copy last URL to clipboard"),
     section("Input"),
-    ("(all keys)",              "Sent directly to Claude session"),
+    ("(all keys)", "Sent directly to Claude session"),
 ];
 
 const QUEUE_KEYS: &[KeyEntry] = &[
     section("Navigation"),
-    ("Tab",         "Back to sidebar"),
-    ("Esc",         "Cancel edit / back to sidebar"),
-    ("Up / Down",   "Navigate queue items"),
+    ("Tab", "Back to sidebar"),
+    ("Esc", "Cancel edit / back to sidebar"),
+    ("Up / Down", "Navigate queue items"),
     section("Editing"),
-    ("Enter",       "Add item / save edit / load for editing"),
-    ("d / Delete",  "Delete selected item"),
-    ("(type)",      "Input text for new/editing prompt"),
-    ("Backspace",   "Delete character"),
+    ("Enter", "Add item / save edit / load for editing"),
+    ("d / Delete", "Delete selected item"),
+    ("(type)", "Input text for new/editing prompt"),
+    ("Backspace", "Delete character"),
 ];
 
 const MINI_MODE_KEYS: &[KeyEntry] = &[
     section("Navigation"),
-    ("j / Down",                "Navigate tree"),
-    ("k / Up",                  "Navigate tree"),
-    ("Esc",                     "Return to normal mode"),
+    ("j / Down", "Navigate tree"),
+    ("k / Up", "Navigate tree"),
+    ("Esc", "Return to normal mode"),
     section("Selection & Expand"),
-    ("Tab / Enter",             "Focus detail input (on agent)"),
-    ("Enter",                   "Toggle expand (on worktree)"),
-    ("Space",                   "Toggle expand/collapse worktree"),
-    ("z / Shift + Z",           "Collapse / expand all"),
+    ("Tab / Enter", "Focus detail input (on agent)"),
+    ("Enter", "Toggle expand (on worktree)"),
+    ("Space", "Toggle expand/collapse worktree"),
+    ("z / Shift + Z", "Collapse / expand all"),
     section("Actions"),
-    ("o",                       "Open full terminal (drilldown)"),
-    ("a",                       "Create new agent"),
-    ("d",                       "Kill agent / remove worktree"),
-    ("r",                       "Rename agent"),
-    ("s",                       "Browse saved prompts"),
+    ("o", "Open full terminal (drilldown)"),
+    ("a", "Create new agent"),
+    ("d", "Kill agent / remove worktree"),
+    ("r", "Rename agent"),
+    ("s", "Browse saved prompts"),
     section("Detail Pane"),
-    ("(detail)",                "Type + Enter: send to agent"),
+    ("(detail)", "Type + Enter: send to agent"),
 ];
 
 /// Quick-start keybindings shown on the Project overview panel.
 /// This is the single source of truth — the overview derives from here.
 pub const QUICK_START_KEYS: &[KeyEntry] = &[
     section("Navigation"),
-    ("Up / Down",               "Move between worktrees & sessions"),
-    ("Enter",                   "Select / activate item"),
-    ("Space",                   "Expand / collapse worktree"),
-    ("Tab",                     "Switch focus: sidebar / terminal"),
+    ("Up / Down", "Move between worktrees & sessions"),
+    ("Enter", "Select / activate item"),
+    ("Space", "Expand / collapse worktree"),
+    ("Tab", "Switch focus: sidebar / terminal"),
     section("Create Sessions"),
-    ("c",                       "New Claude session"),
-    ("Shift + C",               "New Claude session (YOLO mode)"),
-    ("t",                       "New terminal session"),
+    ("c", "New Claude session"),
+    ("Shift + C", "New Claude session (YOLO mode)"),
+    ("t", "New terminal session"),
     section("Worktree Management"),
-    ("n",                       "Create a new worktree"),
-    ("d",                       "Delete session / worktree"),
-    ("m",                       "Merge branch into another"),
+    ("n", "Create a new worktree"),
+    ("d", "Delete session / worktree"),
+    ("m", "Merge branch into another"),
     section("Git"),
-    ("s",                       "Stage & commit"),
-    ("p / Shift + P",           "Push / pull"),
+    ("s", "Stage & commit"),
+    ("p / Shift + P", "Push / pull"),
     section("Other"),
-    ("?",                       "Full keybinding reference"),
-    ("F2",                      "Toggle Mini Mode"),
-    ("Ctrl + Q",                "Quit"),
+    ("?", "Full keybinding reference"),
+    ("F2", "Toggle Mini Mode"),
+    ("Ctrl + Q", "Quit"),
 ];
 
 const INFO_PANEL_KEYS: &[KeyEntry] = &[
     section("Navigation"),
-    ("j / Down",                "Navigate files"),
-    ("k / Up",                  "Navigate files"),
-    ("Tab",                     "Switch unstaged/staged section"),
-    ("Esc",                     "Back to sidebar"),
+    ("j / Down", "Navigate files"),
+    ("k / Up", "Navigate files"),
+    ("Tab", "Switch unstaged/staged section"),
+    ("Esc", "Back to sidebar"),
     section("Git Operations"),
-    ("s",                       "Stage & commit"),
-    ("Ctrl + s",                "Stage all & commit with Claude"),
-    ("Shift + c",               "claude"),
-    ("n",                       "New worktree"),
-    ("d",                       "Delete worktree"),
-    ("m",                       "Merge branch"),
-    ("p",                       "Push branch"),
-    ("Shift + p",               "Pull branch"),
-    ("F5 / Ctrl + R",           "Refresh"),
+    ("s", "Stage & commit"),
+    ("Ctrl + s", "Stage all & commit with Claude"),
+    ("Shift + c", "claude"),
+    ("n", "New worktree"),
+    ("d", "Delete worktree"),
+    ("m", "Merge branch"),
+    ("p", "Push branch"),
+    ("Shift + p", "Pull branch"),
+    ("F5 / Ctrl + R", "Refresh"),
 ];
 
 /// Handle a key event based on current input mode.
@@ -263,7 +271,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             ScreenMode::Mini | ScreenMode::MiniDrilldown => {
                 app.screen_mode = ScreenMode::Normal;
                 app.input_mode = match app.focus {
-                    FocusTarget::TerminalPane if app.active_session_id.is_some() => InputMode::Terminal,
+                    FocusTarget::TerminalPane if app.active_session_id.is_some() => {
+                        InputMode::Terminal
+                    }
                     _ => InputMode::Normal,
                 };
             }
@@ -291,7 +301,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         session::resize_all(app, terminal_size.1, terminal_size.0);
         return;
     }
-    if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') && app.dialog.is_none() {
+    if key.modifiers == KeyModifiers::CONTROL
+        && key.code == KeyCode::Char('p')
+        && app.dialog.is_none()
+    {
         if app.active_session_id.is_some() {
             app.prompt_queue_visible = !app.prompt_queue_visible;
             session::resize_all(app, terminal_size.1, terminal_size.0);
@@ -309,7 +322,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     }
 
     // ? — toggle help overlay (Normal mode only, not in dialogs/terminal)
-    if key.modifiers.is_empty() && key.code == KeyCode::Char('?') && app.input_mode == InputMode::Normal {
+    if key.modifiers.is_empty()
+        && key.code == KeyCode::Char('?')
+        && app.input_mode == InputMode::Normal
+    {
         // Don't open help if we're typing in prompt queue
         if !app.prompt_queue_focused() {
             app.show_help = true;
@@ -343,12 +359,30 @@ fn handle_help_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 app.help_scroll = 0; // reset scroll on tab change
             }
         }
-        KeyCode::Char('1') => { app.help_tab = 0; app.help_scroll = 0; }
-        KeyCode::Char('2') => { app.help_tab = 1; app.help_scroll = 0; }
-        KeyCode::Char('3') => { app.help_tab = 2; app.help_scroll = 0; }
-        KeyCode::Char('4') => { app.help_tab = 3; app.help_scroll = 0; }
-        KeyCode::Char('5') => { app.help_tab = 4; app.help_scroll = 0; }
-        KeyCode::Char('6') => { app.help_tab = 5; app.help_scroll = 0; }
+        KeyCode::Char('1') => {
+            app.help_tab = 0;
+            app.help_scroll = 0;
+        }
+        KeyCode::Char('2') => {
+            app.help_tab = 1;
+            app.help_scroll = 0;
+        }
+        KeyCode::Char('3') => {
+            app.help_tab = 2;
+            app.help_scroll = 0;
+        }
+        KeyCode::Char('4') => {
+            app.help_tab = 3;
+            app.help_scroll = 0;
+        }
+        KeyCode::Char('5') => {
+            app.help_tab = 4;
+            app.help_scroll = 0;
+        }
+        KeyCode::Char('6') => {
+            app.help_tab = 5;
+            app.help_scroll = 0;
+        }
         // Scroll within key list
         KeyCode::Down | KeyCode::Char('j') => {
             let ctx = KeyContext::ALL[app.help_tab];
@@ -537,19 +571,21 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         // r — rename/nickname a session
         (_, KeyCode::Char('r')) => {
             let sid = match app.selected_sidebar_item() {
-                Some(SidebarItem::Session(wi, si)) => {
-                    app.worktrees.get(wi).and_then(|wt| wt.session_ids.get(si).copied())
-                }
-                Some(SidebarItem::LocationSession(li, si)) => {
-                    app.locations.get(li).and_then(|loc| loc.session_ids.get(si).copied())
-                }
-                Some(SidebarItem::Terminal(ti)) => {
-                    app.terminal_ids.get(ti).copied()
-                }
+                Some(SidebarItem::Session(wi, si)) => app
+                    .worktrees
+                    .get(wi)
+                    .and_then(|wt| wt.session_ids.get(si).copied()),
+                Some(SidebarItem::LocationSession(li, si)) => app
+                    .locations
+                    .get(li)
+                    .and_then(|loc| loc.session_ids.get(si).copied()),
+                Some(SidebarItem::Terminal(ti)) => app.terminal_ids.get(ti).copied(),
                 _ => None,
             };
             if let Some(sid) = sid {
-                let current = app.sessions.get(&sid)
+                let current = app
+                    .sessions
+                    .get(&sid)
                     .and_then(|s| s.nickname.clone())
                     .unwrap_or_default();
                 app.open_dialog(Dialog::RenameSession {
@@ -596,7 +632,11 @@ fn handle_info_panel_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)
     match key.code {
         // Navigation
         KeyCode::Char('j') | KeyCode::Down => {
-            let len = if app.info_panel_section == 0 { unstaged.len() } else { staged.len() };
+            let len = if app.info_panel_section == 0 {
+                unstaged.len()
+            } else {
+                staged.len()
+            };
             if len > 0 && app.info_panel_cursor + 1 < len {
                 app.info_panel_cursor += 1;
             }
@@ -681,7 +721,9 @@ fn selected_worktree_idx(app: &App) -> Option<usize> {
         Some(SidebarItem::Terminal(ti)) => {
             let sid = app.terminal_ids.get(ti)?;
             let session = app.sessions.get(sid)?;
-            app.worktrees.iter().position(|wt| wt.path == session.worktree_path)
+            app.worktrees
+                .iter()
+                .position(|wt| wt.path == session.worktree_path)
         }
         Some(SidebarItem::Location(_)) | Some(SidebarItem::LocationSession(_, _)) => None,
         None => None,
@@ -719,30 +761,43 @@ fn open_wsl_window(app: &mut App, with_claude: bool) {
                         // Write a temp rcfile that sources bashrc then runs clauded
                         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
                         let init_file = std::path::PathBuf::from(home).join(".clauded_init");
-                        let _ = std::fs::write(
-                            &init_file,
-                            "source ~/.bashrc\nclauded\n",
-                        );
+                        let _ = std::fs::write(&init_file, "source ~/.bashrc\nclauded\n");
                         let _ = std::process::Command::new("wt.exe")
                             .args([
-                                "-w", "0", "nt", "--title", &branch,
-                                "--", "wsl.exe", "--cd", &win_path,
-                                "bash", "--rcfile", &init_file.to_string_lossy(),
+                                "-w",
+                                "0",
+                                "nt",
+                                "--title",
+                                &branch,
+                                "--",
+                                "wsl.exe",
+                                "--cd",
+                                &win_path,
+                                "bash",
+                                "--rcfile",
+                                &init_file.to_string_lossy(),
                             ])
                             .spawn();
                     } else {
                         let _ = std::process::Command::new("wt.exe")
                             .args([
-                                "-w", "0", "nt", "--title", &branch,
-                                "--", "wsl.exe", "--cd", &win_path,
+                                "-w", "0", "nt", "--title", &branch, "--", "wsl.exe", "--cd",
+                                &win_path,
                             ])
                             .spawn();
                     }
                 })
                 .ok();
 
-            let action = if with_claude { "claude tab" } else { "terminal tab" };
-            app.set_status(format!("Opening {} for '{}'", action, app.worktrees[wi].branch));
+            let action = if with_claude {
+                "claude tab"
+            } else {
+                "terminal tab"
+            };
+            app.set_status(format!(
+                "Opening {} for '{}'",
+                action, app.worktrees[wi].branch
+            ));
         }
     }
 }
@@ -870,17 +925,21 @@ fn handle_delete(app: &mut App) {
             if let Some(wt) = app.worktrees.get(wi) {
                 let path = wt.path.clone();
                 let session_count = wt.session_ids.len();
-                let terminal_count = app.terminal_ids.iter().filter(|&&tid| {
-                    app.sessions.get(&tid)
-                        .map(|s| s.worktree_path == wt.path)
-                        .unwrap_or(false)
-                }).count();
+                let terminal_count = app
+                    .terminal_ids
+                    .iter()
+                    .filter(|&&tid| {
+                        app.sessions
+                            .get(&tid)
+                            .map(|s| s.worktree_path == wt.path)
+                            .unwrap_or(false)
+                    })
+                    .count();
                 let total = session_count + terminal_count;
                 let msg = if total > 0 {
                     format!(
                         "DELETE worktree '{}' and kill {} session(s)",
-                        wt.branch,
-                        total
+                        wt.branch, total
                     )
                 } else {
                     format!("DELETE worktree '{}'", wt.branch)
@@ -895,13 +954,17 @@ fn handle_delete(app: &mut App) {
         Some(SidebarItem::Location(li)) => {
             if let Some(loc) = app.locations.get(li) {
                 let name = loc.name.clone().unwrap_or_else(|| {
-                    loc.path.file_name()
+                    loc.path
+                        .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| loc.path.to_string_lossy().to_string())
                 });
                 let session_count = loc.session_ids.len();
                 let msg = if session_count > 0 {
-                    format!("Remove location '{}' and kill {} session(s)?", name, session_count)
+                    format!(
+                        "Remove location '{}' and kill {} session(s)?",
+                        name, session_count
+                    )
                 } else {
                     format!("Remove location '{}'?", name)
                 };
@@ -930,10 +993,7 @@ fn handle_force_delete(app: &mut App) {
         if let Some(wt) = app.worktrees.get(wi) {
             let path = wt.path.clone();
             app.open_dialog(Dialog::ConfirmDangerous {
-                message: format!(
-                    "FORCE DELETE worktree '{}' (even if dirty)",
-                    wt.branch
-                ),
+                message: format!("FORCE DELETE worktree '{}' (even if dirty)", wt.branch),
                 input: String::new(),
                 on_confirm: ConfirmAction::ForceDeleteWorktree(path),
             });
@@ -943,13 +1003,19 @@ fn handle_force_delete(app: &mut App) {
 
 fn handle_stage_commit(app: &mut App) {
     if let Some(wi) = selected_worktree_idx(app) {
-        app.queue_action("Loading status...", PendingAction::OpenStageCommit { worktree_idx: wi });
+        app.queue_action(
+            "Loading status...",
+            PendingAction::OpenStageCommit { worktree_idx: wi },
+        );
     }
 }
 
 fn handle_stage_all_commit_claude(app: &mut App) {
     if let Some(wi) = selected_worktree_idx(app) {
-        app.queue_action("Staging all & generating commit message...", PendingAction::StageAllAndCommitClaude { worktree_idx: wi });
+        app.queue_action(
+            "Staging all & generating commit message...",
+            PendingAction::StageAllAndCommitClaude { worktree_idx: wi },
+        );
     }
 }
 
@@ -1130,7 +1196,9 @@ fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u1
             if app.prompt_queue_cursor < app.prompt_queue_input.len() {
                 // Walk forward to next char boundary
                 let mut pos = app.prompt_queue_cursor + 1;
-                while pos < app.prompt_queue_input.len() && !app.prompt_queue_input.is_char_boundary(pos) {
+                while pos < app.prompt_queue_input.len()
+                    && !app.prompt_queue_input.is_char_boundary(pos)
+                {
                     pos += 1;
                 }
                 app.prompt_queue_cursor = pos;
@@ -1143,8 +1211,10 @@ fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u1
             app.prompt_queue_cursor = app.prompt_queue_input.len();
         }
         KeyCode::Up => {
-            if app.prompt_queue_input.is_empty() && app.prompt_queue_editing.is_none()
-                && app.prompt_queue_selected > 0 {
+            if app.prompt_queue_input.is_empty()
+                && app.prompt_queue_editing.is_none()
+                && app.prompt_queue_selected > 0
+            {
                 app.prompt_queue_selected -= 1;
             }
         }
@@ -1156,7 +1226,9 @@ fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u1
                 }
             }
         }
-        KeyCode::Char('d') if app.prompt_queue_input.is_empty() && app.prompt_queue_editing.is_none() => {
+        KeyCode::Char('d')
+            if app.prompt_queue_input.is_empty() && app.prompt_queue_editing.is_none() =>
+        {
             let queue_len = app.active_prompt_queue().len();
             if queue_len > 0 && app.prompt_queue_selected < queue_len {
                 if let Some(queue) = app.prompt_queues.get_mut(&sid) {
@@ -1168,7 +1240,9 @@ fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u1
                 app.save_prompt_queues();
             }
         }
-        KeyCode::Delete if app.prompt_queue_input.is_empty() && app.prompt_queue_editing.is_none() => {
+        KeyCode::Delete
+            if app.prompt_queue_input.is_empty() && app.prompt_queue_editing.is_none() =>
+        {
             let queue_len = app.active_prompt_queue().len();
             if queue_len > 0 && app.prompt_queue_selected < queue_len {
                 if let Some(queue) = app.prompt_queues.get_mut(&sid) {
@@ -1259,19 +1333,43 @@ pub fn handle_paste(app: &mut App, data: String) {
         InputMode::Dialog => {
             // Insert pasted text into whichever dialog input field is active
             match app.dialog {
-                Some(Dialog::CreateWorktree { ref mut branch_input, ref mut base_branch, focused_field, .. }) => {
-                    let field = if focused_field == 0 { branch_input } else { base_branch };
+                Some(Dialog::CreateWorktree {
+                    ref mut branch_input,
+                    ref mut base_branch,
+                    focused_field,
+                    ..
+                }) => {
+                    let field = if focused_field == 0 {
+                        branch_input
+                    } else {
+                        base_branch
+                    };
                     field.push_str(&data);
                 }
-                Some(Dialog::InitRepo { ref mut url_input, ref mut branch_input, focused_field, .. }) => {
-                    let field = if focused_field == 0 { url_input } else { branch_input };
+                Some(Dialog::InitRepo {
+                    ref mut url_input,
+                    ref mut branch_input,
+                    focused_field,
+                    ..
+                }) => {
+                    let field = if focused_field == 0 {
+                        url_input
+                    } else {
+                        branch_input
+                    };
                     field.push_str(&data);
                 }
                 Some(Dialog::RenameSession { ref mut input, .. }) => {
                     input.push_str(&data);
                 }
-                Some(Dialog::GitCommit { ref mut commit_message, phase: CommitPhase::Message, ref mut cursor_pos, .. }) => {
-                    let byte_pos = commit_message.char_indices()
+                Some(Dialog::GitCommit {
+                    ref mut commit_message,
+                    phase: CommitPhase::Message,
+                    ref mut cursor_pos,
+                    ..
+                }) => {
+                    let byte_pos = commit_message
+                        .char_indices()
                         .nth(*cursor_pos)
                         .map(|(i, _)| i)
                         .unwrap_or(commit_message.len());
@@ -1285,7 +1383,9 @@ pub fn handle_paste(app: &mut App, data: String) {
             // Mini mode detail input
             if app.screen_mode == ScreenMode::Mini && app.mini.focus == MiniModeFocus::DetailInput {
                 app.mini.detail_input.push_str(&data);
-            } else if app.screen_mode == ScreenMode::Mini && app.mini.focus == MiniModeFocus::PromptInput {
+            } else if app.screen_mode == ScreenMode::Mini
+                && app.mini.focus == MiniModeFocus::PromptInput
+            {
                 app.mini.prompt_input.push_str(&data);
             } else if app.focus == FocusTarget::PromptQueue {
                 // Prompt queue input
@@ -1332,7 +1432,9 @@ fn handle_url_open(app: &mut App) {
         let u = last.url.clone();
         match url::open_url_in_browser(&u) {
             Ok(()) => app.set_status(format!("Opened: {}", u)),
-            Err(e) => app.set_status_with(StatusSeverity::Error, format!("Failed to open URL: {}", e)),
+            Err(e) => {
+                app.set_status_with(StatusSeverity::Error, format!("Failed to open URL: {}", e))
+            }
         }
     } else {
         app.set_status("No URLs detected");
@@ -1340,11 +1442,20 @@ fn handle_url_open(app: &mut App) {
 }
 
 /// Execute a context menu action by dispatching to the same handlers used by hotkeys.
-pub fn execute_context_action(app: &mut App, item: &SidebarItem, kind: &ContextActionKind, terminal_size: (u16, u16)) {
+pub fn execute_context_action(
+    app: &mut App,
+    item: &SidebarItem,
+    kind: &ContextActionKind,
+    terminal_size: (u16, u16),
+) {
     // Ensure the item is selected so handlers can find it
     match item {
-        SidebarItem::Project | SidebarItem::ProjectSession(_) | SidebarItem::Worktree(_) | SidebarItem::Session(_, _)
-        | SidebarItem::Location(_) | SidebarItem::LocationSession(_, _) => {
+        SidebarItem::Project
+        | SidebarItem::ProjectSession(_)
+        | SidebarItem::Worktree(_)
+        | SidebarItem::Session(_, _)
+        | SidebarItem::Location(_)
+        | SidebarItem::LocationSession(_, _) => {
             if let Some(idx) = app.sidebar_items.iter().position(|i| i == item) {
                 app.sidebar_panel = crate::app::SidebarPanel::Worktrees;
                 app.sidebar_selected = idx;
@@ -1378,19 +1489,21 @@ pub fn execute_context_action(app: &mut App, item: &SidebarItem, kind: &ContextA
         ContextActionKind::RemoveLocation => handle_delete(app),
         ContextActionKind::RenameSession => {
             let sid = match app.selected_sidebar_item() {
-                Some(SidebarItem::Session(wi, si)) => {
-                    app.worktrees.get(wi).and_then(|wt| wt.session_ids.get(si).copied())
-                }
-                Some(SidebarItem::LocationSession(li, si)) => {
-                    app.locations.get(li).and_then(|loc| loc.session_ids.get(si).copied())
-                }
-                Some(SidebarItem::Terminal(ti)) => {
-                    app.terminal_ids.get(ti).copied()
-                }
+                Some(SidebarItem::Session(wi, si)) => app
+                    .worktrees
+                    .get(wi)
+                    .and_then(|wt| wt.session_ids.get(si).copied()),
+                Some(SidebarItem::LocationSession(li, si)) => app
+                    .locations
+                    .get(li)
+                    .and_then(|loc| loc.session_ids.get(si).copied()),
+                Some(SidebarItem::Terminal(ti)) => app.terminal_ids.get(ti).copied(),
                 _ => None,
             };
             if let Some(sid) = sid {
-                let current = app.sessions.get(&sid)
+                let current = app
+                    .sessions
+                    .get(&sid)
                     .and_then(|s| s.nickname.clone())
                     .unwrap_or_default();
                 app.open_dialog(Dialog::RenameSession {
@@ -1422,7 +1535,12 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 app.close_dialog();
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(Dialog::ContextMenu { ref mut selected, ref actions, .. }) = app.dialog {
+                if let Some(Dialog::ContextMenu {
+                    ref mut selected,
+                    ref actions,
+                    ..
+                }) = app.dialog
+                {
                     match *selected {
                         None => *selected = Some(0),
                         Some(s) if s + 1 < actions.len() => *selected = Some(s + 1),
@@ -1431,7 +1549,10 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(Dialog::ContextMenu { ref mut selected, .. }) = app.dialog {
+                if let Some(Dialog::ContextMenu {
+                    ref mut selected, ..
+                }) = app.dialog
+                {
                     match *selected {
                         Some(s) if s > 0 => *selected = Some(s - 1),
                         _ => {}
@@ -1439,7 +1560,12 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 }
             }
             KeyCode::Enter => {
-                if let Some(Dialog::ContextMenu { item, selected, actions }) = app.dialog.take() {
+                if let Some(Dialog::ContextMenu {
+                    item,
+                    selected,
+                    actions,
+                }) = app.dialog.take()
+                {
                     app.close_dialog();
                     if let Some(sel) = selected {
                         if let Some(action) = actions.get(sel) {
@@ -1463,21 +1589,32 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         app.close_dialog();
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
-                        if let Some(Dialog::UpdateAvailable { ref mut selected, .. }) = app.dialog {
+                        if let Some(Dialog::UpdateAvailable {
+                            ref mut selected, ..
+                        }) = app.dialog
+                        {
                             if *selected + 1 < crate::app::UPDATE_AVAILABLE_OPTION_COUNT {
                                 *selected += 1;
                             }
                         }
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        if let Some(Dialog::UpdateAvailable { ref mut selected, .. }) = app.dialog {
+                        if let Some(Dialog::UpdateAvailable {
+                            ref mut selected, ..
+                        }) = app.dialog
+                        {
                             if *selected > 0 {
                                 *selected -= 1;
                             }
                         }
                     }
                     KeyCode::Enter => {
-                        if let Some(Dialog::UpdateAvailable { latest_version, selected, .. }) = app.dialog.take() {
+                        if let Some(Dialog::UpdateAvailable {
+                            latest_version,
+                            selected,
+                            ..
+                        }) = app.dialog.take()
+                        {
                             match selected {
                                 0 => {
                                     // Update now — start download
@@ -1488,7 +1625,10 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                                         phase: UpdatePhase::Downloading,
                                     });
                                     app.input_mode = InputMode::Dialog;
-                                    crate::update::spawn_update_download(version, app.event_tx.clone());
+                                    crate::update::spawn_update_download(
+                                        version,
+                                        app.event_tx.clone(),
+                                    );
                                 }
                                 1 => {
                                     // Dismiss — close dialog, don't show again this session
@@ -1533,7 +1673,8 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         if *phase == CommitPhase::Staging {
             // Ctrl+C — generate commit message with Claude (skips manual message phase)
             // Crossterm sends Ctrl+C as Char('\x03') without keyboard enhancement.
-            let is_ctrl_c = (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
+            let is_ctrl_c = (key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.code == KeyCode::Char('c'))
                 || key.code == KeyCode::Char('\x03');
             if is_ctrl_c {
                 handle_git_commit_claude_message(app);
@@ -1541,12 +1682,19 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             }
             // Ctrl+A — stage all + generate commit message with Claude
             // Crossterm sends Ctrl+A as Char('\x01') without keyboard enhancement.
-            let is_ctrl_a = (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('a'))
+            let is_ctrl_a = (key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.code == KeyCode::Char('a'))
                 || key.code == KeyCode::Char('\x01');
             if is_ctrl_a {
                 if let Some(Dialog::GitCommit { worktree_idx, .. }) = &app.dialog {
                     let wi = *worktree_idx;
-                    app.queue_action("Staging all & generating commit message...", PendingAction::StageAll { worktree_idx: wi, then_claude: true });
+                    app.queue_action(
+                        "Staging all & generating commit message...",
+                        PendingAction::StageAll {
+                            worktree_idx: wi,
+                            then_claude: true,
+                        },
+                    );
                 }
                 return;
             }
@@ -1572,7 +1720,8 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     // Crossterm may report Ctrl+G as Char('\x07') (ASCII BEL) without keyboard enhancement.
     if let Some(Dialog::GitCommit { ref phase, .. }) = app.dialog {
         if *phase == CommitPhase::Message {
-            let is_ctrl_g = (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g'))
+            let is_ctrl_g = (key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.code == KeyCode::Char('g'))
                 || key.code == KeyCode::Char('\x07');
             if is_ctrl_g {
                 handle_git_commit_claude_message(app);
@@ -1584,7 +1733,8 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     // GitCommit message phase: Ctrl+P to commit and push
     if let Some(Dialog::GitCommit { ref phase, .. }) = app.dialog {
         if *phase == CommitPhase::Message {
-            let is_ctrl_p = (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p'))
+            let is_ctrl_p = (key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.code == KeyCode::Char('p'))
                 || key.code == KeyCode::Char('\x10');
             if is_ctrl_p {
                 handle_git_commit_and_push(app);
@@ -1594,12 +1744,20 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     }
 
     // GitCommit message phase: Ctrl+L to insert newline
-    if let Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) = app.dialog {
+    if let Some(Dialog::GitCommit {
+        ref phase,
+        ref mut commit_message,
+        ref mut cursor_pos,
+        ..
+    }) = app.dialog
+    {
         if *phase == CommitPhase::Message {
-            let is_ctrl_l = (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('l'))
+            let is_ctrl_l = (key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.code == KeyCode::Char('l'))
                 || key.code == KeyCode::Char('\x0c');
             if is_ctrl_l {
-                let byte_pos = commit_message.char_indices()
+                let byte_pos = commit_message
+                    .char_indices()
                     .nth(*cursor_pos)
                     .map(|(i, _)| i)
                     .unwrap_or(commit_message.len());
@@ -1642,17 +1800,30 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 }
             }
             // Clear any pending merge if cancelling a commit or dirty worktree dialog
-            if matches!(app.dialog, Some(Dialog::GitCommit { .. }) | Some(Dialog::DirtyWorktree { .. })) {
+            if matches!(
+                app.dialog,
+                Some(Dialog::GitCommit { .. }) | Some(Dialog::DirtyWorktree { .. })
+            ) {
                 app.pending_merge = None;
             }
             app.close_dialog();
         }
         KeyCode::Enter => {
             // Alt+Enter or Shift+Enter: insert newline in commit message
-            if key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) {
-                if let Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) = app.dialog {
+            if key
+                .modifiers
+                .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+            {
+                if let Some(Dialog::GitCommit {
+                    ref phase,
+                    ref mut commit_message,
+                    ref mut cursor_pos,
+                    ..
+                }) = app.dialog
+                {
                     if *phase == CommitPhase::Message {
-                        let byte_pos = commit_message.char_indices()
+                        let byte_pos = commit_message
+                            .char_indices()
                             .nth(*cursor_pos)
                             .map(|(i, _)| i)
                             .unwrap_or(commit_message.len());
@@ -1664,8 +1835,16 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             }
             let dialog = app.dialog.take();
             match dialog {
-                Some(Dialog::InitRepo { url_input, branch_input, .. }) => {
-                    let branch = if branch_input.is_empty() { "main".to_string() } else { branch_input };
+                Some(Dialog::InitRepo {
+                    url_input,
+                    branch_input,
+                    ..
+                }) => {
+                    let branch = if branch_input.is_empty() {
+                        "main".to_string()
+                    } else {
+                        branch_input
+                    };
                     let bare_path = app.bare_repo_path.clone();
                     let tx = app.event_tx.clone();
                     app.set_status(if url_input.is_empty() {
@@ -1687,26 +1866,39 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                                 worktree::git::clone_bare_repo(&bare_path, &url_input, &branch)
                             };
                             let error = result.err().map(|e| format!("{}", e));
-                            let _ = tx.send(crate::event::AppEvent::InitRepoComplete {
-                                error,
-                            });
+                            let _ = tx.send(crate::event::AppEvent::InitRepoComplete { error });
                         })
                         .ok();
                 }
-                Some(Dialog::ConvertRepo { mode, target_path_input, branch_name, source_repo_path, confirmed, .. }) => {
+                Some(Dialog::ConvertRepo {
+                    mode,
+                    target_path_input,
+                    branch_name,
+                    source_repo_path,
+                    confirmed,
+                    ..
+                }) => {
                     // First Enter press: show warning and ask for confirmation
                     if !confirmed {
                         if mode == 1 && target_path_input.is_empty() {
                             app.set_status("Target path cannot be empty");
                             app.dialog = Some(Dialog::ConvertRepo {
-                                mode, target_path_input, branch_name,
-                                focused_field: 1, source_repo_path, confirmed: false,
+                                mode,
+                                target_path_input,
+                                branch_name,
+                                focused_field: 1,
+                                source_repo_path,
+                                confirmed: false,
                             });
                             return;
                         }
                         app.dialog = Some(Dialog::ConvertRepo {
-                            mode, target_path_input, branch_name,
-                            focused_field: 0, source_repo_path, confirmed: true,
+                            mode,
+                            target_path_input,
+                            branch_name,
+                            focused_field: 0,
+                            source_repo_path,
+                            confirmed: true,
                         });
                         return;
                     }
@@ -1725,7 +1917,8 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             .name("convert-repo".into())
                             .spawn(move || {
                                 let _guard = git_lock.lock().unwrap_or_else(|e| e.into_inner());
-                                let result = worktree::git::convert_repo_in_place(&repo_path, &branch);
+                                let result =
+                                    worktree::git::convert_repo_in_place(&repo_path, &branch);
                                 let error = result.err().map(|e| format!("{}", e));
                                 let _ = tx.send(crate::event::AppEvent::ConvertRepoComplete {
                                     bare_repo_path: bare_path,
@@ -1744,7 +1937,9 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             .name("convert-repo".into())
                             .spawn(move || {
                                 let _guard = git_lock.lock().unwrap_or_else(|e| e.into_inner());
-                                let result = worktree::git::convert_repo_to_location(&source, &target, &branch);
+                                let result = worktree::git::convert_repo_to_location(
+                                    &source, &target, &branch,
+                                );
                                 let error = result.err().map(|e| format!("{}", e));
                                 let _ = tx.send(crate::event::AppEvent::ConvertRepoComplete {
                                     bare_repo_path: bare_path,
@@ -1754,7 +1949,11 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             .ok();
                     }
                 }
-                Some(Dialog::CreateWorktree { branch_input, base_branch, .. }) => {
+                Some(Dialog::CreateWorktree {
+                    branch_input,
+                    base_branch,
+                    ..
+                }) => {
                     if !branch_input.is_empty() {
                         let bare_path = app.bare_repo_path.clone();
                         let branch = branch_input.clone();
@@ -1770,7 +1969,9 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             .spawn(move || {
                                 let _guard = git_lock.lock().unwrap_or_else(|e| e.into_inner());
                                 let path = branch.clone();
-                                let result = worktree::git::create_worktree(&bare_path, &branch, &path, &base);
+                                let result = worktree::git::create_worktree(
+                                    &bare_path, &branch, &path, &base,
+                                );
                                 let error = result.err().map(|e| format!("{}", e));
                                 let _ = tx.send(crate::event::AppEvent::WorktreeCreated {
                                     branch,
@@ -1830,9 +2031,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             if let Some(wt) = app.worktrees.get(worktree_idx) {
                                 let path = wt.path.clone();
                                 std::thread::spawn(move || {
-                                    let _ = std::process::Command::new("code")
-                                        .arg(&path)
-                                        .spawn();
+                                    let _ = std::process::Command::new("code").arg(&path).spawn();
                                 });
                                 app.set_status("Opening VS Code to resolve conflicts...");
                             }
@@ -1844,7 +2043,9 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                                 let path = wt.path.clone();
                                 std::thread::spawn(move || {
                                     // Try common JetBrains IDEs in order
-                                    for cmd in ["idea", "webstorm", "goland", "pycharm", "clion", "rider"] {
+                                    for cmd in
+                                        ["idea", "webstorm", "goland", "pycharm", "clion", "rider"]
+                                    {
                                         if std::process::Command::new(cmd)
                                             .arg(&path)
                                             .spawn()
@@ -1861,12 +2062,19 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         2 | 3 => {
                             // Claude — spawn a session with merge prompt
                             let skip_perms = selected == 3;
-                            let target_branch = app.worktrees.get(worktree_idx)
+                            let target_branch = app
+                                .worktrees
+                                .get(worktree_idx)
                                 .map(|w| w.branch.clone())
                                 .unwrap_or_default();
                             // Get source branch HEAD commit info for context
-                            let source_head = app.worktrees.get(worktree_idx)
-                                .and_then(|wt| worktree::git::branch_head_oneline(&wt.path, &source_branch).ok())
+                            let source_head = app
+                                .worktrees
+                                .get(worktree_idx)
+                                .and_then(|wt| {
+                                    worktree::git::branch_head_oneline(&wt.path, &source_branch)
+                                        .ok()
+                                })
                                 .unwrap_or_else(|| source_branch.clone());
                             let prompt = format!(
                                 "Resolve the merge conflicts in this repository. Branch '{}' (HEAD: {}) was being merged into '{}'. Resolve all conflicts and create a commit.",
@@ -1874,13 +2082,21 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             );
                             app.close_dialog();
                             if app.worktrees.get(worktree_idx).is_some() {
-                                match session::spawn_session(app, worktree_idx, terminal_size, skip_perms, Some(&prompt)) {
+                                match session::spawn_session(
+                                    app,
+                                    worktree_idx,
+                                    terminal_size,
+                                    skip_perms,
+                                    Some(&prompt),
+                                ) {
                                     Ok(sid) => {
                                         app.active_session_id = Some(sid);
                                         app.focus = FocusTarget::TerminalPane;
                                         app.input_mode = InputMode::Terminal;
                                         app.rebuild_sidebar_items();
-                                        app.set_status("Claude session opened — resolve merge conflicts");
+                                        app.set_status(
+                                            "Claude session opened — resolve merge conflicts",
+                                        );
                                     }
                                     Err(e) => {
                                         app.set_status(format!("Failed to spawn Claude: {}", e));
@@ -1916,14 +2132,23 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         0 => {
                             // Commit changes — use queue_action to avoid UI freeze
                             app.close_dialog();
-                            app.queue_action("Loading status...", PendingAction::OpenStageCommit { worktree_idx });
+                            app.queue_action(
+                                "Loading status...",
+                                PendingAction::OpenStageCommit { worktree_idx },
+                            );
                         }
                         1 => {
                             // Open with Claude
                             let wi = worktree_idx;
                             app.close_dialog();
                             if app.worktrees.get(wi).is_some() {
-                                match session::spawn_session(app, wi, terminal_size, false, Some("Commit the uncommitted changes in this repository.")) {
+                                match session::spawn_session(
+                                    app,
+                                    wi,
+                                    terminal_size,
+                                    false,
+                                    Some("Commit the uncommitted changes in this repository."),
+                                ) {
                                     Ok(sid) => {
                                         app.active_session_id = Some(sid);
                                         app.focus = FocusTarget::TerminalPane;
@@ -1945,8 +2170,14 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                                     .get(worktree_idx)
                                     .map(|w| w.branch.clone())
                                     .unwrap_or_default();
-                                if let PendingAction::MergeExecute { ref target_branch, .. } = action {
-                                    let msg = format!("Merging '{}' into '{}'...", source_name, target_branch);
+                                if let PendingAction::MergeExecute {
+                                    ref target_branch, ..
+                                } = action
+                                {
+                                    let msg = format!(
+                                        "Merging '{}' into '{}'...",
+                                        source_name, target_branch
+                                    );
                                     app.close_dialog();
                                     app.queue_action(msg, action);
                                 } else {
@@ -1972,7 +2203,9 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         0 | 1 => {
                             // Claude (0 = normal, 1 = skip perms)
                             let skip_perms = selected == 1;
-                            let branch = app.worktrees.get(worktree_idx)
+                            let branch = app
+                                .worktrees
+                                .get(worktree_idx)
                                 .map(|w| w.branch.clone())
                                 .unwrap_or_default();
                             let prompt = format!(
@@ -1982,7 +2215,13 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             let wi = worktree_idx;
                             app.close_dialog();
                             if app.worktrees.get(wi).is_some() {
-                                match session::spawn_session(app, wi, terminal_size, skip_perms, Some(&prompt)) {
+                                match session::spawn_session(
+                                    app,
+                                    wi,
+                                    terminal_size,
+                                    skip_perms,
+                                    Some(&prompt),
+                                ) {
                                     Ok(sid) => {
                                         app.active_session_id = Some(sid);
                                         app.focus = FocusTarget::TerminalPane;
@@ -2049,10 +2288,13 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                                 return;
                             }
                             app.close_dialog();
-                            app.queue_action("Committing...", PendingAction::Commit {
-                                worktree_idx,
-                                message: commit_message,
-                            });
+                            app.queue_action(
+                                "Committing...",
+                                PendingAction::Commit {
+                                    worktree_idx,
+                                    message: commit_message,
+                                },
+                            );
                         }
                     }
                 }
@@ -2092,7 +2334,8 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         ConfirmAction::DeleteSession(sid) => {
                             session::kill_session(app, sid);
                         }
-                        ConfirmAction::DeleteWorktree(_) | ConfirmAction::ForceDeleteWorktree(_) => {
+                        ConfirmAction::DeleteWorktree(_)
+                        | ConfirmAction::ForceDeleteWorktree(_) => {
                             // Should not happen — worktree deletion uses ConfirmDangerous now
                         }
                         ConfirmAction::RemoveLocation(idx) => {
@@ -2113,7 +2356,11 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                     }
                     app.close_dialog();
                 }
-                Some(Dialog::ConfirmDangerous { input, on_confirm, message }) => {
+                Some(Dialog::ConfirmDangerous {
+                    input,
+                    on_confirm,
+                    message,
+                }) => {
                     if input.trim().eq_ignore_ascii_case("yes") {
                         match on_confirm {
                             ConfirmAction::DeleteWorktree(path) => {
@@ -2123,11 +2370,18 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                                     }
                                     Err(e) => {
                                         let msg = format!("{}", e);
-                                        if msg.contains("dirty") || msg.contains("untracked") || msg.contains("changes") || msg.contains("submodule") {
+                                        if msg.contains("dirty")
+                                            || msg.contains("untracked")
+                                            || msg.contains("changes")
+                                            || msg.contains("submodule")
+                                        {
                                             app.open_dialog(Dialog::ConfirmDangerous {
-                                                message: "Worktree is dirty. FORCE DELETE?".to_string(),
+                                                message: "Worktree is dirty. FORCE DELETE?"
+                                                    .to_string(),
                                                 input: String::new(),
-                                                on_confirm: ConfirmAction::ForceDeleteWorktree(path),
+                                                on_confirm: ConfirmAction::ForceDeleteWorktree(
+                                                    path,
+                                                ),
                                             });
                                             return;
                                         }
@@ -2152,7 +2406,11 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         app.close_dialog();
                     } else {
                         // Put the dialog back — user hasn't typed "yes" yet
-                        app.dialog = Some(Dialog::ConfirmDangerous { input, on_confirm, message });
+                        app.dialog = Some(Dialog::ConfirmDangerous {
+                            input,
+                            on_confirm,
+                            message,
+                        });
                     }
                 }
                 Some(Dialog::ContextMenu { .. }) => {
@@ -2170,32 +2428,51 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         // Navigation within dialogs
         KeyCode::Up | KeyCode::Char('k') => {
             match app.dialog {
-                Some(Dialog::MergeBranch { ref mut selected, .. }) => {
+                Some(Dialog::MergeBranch {
+                    ref mut selected, ..
+                }) => {
                     if *selected > 0 {
                         *selected -= 1;
                     }
                 }
-                Some(Dialog::MergeConflict { ref mut selected, .. }) => {
+                Some(Dialog::MergeConflict {
+                    ref mut selected, ..
+                }) => {
                     if *selected > 0 {
                         *selected -= 1;
                     }
                 }
-                Some(Dialog::DirtyWorktree { ref mut selected, .. }) => {
+                Some(Dialog::DirtyWorktree {
+                    ref mut selected, ..
+                }) => {
                     if *selected > 0 {
                         *selected -= 1;
                     }
                 }
-                Some(Dialog::PullError { ref mut selected, .. }) => {
+                Some(Dialog::PullError {
+                    ref mut selected, ..
+                }) => {
                     if *selected > 0 {
                         *selected -= 1;
                     }
                 }
-                Some(Dialog::AuthError { ref mut selected, .. }) => {
+                Some(Dialog::AuthError {
+                    ref mut selected, ..
+                }) => {
                     if *selected > 0 {
                         *selected -= 1;
                     }
                 }
-                Some(Dialog::GitCommit { ref phase, ref mut selected, ref unstaged, ref staged, ref section, ref commit_message, ref mut cursor_pos, .. }) => {
+                Some(Dialog::GitCommit {
+                    ref phase,
+                    ref mut selected,
+                    ref unstaged,
+                    ref staged,
+                    ref section,
+                    ref commit_message,
+                    ref mut cursor_pos,
+                    ..
+                }) => {
                     if *phase == CommitPhase::Staging {
                         if *selected > 0 {
                             *selected -= 1;
@@ -2211,56 +2488,89 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 _ => {}
             }
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            match app.dialog {
-                Some(Dialog::MergeBranch { ref mut selected, ref branches, .. }) => {
-                    if *selected + 1 < branches.len() {
-                        *selected += 1;
-                    }
+        KeyCode::Down | KeyCode::Char('j') => match app.dialog {
+            Some(Dialog::MergeBranch {
+                ref mut selected,
+                ref branches,
+                ..
+            }) => {
+                if *selected + 1 < branches.len() {
+                    *selected += 1;
                 }
-                Some(Dialog::MergeConflict { ref mut selected, .. }) => {
-                    if *selected + 1 < crate::app::CONFLICT_RESOLVER_COUNT {
-                        *selected += 1;
-                    }
-                }
-                Some(Dialog::DirtyWorktree { ref mut selected, .. }) => {
-                    if *selected + 1 < crate::app::DIRTY_WORKTREE_OPTION_COUNT {
-                        *selected += 1;
-                    }
-                }
-                Some(Dialog::PullError { ref mut selected, .. }) => {
-                    if *selected + 1 < crate::app::PULL_ERROR_OPTION_COUNT {
-                        *selected += 1;
-                    }
-                }
-                Some(Dialog::AuthError { ref mut selected, .. }) => {
-                    if *selected + 1 < crate::app::AUTH_ERROR_OPTION_COUNT {
-                        *selected += 1;
-                    }
-                }
-                Some(Dialog::GitCommit { ref phase, ref mut selected, ref unstaged, ref staged, ref section, ref commit_message, ref mut cursor_pos, .. }) => {
-                    if *phase == CommitPhase::Staging {
-                        let len = if *section == 0 { unstaged.len() } else { staged.len() };
-                        if len > 0 && *selected + 1 < len {
-                            *selected += 1;
-                        }
-                    } else if *phase == CommitPhase::Message {
-                        *cursor_pos = commit_msg_cursor_down(commit_message, *cursor_pos);
-                    }
-                }
-                _ => {}
             }
-        }
+            Some(Dialog::MergeConflict {
+                ref mut selected, ..
+            }) => {
+                if *selected + 1 < crate::app::CONFLICT_RESOLVER_COUNT {
+                    *selected += 1;
+                }
+            }
+            Some(Dialog::DirtyWorktree {
+                ref mut selected, ..
+            }) => {
+                if *selected + 1 < crate::app::DIRTY_WORKTREE_OPTION_COUNT {
+                    *selected += 1;
+                }
+            }
+            Some(Dialog::PullError {
+                ref mut selected, ..
+            }) => {
+                if *selected + 1 < crate::app::PULL_ERROR_OPTION_COUNT {
+                    *selected += 1;
+                }
+            }
+            Some(Dialog::AuthError {
+                ref mut selected, ..
+            }) => {
+                if *selected + 1 < crate::app::AUTH_ERROR_OPTION_COUNT {
+                    *selected += 1;
+                }
+            }
+            Some(Dialog::GitCommit {
+                ref phase,
+                ref mut selected,
+                ref unstaged,
+                ref staged,
+                ref section,
+                ref commit_message,
+                ref mut cursor_pos,
+                ..
+            }) => {
+                if *phase == CommitPhase::Staging {
+                    let len = if *section == 0 {
+                        unstaged.len()
+                    } else {
+                        staged.len()
+                    };
+                    if len > 0 && *selected + 1 < len {
+                        *selected += 1;
+                    }
+                } else if *phase == CommitPhase::Message {
+                    *cursor_pos = commit_msg_cursor_down(commit_message, *cursor_pos);
+                }
+            }
+            _ => {}
+        },
 
         KeyCode::Tab => {
             match app.dialog {
-                Some(Dialog::CreateWorktree { ref mut focused_field, .. }) => {
+                Some(Dialog::CreateWorktree {
+                    ref mut focused_field,
+                    ..
+                }) => {
                     *focused_field = (*focused_field + 1) % 2;
                 }
-                Some(Dialog::InitRepo { ref mut focused_field, .. }) => {
+                Some(Dialog::InitRepo {
+                    ref mut focused_field,
+                    ..
+                }) => {
                     *focused_field = (*focused_field + 1) % 2;
                 }
-                Some(Dialog::ConvertRepo { ref mode, ref mut focused_field, .. }) => {
+                Some(Dialog::ConvertRepo {
+                    ref mode,
+                    ref mut focused_field,
+                    ..
+                }) => {
                     if *mode == 0 {
                         // In-place: skip field 1 (target path), cycle 0→2→0
                         *focused_field = if *focused_field == 0 { 2 } else { 0 };
@@ -2269,10 +2579,21 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         *focused_field = (*focused_field + 1) % 3;
                     }
                 }
-                Some(Dialog::GitCommit { ref phase, ref mut section, ref mut selected, ref unstaged, ref staged, .. }) => {
+                Some(Dialog::GitCommit {
+                    ref phase,
+                    ref mut section,
+                    ref mut selected,
+                    ref unstaged,
+                    ref staged,
+                    ..
+                }) => {
                     if *phase == CommitPhase::Staging {
                         *section = 1 - *section;
-                        let len = if *section == 0 { unstaged.len() } else { staged.len() };
+                        let len = if *section == 0 {
+                            unstaged.len()
+                        } else {
+                            staged.len()
+                        };
                         if len == 0 {
                             *selected = 0;
                         } else if *selected >= len {
@@ -2285,19 +2606,30 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         }
         KeyCode::Char(c) => {
             match &mut app.dialog {
-                Some(Dialog::CreateWorktree { ref mut branch_input, ref mut base_branch, focused_field, .. }) => {
-                    match *focused_field {
-                        0 => branch_input.push(c),
-                        _ => base_branch.push(c),
-                    }
-                }
-                Some(Dialog::InitRepo { ref mut url_input, ref mut branch_input, focused_field, .. }) => {
-                    match *focused_field {
-                        0 => url_input.push(c),
-                        _ => branch_input.push(c),
-                    }
-                }
-                Some(Dialog::ConvertRepo { ref mut target_path_input, ref mut branch_name, focused_field, .. }) => {
+                Some(Dialog::CreateWorktree {
+                    ref mut branch_input,
+                    ref mut base_branch,
+                    focused_field,
+                    ..
+                }) => match *focused_field {
+                    0 => branch_input.push(c),
+                    _ => base_branch.push(c),
+                },
+                Some(Dialog::InitRepo {
+                    ref mut url_input,
+                    ref mut branch_input,
+                    focused_field,
+                    ..
+                }) => match *focused_field {
+                    0 => url_input.push(c),
+                    _ => branch_input.push(c),
+                },
+                Some(Dialog::ConvertRepo {
+                    ref mut target_path_input,
+                    ref mut branch_name,
+                    focused_field,
+                    ..
+                }) => {
                     match *focused_field {
                         1 => target_path_input.push(c),
                         2 => branch_name.push(c),
@@ -2310,9 +2642,15 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 Some(Dialog::ConfirmDangerous { ref mut input, .. }) => {
                     input.push(c);
                 }
-                Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) => {
+                Some(Dialog::GitCommit {
+                    ref phase,
+                    ref mut commit_message,
+                    ref mut cursor_pos,
+                    ..
+                }) => {
                     if *phase == CommitPhase::Message {
-                        let byte_pos = commit_message.char_indices()
+                        let byte_pos = commit_message
+                            .char_indices()
                             .nth(*cursor_pos)
                             .map(|(i, _)| i)
                             .unwrap_or(commit_message.len());
@@ -2323,97 +2661,154 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                 _ => {}
             }
         }
-        KeyCode::Backspace => {
-            match &mut app.dialog {
-                Some(Dialog::CreateWorktree { ref mut branch_input, ref mut base_branch, focused_field, .. }) => {
-                    match *focused_field {
-                        0 => { branch_input.pop(); }
-                        _ => { base_branch.pop(); }
-                    }
+        KeyCode::Backspace => match &mut app.dialog {
+            Some(Dialog::CreateWorktree {
+                ref mut branch_input,
+                ref mut base_branch,
+                focused_field,
+                ..
+            }) => match *focused_field {
+                0 => {
+                    branch_input.pop();
                 }
-                Some(Dialog::InitRepo { ref mut url_input, ref mut branch_input, focused_field, .. }) => {
-                    match *focused_field {
-                        0 => { url_input.pop(); }
-                        _ => { branch_input.pop(); }
-                    }
+                _ => {
+                    base_branch.pop();
                 }
-                Some(Dialog::ConvertRepo { ref mut target_path_input, ref mut branch_name, focused_field, .. }) => {
-                    match *focused_field {
-                        1 => { target_path_input.pop(); }
-                        2 => { branch_name.pop(); }
-                        _ => {}
-                    }
+            },
+            Some(Dialog::InitRepo {
+                ref mut url_input,
+                ref mut branch_input,
+                focused_field,
+                ..
+            }) => match *focused_field {
+                0 => {
+                    url_input.pop();
                 }
-                Some(Dialog::RenameSession { ref mut input, .. }) => {
-                    input.pop();
+                _ => {
+                    branch_input.pop();
                 }
-                Some(Dialog::ConfirmDangerous { ref mut input, .. }) => {
-                    input.pop();
+            },
+            Some(Dialog::ConvertRepo {
+                ref mut target_path_input,
+                ref mut branch_name,
+                focused_field,
+                ..
+            }) => match *focused_field {
+                1 => {
+                    target_path_input.pop();
                 }
-                Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) => {
-                    if *phase == CommitPhase::Message && *cursor_pos > 0 {
-                        let byte_pos = commit_message.char_indices()
-                            .nth(*cursor_pos - 1)
-                            .map(|(i, _)| i)
-                            .unwrap_or(0);
-                        commit_message.remove(byte_pos);
-                        *cursor_pos -= 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-        KeyCode::Left => {
-            match &mut app.dialog {
-                Some(Dialog::ConvertRepo { ref mut mode, ref mut focused_field, .. }) => {
-                    if *focused_field == 0 {
-                        *mode = if *mode == 0 { 1 } else { 0 };
-                    }
-                }
-                Some(Dialog::GitCommit { ref phase, ref mut cursor_pos, .. }) => {
-                    if *phase == CommitPhase::Message {
-                        *cursor_pos = cursor_pos.saturating_sub(1);
-                    }
+                2 => {
+                    branch_name.pop();
                 }
                 _ => {}
+            },
+            Some(Dialog::RenameSession { ref mut input, .. }) => {
+                input.pop();
             }
-        }
-        KeyCode::Right => {
-            match &mut app.dialog {
-                Some(Dialog::ConvertRepo { ref mut mode, ref mut focused_field, .. }) => {
-                    if *focused_field == 0 {
-                        *mode = if *mode == 0 { 1 } else { 0 };
-                    }
-                }
-                Some(Dialog::GitCommit { ref phase, ref commit_message, ref mut cursor_pos, .. }) => {
-                    if *phase == CommitPhase::Message {
-                        let char_count = commit_message.chars().count();
-                        *cursor_pos = (*cursor_pos + 1).min(char_count);
-                    }
-                }
-                _ => {}
+            Some(Dialog::ConfirmDangerous { ref mut input, .. }) => {
+                input.pop();
             }
-        }
+            Some(Dialog::GitCommit {
+                ref phase,
+                ref mut commit_message,
+                ref mut cursor_pos,
+                ..
+            }) => {
+                if *phase == CommitPhase::Message && *cursor_pos > 0 {
+                    let byte_pos = commit_message
+                        .char_indices()
+                        .nth(*cursor_pos - 1)
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    commit_message.remove(byte_pos);
+                    *cursor_pos -= 1;
+                }
+            }
+            _ => {}
+        },
+        KeyCode::Left => match &mut app.dialog {
+            Some(Dialog::ConvertRepo {
+                ref mut mode,
+                ref mut focused_field,
+                ..
+            }) => {
+                if *focused_field == 0 {
+                    *mode = if *mode == 0 { 1 } else { 0 };
+                }
+            }
+            Some(Dialog::GitCommit {
+                ref phase,
+                ref mut cursor_pos,
+                ..
+            }) => {
+                if *phase == CommitPhase::Message {
+                    *cursor_pos = cursor_pos.saturating_sub(1);
+                }
+            }
+            _ => {}
+        },
+        KeyCode::Right => match &mut app.dialog {
+            Some(Dialog::ConvertRepo {
+                ref mut mode,
+                ref mut focused_field,
+                ..
+            }) => {
+                if *focused_field == 0 {
+                    *mode = if *mode == 0 { 1 } else { 0 };
+                }
+            }
+            Some(Dialog::GitCommit {
+                ref phase,
+                ref commit_message,
+                ref mut cursor_pos,
+                ..
+            }) => {
+                if *phase == CommitPhase::Message {
+                    let char_count = commit_message.chars().count();
+                    *cursor_pos = (*cursor_pos + 1).min(char_count);
+                }
+            }
+            _ => {}
+        },
         KeyCode::Home => {
-            if let Some(Dialog::GitCommit { ref phase, ref commit_message, ref mut cursor_pos, .. }) = app.dialog {
+            if let Some(Dialog::GitCommit {
+                ref phase,
+                ref commit_message,
+                ref mut cursor_pos,
+                ..
+            }) = app.dialog
+            {
                 if *phase == CommitPhase::Message {
                     *cursor_pos = commit_msg_line_start(commit_message, *cursor_pos);
                 }
             }
         }
         KeyCode::End => {
-            if let Some(Dialog::GitCommit { ref phase, ref commit_message, ref mut cursor_pos, .. }) = app.dialog {
+            if let Some(Dialog::GitCommit {
+                ref phase,
+                ref commit_message,
+                ref mut cursor_pos,
+                ..
+            }) = app.dialog
+            {
                 if *phase == CommitPhase::Message {
                     *cursor_pos = commit_msg_line_end(commit_message, *cursor_pos);
                 }
             }
         }
         KeyCode::Delete => {
-            if let Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref cursor_pos, .. }) = app.dialog {
+            if let Some(Dialog::GitCommit {
+                ref phase,
+                ref mut commit_message,
+                ref cursor_pos,
+                ..
+            }) = app.dialog
+            {
                 if *phase == CommitPhase::Message {
                     let char_count = commit_message.chars().count();
                     if *cursor_pos < char_count {
-                        let byte_pos = commit_message.char_indices()
+                        let byte_pos = commit_message
+                            .char_indices()
                             .nth(*cursor_pos)
                             .map(|(i, _)| i)
                             .unwrap_or(commit_message.len());
@@ -2430,32 +2825,56 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
 /// Returns true if the character was consumed (dialog has active text input).
 fn dialog_insert_char(app: &mut App, c: char) -> bool {
     match &mut app.dialog {
-        Some(Dialog::CreateWorktree { ref mut branch_input, ref mut base_branch, focused_field, .. }) => {
+        Some(Dialog::CreateWorktree {
+            ref mut branch_input,
+            ref mut base_branch,
+            focused_field,
+            ..
+        }) => {
             match *focused_field {
                 0 => branch_input.push(c),
                 _ => base_branch.push(c),
             }
             true
         }
-        Some(Dialog::InitRepo { ref mut url_input, ref mut branch_input, focused_field, .. }) => {
+        Some(Dialog::InitRepo {
+            ref mut url_input,
+            ref mut branch_input,
+            focused_field,
+            ..
+        }) => {
             match *focused_field {
                 0 => url_input.push(c),
                 _ => branch_input.push(c),
             }
             true
         }
-        Some(Dialog::ConvertRepo { ref mut target_path_input, ref mut branch_name, focused_field, .. }) => {
+        Some(Dialog::ConvertRepo {
+            ref mut target_path_input,
+            ref mut branch_name,
+            focused_field,
+            ..
+        }) => {
             match *focused_field {
-                1 => { target_path_input.push(c); true }
-                2 => { branch_name.push(c); true }
-                _ => false // field 0 is mode selector, no char input
+                1 => {
+                    target_path_input.push(c);
+                    true
+                }
+                2 => {
+                    branch_name.push(c);
+                    true
+                }
+                _ => false, // field 0 is mode selector, no char input
             }
         }
         Some(Dialog::RenameSession { ref mut input, .. }) => {
             input.push(c);
             true
         }
-        Some(Dialog::AddLocation { ref mut path_input, ref mut error }) => {
+        Some(Dialog::AddLocation {
+            ref mut path_input,
+            ref mut error,
+        }) => {
             path_input.push(c);
             *error = None;
             true
@@ -2464,9 +2883,15 @@ fn dialog_insert_char(app: &mut App, c: char) -> bool {
             input.push(c);
             true
         }
-        Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) => {
+        Some(Dialog::GitCommit {
+            ref phase,
+            ref mut commit_message,
+            ref mut cursor_pos,
+            ..
+        }) => {
             if *phase == CommitPhase::Message && !c.is_control() {
-                let byte_pos = commit_message.char_indices()
+                let byte_pos = commit_message
+                    .char_indices()
                     .nth(*cursor_pos)
                     .map(|(i, _)| i)
                     .unwrap_or(commit_message.len());
@@ -2477,7 +2902,7 @@ fn dialog_insert_char(app: &mut App, c: char) -> bool {
                 false
             }
         }
-        _ => false
+        _ => false,
     }
 }
 
@@ -2485,32 +2910,62 @@ fn dialog_insert_char(app: &mut App, c: char) -> bool {
 /// Returns true if the backspace was consumed (dialog has active text input).
 fn dialog_backspace(app: &mut App) -> bool {
     match &mut app.dialog {
-        Some(Dialog::CreateWorktree { ref mut branch_input, ref mut base_branch, focused_field, .. }) => {
+        Some(Dialog::CreateWorktree {
+            ref mut branch_input,
+            ref mut base_branch,
+            focused_field,
+            ..
+        }) => {
             match *focused_field {
-                0 => { branch_input.pop(); }
-                _ => { base_branch.pop(); }
+                0 => {
+                    branch_input.pop();
+                }
+                _ => {
+                    base_branch.pop();
+                }
             }
             true
         }
-        Some(Dialog::InitRepo { ref mut url_input, ref mut branch_input, focused_field, .. }) => {
+        Some(Dialog::InitRepo {
+            ref mut url_input,
+            ref mut branch_input,
+            focused_field,
+            ..
+        }) => {
             match *focused_field {
-                0 => { url_input.pop(); }
-                _ => { branch_input.pop(); }
+                0 => {
+                    url_input.pop();
+                }
+                _ => {
+                    branch_input.pop();
+                }
             }
             true
         }
-        Some(Dialog::ConvertRepo { ref mut target_path_input, ref mut branch_name, focused_field, .. }) => {
-            match *focused_field {
-                1 => { target_path_input.pop(); true }
-                2 => { branch_name.pop(); true }
-                _ => false
+        Some(Dialog::ConvertRepo {
+            ref mut target_path_input,
+            ref mut branch_name,
+            focused_field,
+            ..
+        }) => match *focused_field {
+            1 => {
+                target_path_input.pop();
+                true
             }
-        }
+            2 => {
+                branch_name.pop();
+                true
+            }
+            _ => false,
+        },
         Some(Dialog::RenameSession { ref mut input, .. }) => {
             input.pop();
             true
         }
-        Some(Dialog::AddLocation { ref mut path_input, ref mut error }) => {
+        Some(Dialog::AddLocation {
+            ref mut path_input,
+            ref mut error,
+        }) => {
             path_input.pop();
             *error = None;
             true
@@ -2519,9 +2974,15 @@ fn dialog_backspace(app: &mut App) -> bool {
             input.pop();
             true
         }
-        Some(Dialog::GitCommit { ref phase, ref mut commit_message, ref mut cursor_pos, .. }) => {
+        Some(Dialog::GitCommit {
+            ref phase,
+            ref mut commit_message,
+            ref mut cursor_pos,
+            ..
+        }) => {
             if *phase == CommitPhase::Message && *cursor_pos > 0 {
-                let byte_pos = commit_message.char_indices()
+                let byte_pos = commit_message
+                    .char_indices()
                     .nth(*cursor_pos - 1)
                     .map(|(i, _)| i)
                     .unwrap_or(0);
@@ -2532,16 +2993,19 @@ fn dialog_backspace(app: &mut App) -> bool {
                 false
             }
         }
-        _ => false
+        _ => false,
     }
 }
 
 /// Stage or unstage the selected file in GitCommit dialog.
 fn handle_git_commit_space(app: &mut App) {
     let (worktree_idx, section, selected) = match &app.dialog {
-        Some(Dialog::GitCommit { worktree_idx, section, selected, .. }) => {
-            (*worktree_idx, *section, *selected)
-        }
+        Some(Dialog::GitCommit {
+            worktree_idx,
+            section,
+            selected,
+            ..
+        }) => (*worktree_idx, *section, *selected),
         _ => return,
     };
 
@@ -2554,24 +3018,22 @@ fn handle_git_commit_space(app: &mut App) {
             _ => None,
         };
         if let Some(file) = file {
-            app.queue_action("Staging...", PendingAction::StageFile {
-                worktree_idx,
-                file,
-            });
+            app.queue_action(
+                "Staging...",
+                PendingAction::StageFile { worktree_idx, file },
+            );
         }
     } else {
         // Staged → unstage
         let file = match &app.dialog {
-            Some(Dialog::GitCommit { staged, .. }) => {
-                staged.get(selected).map(|(_, p)| p.clone())
-            }
+            Some(Dialog::GitCommit { staged, .. }) => staged.get(selected).map(|(_, p)| p.clone()),
             _ => None,
         };
         if let Some(file) = file {
-            app.queue_action("Unstaging...", PendingAction::UnstageFile {
-                worktree_idx,
-                file,
-            });
+            app.queue_action(
+                "Unstaging...",
+                PendingAction::UnstageFile { worktree_idx, file },
+            );
         }
     }
 }
@@ -2583,7 +3045,13 @@ fn handle_git_commit_stage_all(app: &mut App) {
         _ => return,
     };
 
-    app.queue_action("Staging all...", PendingAction::StageAll { worktree_idx, then_claude: false });
+    app.queue_action(
+        "Staging all...",
+        PendingAction::StageAll {
+            worktree_idx,
+            then_claude: false,
+        },
+    );
 }
 
 /// Move cursor up one line in a multi-line string, preserving column.
@@ -2676,8 +3144,10 @@ fn clean_commit_message(msg: &str) -> String {
     let mut result: Vec<&str> = Vec::new();
     for line in &lines {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("Co-Authored-By:") || trimmed.starts_with("Co-authored-by:")
-            || trimmed.starts_with("Signed-off-by:") || trimmed.starts_with("Signed-Off-By:")
+        if trimmed.starts_with("Co-Authored-By:")
+            || trimmed.starts_with("Co-authored-by:")
+            || trimmed.starts_with("Signed-off-by:")
+            || trimmed.starts_with("Signed-Off-By:")
         {
             continue;
         }
@@ -2693,8 +3163,12 @@ fn clean_commit_message(msg: &str) -> String {
 /// Commit with the current message and push to remote.
 fn handle_git_commit_and_push(app: &mut App) {
     let (worktree_idx, commit_message) = match &app.dialog {
-        Some(Dialog::GitCommit { worktree_idx, commit_message, phase, .. })
-            if *phase == CommitPhase::Message => (*worktree_idx, commit_message.clone()),
+        Some(Dialog::GitCommit {
+            worktree_idx,
+            commit_message,
+            phase,
+            ..
+        }) if *phase == CommitPhase::Message => (*worktree_idx, commit_message.clone()),
         _ => return,
     };
     if commit_message.is_empty() {
@@ -2702,15 +3176,23 @@ fn handle_git_commit_and_push(app: &mut App) {
         return;
     }
     app.close_dialog();
-    app.queue_action("Committing & pushing...", PendingAction::CommitAndPush {
-        worktree_idx,
-        message: commit_message,
-    });
+    app.queue_action(
+        "Committing & pushing...",
+        PendingAction::CommitAndPush {
+            worktree_idx,
+            message: commit_message,
+        },
+    );
 }
 
 /// Switch to commit message phase if staged files exist.
 fn handle_git_commit_enter_message(app: &mut App) {
-    if let Some(Dialog::GitCommit { ref staged, ref mut phase, .. }) = app.dialog {
+    if let Some(Dialog::GitCommit {
+        ref staged,
+        ref mut phase,
+        ..
+    }) = app.dialog
+    {
         if staged.is_empty() {
             app.set_status("No staged files to commit");
         } else {
@@ -2722,9 +3204,16 @@ fn handle_git_commit_enter_message(app: &mut App) {
 /// Generate a commit message using Claude for the staged diff.
 pub fn handle_git_commit_claude_message(app: &mut App) {
     let (worktree_idx, staged_empty, already_generating) = match &app.dialog {
-        Some(Dialog::GitCommit { worktree_idx, staged, phase, .. }) => {
-            (*worktree_idx, staged.is_empty(), *phase == CommitPhase::GeneratingMessage)
-        }
+        Some(Dialog::GitCommit {
+            worktree_idx,
+            staged,
+            phase,
+            ..
+        }) => (
+            *worktree_idx,
+            staged.is_empty(),
+            *phase == CommitPhase::GeneratingMessage,
+        ),
         _ => return,
     };
 
@@ -2872,7 +3361,9 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
         KeyCode::Home => {
             app.mini.selected = 0;
         }
-        KeyCode::End | KeyCode::Char('G') if key.modifiers == KeyModifiers::SHIFT || key.code == KeyCode::End => {
+        KeyCode::End | KeyCode::Char('G')
+            if key.modifiers == KeyModifiers::SHIFT || key.code == KeyCode::End =>
+        {
             if !app.mini.items.is_empty() {
                 app.mini.selected = app.mini.items.len() - 1;
             }
@@ -2895,7 +3386,9 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
         }
         KeyCode::Char('o') => {
             // Open full terminal drilldown for selected session
-            if let Some(SidebarItem::Session(wi, si)) = app.mini.items.get(app.mini.selected).copied() {
+            if let Some(SidebarItem::Session(wi, si)) =
+                app.mini.items.get(app.mini.selected).copied()
+            {
                 if let Some(wt) = app.worktrees.get(wi) {
                     if let Some(&sid) = wt.session_ids.get(si) {
                         app.mini_drilldown_session = Some(sid);
@@ -2911,7 +3404,8 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
         }
         KeyCode::Char(' ') => {
             // Toggle expand on worktree
-            if let Some(SidebarItem::Worktree(wi)) = app.mini.items.get(app.mini.selected).copied() {
+            if let Some(SidebarItem::Worktree(wi)) = app.mini.items.get(app.mini.selected).copied()
+            {
                 if let Some(wt) = app.worktrees.get_mut(wi) {
                     wt.expanded = !wt.expanded;
                     app.rebuild_mini_agent_list();
@@ -2928,8 +3422,12 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
             let target_wi = match app.mini.items.get(app.mini.selected).copied() {
                 Some(SidebarItem::Worktree(wi)) => wi,
                 Some(SidebarItem::Session(wi, _)) => wi,
-                Some(SidebarItem::Project) | Some(SidebarItem::ProjectSession(_)) | Some(SidebarItem::Terminal(_))
-                | Some(SidebarItem::Location(_)) | Some(SidebarItem::LocationSession(_, _)) | None => 0,
+                Some(SidebarItem::Project)
+                | Some(SidebarItem::ProjectSession(_))
+                | Some(SidebarItem::Terminal(_))
+                | Some(SidebarItem::Location(_))
+                | Some(SidebarItem::LocationSession(_, _))
+                | None => 0,
             };
             app.mini.target_worktree_idx = target_wi;
             // If only one worktree, skip selection and go straight to prompt
@@ -2947,7 +3445,10 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
                     if let Some(wt) = app.worktrees.get(wi) {
                         if let Some(&sid) = wt.session_ids.get(si) {
                             app.open_dialog(Dialog::Confirm {
-                                message: format!("Kill agent {}?", session::session_label(app, sid)),
+                                message: format!(
+                                    "Kill agent {}?",
+                                    session::session_label(app, sid)
+                                ),
                                 on_confirm: ConfirmAction::DeleteSession(sid),
                             });
                         }
@@ -2958,7 +3459,11 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
                         let path = wt.path.clone();
                         let has_sessions = !wt.session_ids.is_empty();
                         let msg = if has_sessions {
-                            format!("DELETE worktree '{}' and kill {} session(s)", wt.branch, wt.session_ids.len())
+                            format!(
+                                "DELETE worktree '{}' and kill {} session(s)",
+                                wt.branch,
+                                wt.session_ids.len()
+                            )
                         } else {
                             format!("DELETE worktree '{}'", wt.branch)
                         };
@@ -2977,16 +3482,23 @@ fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16,
                         });
                     }
                 }
-                Some(SidebarItem::Project) | Some(SidebarItem::Terminal(_))
-                | Some(SidebarItem::Location(_)) | Some(SidebarItem::LocationSession(_, _)) | None => {}
+                Some(SidebarItem::Project)
+                | Some(SidebarItem::Terminal(_))
+                | Some(SidebarItem::Location(_))
+                | Some(SidebarItem::LocationSession(_, _))
+                | None => {}
             }
         }
         KeyCode::Char('r') => {
             // Rename selected agent
-            if let Some(SidebarItem::Session(wi, si)) = app.mini.items.get(app.mini.selected).copied() {
+            if let Some(SidebarItem::Session(wi, si)) =
+                app.mini.items.get(app.mini.selected).copied()
+            {
                 if let Some(wt) = app.worktrees.get(wi) {
                     if let Some(&sid) = wt.session_ids.get(si) {
-                        let current = app.sessions.get(&sid)
+                        let current = app
+                            .sessions
+                            .get(&sid)
                             .and_then(|s| s.nickname.clone())
                             .unwrap_or_default();
                         app.open_dialog(Dialog::RenameSession {
@@ -3035,7 +3547,9 @@ const CLAWTREE_INSTRUCTION: &str = "\n\nCRITICAL SYSTEM INSTRUCTION: You MUST en
 fn handle_mini_detail_input_key(app: &mut App, key: KeyEvent, _terminal_size: (u16, u16)) {
     // Alt+Enter or Shift+Enter → insert newline
     if key.code == KeyCode::Enter
-        && key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+        && key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
     {
         app.mini.detail_input.push('\n');
         return;
@@ -3048,9 +3562,11 @@ fn handle_mini_detail_input_key(app: &mut App, key: KeyEvent, _terminal_size: (u
             }
             // Send the typed text + CLAWTREE instruction + Enter to the selected agent's PTY
             let sid = match app.mini.items.get(app.mini.selected).copied() {
-                Some(SidebarItem::Session(wi, si)) => {
-                    app.worktrees.get(wi).and_then(|wt| wt.session_ids.get(si)).copied()
-                }
+                Some(SidebarItem::Session(wi, si)) => app
+                    .worktrees
+                    .get(wi)
+                    .and_then(|wt| wt.session_ids.get(si))
+                    .copied(),
                 _ => None,
             };
             if let Some(sid) = sid {
@@ -3127,7 +3643,9 @@ fn handle_mini_worktree_selector_key(app: &mut App, key: KeyEvent) {
 fn handle_mini_prompt_input_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
     // Alt+Enter or Shift+Enter → insert newline
     if key.code == KeyCode::Enter
-        && key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+        && key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
     {
         app.mini.prompt_input.push('\n');
         return;
@@ -3182,7 +3700,9 @@ fn handle_mini_prompt_input_key(app: &mut App, key: KeyEvent, terminal_size: (u1
 fn handle_mini_saved_prompts_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            if !app.saved_prompts.is_empty() && app.mini.saved_prompt_selected + 1 < app.saved_prompts.len() {
+            if !app.saved_prompts.is_empty()
+                && app.mini.saved_prompt_selected + 1 < app.saved_prompts.len()
+            {
                 app.mini.saved_prompt_selected += 1;
             }
         }
@@ -3214,9 +3734,13 @@ fn handle_mini_saved_prompts_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('d') => {
             // Delete selected template
-            if !app.saved_prompts.is_empty() && app.mini.saved_prompt_selected < app.saved_prompts.len() {
+            if !app.saved_prompts.is_empty()
+                && app.mini.saved_prompt_selected < app.saved_prompts.len()
+            {
                 app.saved_prompts.remove(app.mini.saved_prompt_selected);
-                if app.mini.saved_prompt_selected >= app.saved_prompts.len() && app.mini.saved_prompt_selected > 0 {
+                if app.mini.saved_prompt_selected >= app.saved_prompts.len()
+                    && app.mini.saved_prompt_selected > 0
+                {
                     app.mini.saved_prompt_selected -= 1;
                 }
                 app.save_saved_prompts();
@@ -3255,16 +3779,20 @@ fn key_to_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
     // xterm modifier parameter: 1 + (shift?1:0) + (alt?2:0) + (ctrl?4:0)
     // Used for modified arrow keys, Home/End, etc.  0 means no modifiers.
     let modifier: u8 = {
-        let m = if shift { 1u8 } else { 0 }
-              + if alt   { 2 }   else { 0 }
-              + if ctrl  { 4 }   else { 0 };
-        if m > 0 { m + 1 } else { 0 }
+        let m = if shift { 1u8 } else { 0 } + if alt { 2 } else { 0 } + if ctrl { 4 } else { 0 };
+        if m > 0 {
+            m + 1
+        } else {
+            0
+        }
     };
 
     match key.code {
         KeyCode::Char(c) => {
             if ctrl {
-                let byte = (c.to_ascii_lowercase() as u8).wrapping_sub(b'a').wrapping_add(1);
+                let byte = (c.to_ascii_lowercase() as u8)
+                    .wrapping_sub(b'a')
+                    .wrapping_add(1);
                 if alt {
                     vec![0x1b, byte]
                 } else {
@@ -3285,16 +3813,16 @@ fn key_to_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
         KeyCode::Tab => vec![b'\t'],
         KeyCode::BackTab => vec![0x1b, b'[', b'Z'],
         KeyCode::Esc => vec![0x1b],
-        KeyCode::Up    => modified_csi_key(b'A', modifier, app_cursor),
-        KeyCode::Down  => modified_csi_key(b'B', modifier, app_cursor),
+        KeyCode::Up => modified_csi_key(b'A', modifier, app_cursor),
+        KeyCode::Down => modified_csi_key(b'B', modifier, app_cursor),
         KeyCode::Right => modified_csi_key(b'C', modifier, app_cursor),
-        KeyCode::Left  => modified_csi_key(b'D', modifier, app_cursor),
-        KeyCode::Home  => modified_csi_key(b'H', modifier, false),
-        KeyCode::End   => modified_csi_key(b'F', modifier, false),
-        KeyCode::PageUp   => modified_tilde_key(5, modifier),
+        KeyCode::Left => modified_csi_key(b'D', modifier, app_cursor),
+        KeyCode::Home => modified_csi_key(b'H', modifier, false),
+        KeyCode::End => modified_csi_key(b'F', modifier, false),
+        KeyCode::PageUp => modified_tilde_key(5, modifier),
         KeyCode::PageDown => modified_tilde_key(6, modifier),
-        KeyCode::Insert   => modified_tilde_key(2, modifier),
-        KeyCode::Delete   => modified_tilde_key(3, modifier),
+        KeyCode::Insert => modified_tilde_key(2, modifier),
+        KeyCode::Delete => modified_tilde_key(3, modifier),
         KeyCode::F(n) => f_key_bytes(n, modifier),
         _ => vec![],
     }
@@ -3319,7 +3847,15 @@ fn modified_csi_key(final_byte: u8, modifier: u8, app_cursor: bool) -> Vec<u8> {
 fn modified_tilde_key(n: u8, modifier: u8) -> Vec<u8> {
     if modifier > 0 {
         if n >= 10 {
-            vec![0x1b, b'[', (n / 10) + b'0', (n % 10) + b'0', b';', modifier + b'0', b'~']
+            vec![
+                0x1b,
+                b'[',
+                (n / 10) + b'0',
+                (n % 10) + b'0',
+                b';',
+                modifier + b'0',
+                b'~',
+            ]
         } else {
             vec![0x1b, b'[', n + b'0', b';', modifier + b'0', b'~']
         }
@@ -3342,11 +3878,11 @@ fn f_key_bytes(n: u8, modifier: u8) -> Vec<u8> {
             }
         }
         // F5-F12 use tilde encoding
-        5  => modified_tilde_key(15, modifier),
-        6  => modified_tilde_key(17, modifier),
-        7  => modified_tilde_key(18, modifier),
-        8  => modified_tilde_key(19, modifier),
-        9  => modified_tilde_key(20, modifier),
+        5 => modified_tilde_key(15, modifier),
+        6 => modified_tilde_key(17, modifier),
+        7 => modified_tilde_key(18, modifier),
+        8 => modified_tilde_key(19, modifier),
+        9 => modified_tilde_key(20, modifier),
         10 => modified_tilde_key(21, modifier),
         11 => modified_tilde_key(23, modifier),
         12 => modified_tilde_key(24, modifier),

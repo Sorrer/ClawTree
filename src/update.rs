@@ -100,10 +100,7 @@ pub fn spawn_update_download(version: String, event_tx: UnboundedSender<AppEvent
         .name("update-download".into())
         .spawn(move || {
             let result = download_and_verify(&version);
-            let _ = event_tx.send(AppEvent::UpdateDownloadComplete {
-                result,
-                version,
-            });
+            let _ = event_tx.send(AppEvent::UpdateDownloadComplete { result, version });
         })
         .ok();
 }
@@ -124,21 +121,14 @@ fn download_and_verify(version: &str) -> Result<PathBuf, String> {
     if tmp_dir.exists() {
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
-    std::fs::create_dir_all(&tmp_dir)
-        .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("Failed to create temp dir: {}", e))?;
 
     let archive_path = tmp_dir.join(&archive_name);
     let checksum_path = tmp_dir.join(format!("{}.sha256", archive_name));
 
     // Download archive
     let status = std::process::Command::new("curl")
-        .args([
-            "-sL",
-            "--fail",
-            "--max-time",
-            "120",
-            "-o",
-        ])
+        .args(["-sL", "--fail", "--max-time", "120", "-o"])
         .arg(archive_path.to_str().unwrap_or_default())
         .arg(format!("{}{}", base_url, archive_name))
         .status()
@@ -151,13 +141,7 @@ fn download_and_verify(version: &str) -> Result<PathBuf, String> {
 
     // Download checksum
     let status = std::process::Command::new("curl")
-        .args([
-            "-sL",
-            "--fail",
-            "--max-time",
-            "30",
-            "-o",
-        ])
+        .args(["-sL", "--fail", "--max-time", "30", "-o"])
         .arg(checksum_path.to_str().unwrap_or_default())
         .arg(format!("{}{}.sha256", base_url, archive_name))
         .status()
@@ -245,15 +229,16 @@ fn compute_sha256(path: &std::path::Path) -> Result<String, String> {
 
 /// Spawn a background thread that replaces the current binary with the downloaded one.
 /// Sends `UpdateReplaceComplete` when done.
-pub fn spawn_update_replace(binary_path: PathBuf, version: String, event_tx: UnboundedSender<AppEvent>) {
+pub fn spawn_update_replace(
+    binary_path: PathBuf,
+    version: String,
+    event_tx: UnboundedSender<AppEvent>,
+) {
     std::thread::Builder::new()
         .name("update-replace".into())
         .spawn(move || {
             let result = replace_binary(&binary_path);
-            let _ = event_tx.send(AppEvent::UpdateReplaceComplete {
-                result,
-                version,
-            });
+            let _ = event_tx.send(AppEvent::UpdateReplaceComplete { result, version });
         })
         .ok();
 }
@@ -264,8 +249,7 @@ fn replace_binary(new_binary: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("Failed to get current executable path: {}", e))?;
 
     // Resolve symlinks to get the actual binary path
-    let current_exe = std::fs::canonicalize(&current_exe)
-        .unwrap_or(current_exe);
+    let current_exe = std::fs::canonicalize(&current_exe).unwrap_or(current_exe);
 
     let backup_path = current_exe.with_extension("old");
 
@@ -287,10 +271,7 @@ fn replace_binary(new_binary: &std::path::Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(
-            &current_exe,
-            std::fs::Permissions::from_mode(0o755),
-        );
+        let _ = std::fs::set_permissions(&current_exe, std::fs::Permissions::from_mode(0o755));
     }
 
     // Clean up backup and temp dir
