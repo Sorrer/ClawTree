@@ -321,6 +321,8 @@ pub fn init_bare_repo(dir: &Path, initial_branch: &str) -> Result<()> {
 /// Creates `.bare/` (via `git clone --bare`), `.git` pointer file,
 /// and an initial worktree.
 pub fn clone_bare_repo(dir: &Path, url: &str, initial_branch: &str) -> Result<()> {
+    let bare_dir = dir.join(".bare");
+
     // git clone --bare <url> .bare
     let output = Command::new("git")
         .args(["clone", "--bare", url, ".bare"])
@@ -350,6 +352,16 @@ pub fn clone_bare_repo(dir: &Path, url: &str, initial_branch: &str) -> Result<()
         .current_dir(dir)
         .output();
 
+    // A freshly created remote (e.g. an empty GitHub repo) has no commits or
+    // branches, so `git worktree add` has nothing to check out. Create a
+    // worktree on an *unborn* branch instead — no seed commit — so the user's
+    // own first commit becomes the real initial commit. This lets them spawn
+    // Claude and start developing immediately in a clean repo.
+    if !has_commits(dir) {
+        create_unborn_worktree(dir, &bare_dir, initial_branch)?;
+        return Ok(());
+    }
+
     // Create the first worktree
     let output = Command::new("git")
         .args(["worktree", "add", initial_branch])
@@ -358,12 +370,72 @@ pub fn clone_bare_repo(dir: &Path, url: &str, initial_branch: &str) -> Result<()
         .context("Failed to create initial worktree")?;
 
     if !output.status.success() {
-        // Branch might not exist, try creating it
-        let _ = Command::new("git")
+        // Branch might not exist (e.g. the remote's default differs); create it.
+        let fallback = Command::new("git")
             .args(["worktree", "add", "-b", initial_branch, initial_branch])
             .current_dir(dir)
-            .output();
+            .output()
+            .context("Failed to create initial worktree")?;
+
+        if !fallback.status.success() {
+            anyhow::bail!(
+                "Failed to create initial worktree '{}': {}",
+                initial_branch,
+                String::from_utf8_lossy(&fallback.stderr)
+            );
+        }
     }
+
+    Ok(())
+}
+
+/// Create a worktree checked out on an *unborn* branch (one with no commits
+/// yet) without seeding a commit. Used when cloning an empty remote: the bare
+/// repo has no commits, so a normal `git worktree add` has nothing to check
+/// out. We hand-write the metadata that `git worktree add` would normally
+/// produce, leaving HEAD pointing at an unborn `refs/heads/<branch>`. The
+/// user's first commit then becomes the real root commit.
+///
+/// `git worktree add --orphan` does this natively, but only since Git 2.42, so
+/// we build the metadata manually to also support older Git.
+fn create_unborn_worktree(dir: &Path, bare_dir: &Path, branch: &str) -> Result<()> {
+    // Point the bare repo's HEAD at the requested branch (the clone's HEAD may
+    // name the remote's default branch instead).
+    let _ = Command::new("git")
+        .args(["symbolic-ref", "HEAD", &format!("refs/heads/{}", branch)])
+        .current_dir(bare_dir)
+        .output();
+
+    // Checkout dir mirrors `git worktree add <branch>` naming.
+    let wt_path = dir.join(branch);
+    // The metadata subdir name can't contain '/'; mirror git's basename rule.
+    let wt_name = branch.rsplit('/').next().unwrap_or(branch);
+    let meta_dir = bare_dir.join("worktrees").join(wt_name);
+
+    std::fs::create_dir_all(&meta_dir).context("Failed to create worktree metadata dir")?;
+    std::fs::create_dir_all(&wt_path).context("Failed to create worktree directory")?;
+
+    let wt_git_file = wt_path.join(".git");
+
+    // <bare>/worktrees/<name>/HEAD -> the unborn branch ref.
+    std::fs::write(
+        meta_dir.join("HEAD"),
+        format!("ref: refs/heads/{}\n", branch),
+    )
+    .context("Failed to write worktree HEAD")?;
+    // commondir -> the shared (bare) git dir, relative to the metadata dir.
+    std::fs::write(meta_dir.join("commondir"), "../..\n")
+        .context("Failed to write worktree commondir")?;
+    // gitdir -> absolute path of the worktree's .git pointer file.
+    std::fs::write(
+        meta_dir.join("gitdir"),
+        format!("{}\n", wt_git_file.display()),
+    )
+    .context("Failed to write worktree gitdir")?;
+
+    // The worktree's .git file points back at its metadata dir.
+    std::fs::write(&wt_git_file, format!("gitdir: {}\n", meta_dir.display()))
+        .context("Failed to write worktree .git file")?;
 
     Ok(())
 }

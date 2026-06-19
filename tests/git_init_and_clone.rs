@@ -69,6 +69,85 @@ fn test_clone_bare_repo() {
 }
 
 #[test]
+fn test_clone_empty_remote_creates_unborn_branch() {
+    // Simulate a freshly created, empty GitHub repo: a bare remote with no
+    // commits or branches.
+    let source_tmp = tempfile::tempdir().unwrap();
+    let source = source_tmp.path();
+    let out = std::process::Command::new("git")
+        .args(["init", "--bare", "--initial-branch=main"])
+        .arg(source)
+        .output()
+        .expect("git init --bare failed");
+    assert!(out.status.success());
+
+    let target_tmp = tempfile::tempdir().unwrap();
+    let target = target_tmp.path();
+
+    git::clone_bare_repo(target, &source.to_string_lossy(), "main").unwrap();
+
+    // A worktree must exist so the user can spawn Claude and develop right away.
+    let wt = target.join("main");
+    assert!(
+        wt.is_dir(),
+        "main worktree not created when cloning an empty remote"
+    );
+
+    // It should be on branch `main` with NO commits yet (unborn) — i.e. we did
+    // not seed a junk initial commit.
+    assert_eq!(git::current_branch_name(&wt).unwrap(), "main");
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(&wt)
+        .output()
+        .unwrap();
+    assert!(
+        !head.status.success(),
+        "expected an unborn branch with no commits, but HEAD resolves"
+    );
+
+    // The user's first commit becomes the real root commit (no parent).
+    std::fs::write(wt.join("a.txt"), "hi").unwrap();
+    let add = std::process::Command::new("git")
+        .args(["add", "a.txt"])
+        .current_dir(&wt)
+        .output()
+        .unwrap();
+    assert!(add.status.success());
+    let commit = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-m",
+            "first",
+        ])
+        .current_dir(&wt)
+        .output()
+        .unwrap();
+    assert!(
+        commit.status.success(),
+        "first commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    let parents = std::process::Command::new("git")
+        .args(["rev-list", "--parents", "-n", "1", "HEAD"])
+        .current_dir(&wt)
+        .output()
+        .unwrap();
+    let line = String::from_utf8_lossy(&parents.stdout);
+    assert_eq!(
+        line.split_whitespace().count(),
+        1,
+        "first commit should be a root commit with no parent: {}",
+        line
+    );
+}
+
+#[test]
 fn test_list_worktrees_after_clone() {
     let source_tmp = tempfile::tempdir().unwrap();
     let source = source_tmp.path();
