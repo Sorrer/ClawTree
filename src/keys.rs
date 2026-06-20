@@ -162,12 +162,12 @@ const SIDEBAR_KEYS_WT: &[KeyEntry] = &[
 
 const TERMINAL_KEYS: &[KeyEntry] = &[
     section("Navigation"),
-    ("Tab", "Back to sidebar / prompt queue"),
+    ("Alt + T", "Back to sidebar / prompt queue"),
     ("PgUp / PgDn", "Scroll through history"),
     section("URLs"),
     ("Ctrl + U", "Copy last URL to clipboard"),
     section("Input"),
-    ("Alt + T", "Send a literal Tab to the terminal"),
+    ("Tab", "Sent to terminal (completion)"),
     ("(all keys)", "Sent directly to Claude session"),
 ];
 
@@ -210,7 +210,7 @@ pub const QUICK_START_KEYS: &[KeyEntry] = &[
     ("Up / Down", "Move between worktrees & sessions"),
     ("Enter", "Select / activate item"),
     ("Space", "Expand / collapse worktree"),
-    ("Tab", "Switch focus: sidebar / terminal"),
+    ("Tab / Alt+T", "Focus terminal / back to sidebar"),
     section("Create Sessions"),
     ("c", "New Claude session"),
     ("Shift + C", "New Claude session (YOLO mode)"),
@@ -1279,8 +1279,14 @@ fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u1
 }
 
 fn handle_terminal_key(app: &mut App, key: KeyEvent) {
-    // Tab — toggle focus back to sidebar (or prompt queue if visible)
-    if key.code == KeyCode::Tab {
+    // Alt+T — toggle focus back to sidebar (or prompt queue if visible).
+    // Plain Tab is forwarded to the terminal (shell/Claude completion), so the
+    // focus-switch lives on Alt+T. Ctrl+I can't be used because it's the same
+    // byte (0x09) as Tab on terminals without the kitty keyboard protocol
+    // (e.g. through tmux); Alt-combos are ESC-prefixed and survive reliably.
+    if key.modifiers.contains(KeyModifiers::ALT)
+        && matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T'))
+    {
         app.terminal_scroll = 0;
         app.toggle_focus();
         return;
@@ -1289,22 +1295,6 @@ fn handle_terminal_key(app: &mut App, key: KeyEvent) {
     // Ctrl+U — copy last URL to clipboard (intercepted before PTY forwarding)
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('u') {
         handle_url_copy(app);
-        return;
-    }
-
-    // Alt+T — send a literal Tab to the terminal. Plain Tab is reserved for
-    // focus-switching, and Ctrl+I can't be used because it's the same byte
-    // (0x09) as Tab on terminals without the kitty keyboard protocol (e.g.
-    // through tmux). Alt-combos are ESC-prefixed, so they survive reliably.
-    if key.modifiers.contains(KeyModifiers::ALT)
-        && matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T'))
-    {
-        app.terminal_scroll = 0;
-        if let Some(sid) = app.active_session_id {
-            if let Some(session) = app.sessions.get(&sid) {
-                let _ = session.write_tx.send(bytes::Bytes::from_static(b"\t"));
-            }
-        }
         return;
     }
 
@@ -1344,7 +1334,43 @@ pub fn handle_paste(app: &mut App, data: String) {
             app.terminal_scroll = 0;
             if let Some(sid) = app.active_session_id {
                 if let Some(session) = app.sessions.get(&sid) {
-                    let _ = session.write_tx.send(bytes::Bytes::from(data));
+                    if data.is_empty() {
+                        // An *empty* bracketed paste is how Windows Terminal
+                        // forwards a clipboard image (there's no text, just the
+                        // paste event). crossterm strips the markers, leaving us
+                        // empty data. Relay an empty bracketed paste straight to
+                        // the pane so Claude sees a paste event and reads the
+                        // image off the clipboard itself — exactly as it does
+                        // when run outside clawtree.
+                        if let Some(tmux) = session.tmux_session_name.clone() {
+                            app.set_status("Pasting from clipboard…");
+                            std::thread::spawn(move || {
+                                // ESC [ 2 0 0 ~   ESC [ 2 0 1 ~
+                                let _ = std::process::Command::new("tmux")
+                                    .args([
+                                        "send-keys",
+                                        "-t",
+                                        &tmux,
+                                        "-H",
+                                        "1b",
+                                        "5b",
+                                        "32",
+                                        "30",
+                                        "30",
+                                        "7e",
+                                        "1b",
+                                        "5b",
+                                        "32",
+                                        "30",
+                                        "31",
+                                        "7e",
+                                    ])
+                                    .output();
+                            });
+                        }
+                    } else {
+                        let _ = session.write_tx.send(bytes::Bytes::from(data));
+                    }
                 }
             }
         }
