@@ -69,6 +69,12 @@ extern "C" fn signal_handler(_sig: libc::c_int) {
 }
 
 fn main() -> Result<()> {
+    // Capture the executable path up front. An in-app update replaces the binary
+    // at this path and deletes the old inode, after which `current_exe()` would
+    // resolve to a now-deleted path — so we must remember it now to restart into
+    // the freshly installed binary later.
+    let original_exe = std::env::current_exe();
+
     // ── Watchdog thread ────────────────────────────────────────────────
     // Runs on a plain OS thread, completely outside tokio. Polls SIGNAL_RECEIVED
     // and force-exits the process if a signal was caught — guarantees we can
@@ -297,42 +303,58 @@ fn main() -> Result<()> {
     // process with the freshly installed binary (preserving the original args).
     // Existing tmux/Claude sessions survive and are reconnected on startup.
     if let Ok(true) = result {
-        restart_into_new_binary();
+        restart_into_new_binary(original_exe);
     }
 
     result.map(|_| ())
 }
 
-/// Re-exec the current executable with the original arguments. On success this
-/// never returns (the process image is replaced); on failure it logs and falls
-/// through so the caller exits normally.
-fn restart_into_new_binary() {
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Could not restart automatically ({e}); please relaunch clawtree.");
-            return;
-        }
-    };
+/// Re-exec clawtree with the original arguments after an in-app update.
+/// On success this never returns (the process image is replaced); on failure it
+/// logs and falls through so the caller exits normally.
+///
+/// Programs are tried in order:
+///   1. `argv[0]` when it's a bare command name (e.g. `clawtree`) — re-resolved
+///      through PATH, so a PATH-installed binary picks up the freshly updated
+///      file. This is the common case for installed users.
+///   2. the absolute path captured at startup (where the update wrote the new
+///      binary) — covers launches by path or off PATH (e.g. dev builds).
+fn restart_into_new_binary(original_exe: std::io::Result<std::path::PathBuf>) {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    let mut candidates: Vec<std::ffi::OsString> = Vec::new();
+    if let Some(argv0) = std::env::args_os().next() {
+        if !argv0.to_string_lossy().contains('/') {
+            candidates.push(argv0);
+        }
+    }
+    if let Ok(path) = original_exe {
+        candidates.push(path.into_os_string());
+    }
 
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // exec() only returns if it failed.
-        let err = std::process::Command::new(&exe).args(&args).exec();
-        eprintln!("Could not restart automatically ({err}); please relaunch clawtree.");
+        for program in &candidates {
+            // exec() only returns on failure — fall through to the next candidate.
+            let _ = std::process::Command::new(program).args(&args).exec();
+        }
     }
 
     #[cfg(not(unix))]
     {
-        match std::process::Command::new(&exe).args(&args).spawn() {
-            Ok(_) => std::process::exit(0),
-            Err(e) => {
-                eprintln!("Could not restart automatically ({e}); please relaunch clawtree.")
+        for program in &candidates {
+            if std::process::Command::new(program)
+                .args(&args)
+                .spawn()
+                .is_ok()
+            {
+                std::process::exit(0);
             }
         }
     }
+
+    eprintln!("Could not restart automatically; please relaunch clawtree.");
 }
 
 async fn async_main(

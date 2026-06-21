@@ -458,6 +458,98 @@ pub fn query_tmux_pane_cwd(tmux_name: &str) -> Option<String> {
     None
 }
 
+/// Interactive shells. When one of these is the foreground process *and* it is
+/// the pane's own login shell, the pane is idle at a prompt. When a shell of the
+/// same name appears as a child (running a script), we surface the script name.
+const SHELL_COMMANDS: &[&str] = &["bash", "zsh", "fish", "sh", "dash"];
+
+/// Query the command the user is actively running in a tmux pane, e.g. "vim",
+/// "node", or the basename of a shell script like "deploy.sh".
+///
+/// Returns `None` when the pane is sitting idle at its shell prompt — callers
+/// fall back to the working directory in that case.
+///
+/// `#{pane_current_command}` alone can't tell an idle shell from one running a
+/// script (both report "bash"), so we inspect the pane's tty: the interactive
+/// shell holds the foreground process group only when idle. Any *other*
+/// foreground process is the command the user is running.
+pub fn query_tmux_pane_foreground(tmux_name: &str) -> Option<String> {
+    // The pid tmux launched (the interactive shell) and the pane's tty.
+    let output = Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            tmux_name,
+            "-p",
+            "#{pane_pid}|#{pane_tty}",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (pid_str, tty) = stdout.trim().split_once('|')?;
+    let shell_pid: i32 = pid_str.trim().parse().ok()?;
+    let tty = tty.trim().strip_prefix("/dev/").unwrap_or(tty.trim());
+    if tty.is_empty() {
+        return None;
+    }
+
+    // List every process attached to the pane's tty. STAT contains '+' for the
+    // foreground process group; PID lets us exclude the idle interactive shell.
+    let ps = Command::new("ps")
+        .args(["-t", tty, "-o", "stat=,pid=,comm=,args="])
+        .output()
+        .ok()?;
+    if !ps.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&ps.stdout);
+
+    for line in text.lines() {
+        let line = line.trim_start();
+        let mut parts = line.splitn(2, char::is_whitespace);
+        let stat = parts.next()?;
+        if !stat.contains('+') {
+            continue; // not in the foreground process group
+        }
+        let rest = parts.next().unwrap_or("").trim_start();
+        let mut p = rest.splitn(2, char::is_whitespace);
+        let pid: i32 = p.next().and_then(|s| s.parse().ok())?;
+        if pid == shell_pid {
+            continue; // the idle interactive shell itself → not a running command
+        }
+        let rest = p.next().unwrap_or("").trim_start();
+        let mut p = rest.splitn(2, char::is_whitespace);
+        let comm = p.next().unwrap_or("").trim();
+        let args = p.next().unwrap_or("").trim();
+        if comm.is_empty() {
+            continue;
+        }
+        return Some(friendly_command_name(comm, args));
+    }
+    None
+}
+
+/// Turn a foreground process into a human-friendly label. For a shell running a
+/// script (`/bin/bash ./deploy.sh`), surface the script's basename; otherwise
+/// use the process name.
+fn friendly_command_name(comm: &str, args: &str) -> String {
+    if SHELL_COMMANDS.contains(&comm) {
+        // First non-flag argument after the shell path is the script.
+        for tok in args.split_whitespace().skip(1) {
+            if tok.starts_with('-') {
+                continue;
+            }
+            if let Some(name) = std::path::Path::new(tok).file_name() {
+                return name.to_string_lossy().to_string();
+            }
+        }
+    }
+    comm.to_string()
+}
+
 /// Query the pane title from an existing tmux session.
 pub fn query_tmux_pane_title(tmux_name: &str) -> Option<String> {
     let output = Command::new("tmux")

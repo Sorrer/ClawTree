@@ -112,9 +112,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             },
             InputMode::Terminal => {
                 if wide {
-                    "Tab:escape to sidebar  ^p:prompt queue  ^b:toggle sidebar  ^q:quit"
+                    "Alt+T:escape to sidebar  ^p:prompt queue  ^b:toggle sidebar  ^q:quit"
                 } else {
-                    "Tab:sidebar ^p:queue ^b:toggle-sidebar ^q:quit"
+                    "Alt+T:sidebar ^p:queue ^b:toggle-sidebar ^q:quit"
                 }
             }
             InputMode::Dialog => {

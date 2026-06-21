@@ -16,6 +16,30 @@ fn spinner_char(app: &App) -> char {
     theme::SPINNER_FRAMES[idx]
 }
 
+/// Compute the display name for a plain terminal session: the command the user
+/// is actively running if any, otherwise the current directory's folder name,
+/// falling back to the session label.
+pub(crate) fn terminal_display_name(session: Option<&crate::session::Session>) -> String {
+    let tmux_name = session.and_then(|s| s.tmux_session_name.as_deref());
+
+    // A command actively running in the pane (e.g. vim, node, deploy.sh) wins.
+    if let Some(cmd) = tmux_name.and_then(crate::session::pty::query_tmux_pane_foreground) {
+        return cmd;
+    }
+
+    // Otherwise show the current working directory's last component.
+    if let Some(cwd) = tmux_name.and_then(crate::session::pty::query_tmux_pane_cwd) {
+        return std::path::Path::new(&cwd)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or(cwd);
+    }
+
+    session
+        .map(|s| s.label.clone())
+        .unwrap_or_else(|| "terminal".to_string())
+}
+
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == FocusTarget::Sidebar;
     let in_worktrees_panel = app.sidebar_panel == SidebarPanel::Worktrees;
@@ -175,29 +199,47 @@ fn render_project_session(
     let status = session
         .map(|s| s.agent_status())
         .unwrap_or(AgentStatus::Exited);
+    let is_terminal = session.map(|s| s.is_terminal).unwrap_or(false);
     let in_plan_mode = session.map(|s| s.is_in_plan_mode()).unwrap_or(false);
     let nickname = session.and_then(|s| s.nickname.clone());
     let title = session.and_then(|s| s.terminal_title());
 
-    let display_name = nickname.unwrap_or_else(|| {
-        title
-            .unwrap_or_else(|| {
-                session
-                    .map(|s| s.label.clone())
-                    .unwrap_or_else(|| "???".to_string())
-            })
-            .trim_start_matches('\u{2733}')
-            .trim_start_matches('\u{2802}')
-            .trim_start_matches('\u{2810}')
-            .trim_start()
-            .to_string()
-    });
-
-    let (status_icon, fg): (String, Color) = match status {
-        AgentStatus::Exited => ("\u{2717}".to_string(), Color::DarkGray),
-        AgentStatus::Working => (spinner_char(app).to_string(), Color::Yellow),
-        AgentStatus::NeedsInput => ("\u{25cf}".to_string(), theme::AGENT_NEEDS_INPUT),
-        AgentStatus::Idle => ("\u{25cb}".to_string(), Color::Gray),
+    // Terminals show a square icon and are named after their running command or
+    // current directory; Claude sessions show a status dot and their title.
+    let (display_name, status_icon, fg): (String, String, Color) = if is_terminal {
+        let is_exited = session
+            .map(|s| s.exited.load(Ordering::SeqCst))
+            .unwrap_or(true);
+        let name = nickname.unwrap_or_else(|| {
+            if is_exited {
+                "[exited]".to_string()
+            } else {
+                terminal_display_name(session)
+            }
+        });
+        let color = if is_exited { Color::DarkGray } else { Color::Green };
+        (name, "\u{25aa}".to_string(), color)
+    } else {
+        let name = nickname.unwrap_or_else(|| {
+            title
+                .unwrap_or_else(|| {
+                    session
+                        .map(|s| s.label.clone())
+                        .unwrap_or_else(|| "???".to_string())
+                })
+                .trim_start_matches('\u{2733}')
+                .trim_start_matches('\u{2802}')
+                .trim_start_matches('\u{2810}')
+                .trim_start()
+                .to_string()
+        });
+        let (icon, color): (String, Color) = match status {
+            AgentStatus::Exited => ("\u{2717}".to_string(), Color::DarkGray),
+            AgentStatus::Working => (spinner_char(app).to_string(), Color::Yellow),
+            AgentStatus::NeedsInput => ("\u{25cf}".to_string(), theme::AGENT_NEEDS_INPUT),
+            AgentStatus::Idle => ("\u{25cb}".to_string(), Color::Gray),
+        };
+        (name, icon, color)
     };
 
     let sel_fg = if has_bg {
@@ -562,27 +604,13 @@ fn render_terminal_session(
         .unwrap_or(true);
 
     // Prefer a user-assigned nickname (set via rename); otherwise show the
-    // tmux pane's current working directory, falling back to the label.
+    // pane's running command or current working directory.
     let display_name = if let Some(nick) = session.and_then(|s| s.nickname.clone()) {
         nick
     } else if is_exited {
         "[exited]".to_string()
     } else {
-        session
-            .and_then(|s| s.tmux_session_name.as_deref())
-            .and_then(crate::session::pty::query_tmux_pane_cwd)
-            .map(|cwd| {
-                // Truncate to just the last directory component
-                std::path::Path::new(&cwd)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or(cwd)
-            })
-            .unwrap_or_else(|| {
-                session
-                    .map(|s| s.label.clone())
-                    .unwrap_or_else(|| "terminal".to_string())
-            })
+        terminal_display_name(session)
     };
 
     let tag = "[terminal]";

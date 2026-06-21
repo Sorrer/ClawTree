@@ -32,12 +32,21 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let mut title = match app.active_session_id {
         Some(sid) => {
             let session = app.sessions.get(&sid);
-            let term_title = session.and_then(|s| s.terminal_title());
-            let label = session.map(|s| s.label.as_str()).unwrap_or("???");
-            // Prefer terminal title (set by Claude); fall back to session label
-            match term_title {
-                Some(t) => format!("{} {} ", focus_indicator, t),
-                None => format!("{} {} ", focus_indicator, label),
+            let is_terminal = session.map(|s| s.is_terminal).unwrap_or(false);
+            if is_terminal {
+                // Plain terminal: name after running command / cwd (or nickname).
+                let name = session
+                    .and_then(|s| s.nickname.clone())
+                    .unwrap_or_else(|| super::sidebar::terminal_display_name(session));
+                format!("{} {} ", focus_indicator, name)
+            } else {
+                let term_title = session.and_then(|s| s.terminal_title());
+                let label = session.map(|s| s.label.as_str()).unwrap_or("???");
+                // Prefer terminal title (set by Claude); fall back to session label
+                match term_title {
+                    Some(t) => format!("{} {} ", focus_indicator, t),
+                    None => format!("{} {} ", focus_indicator, label),
+                }
             }
         }
         None => format!("{} Terminal ", focus_indicator),

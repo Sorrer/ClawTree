@@ -2135,11 +2135,17 @@ fn draw_context_menu(
             .project_session_ids
             .get(*si)
             .and_then(|sid| app.sessions.get(sid))
-            .and_then(|s| {
-                s.nickname
-                    .clone()
-                    .or_else(|| s.terminal_title())
-                    .or_else(|| Some(s.label.clone()))
+            .map(|s| {
+                if s.is_terminal {
+                    s.nickname
+                        .clone()
+                        .unwrap_or_else(|| super::sidebar::terminal_display_name(Some(s)))
+                } else {
+                    s.nickname
+                        .clone()
+                        .or_else(|| s.terminal_title())
+                        .unwrap_or_else(|| s.label.clone())
+                }
             })
             .map(|n| format!(" {} ", n))
             .unwrap_or_else(|| " Actions ".to_string()),
@@ -2147,7 +2153,11 @@ fn draw_context_menu(
             .terminal_ids
             .get(*ti)
             .and_then(|sid| app.sessions.get(sid))
-            .and_then(|s| s.nickname.clone().or_else(|| Some(s.label.clone())))
+            .map(|s| {
+                s.nickname
+                    .clone()
+                    .unwrap_or_else(|| super::sidebar::terminal_display_name(Some(s)))
+            })
             .map(|n| format!(" {} ", n))
             .unwrap_or_else(|| " Actions ".to_string()),
         SidebarItem::Location(li) => app
