@@ -458,10 +458,21 @@ pub fn query_tmux_pane_cwd(tmux_name: &str) -> Option<String> {
     None
 }
 
-/// Interactive shells. When one of these is the foreground process *and* it is
-/// the pane's own login shell, the pane is idle at a prompt. When a shell of the
-/// same name appears as a child (running a script), we surface the script name.
-const SHELL_COMMANDS: &[&str] = &["bash", "zsh", "fish", "sh", "dash"];
+/// Shells and interpreters invoked as `<cmd> [flags] <script> …`. When one of
+/// these is the foreground process we surface the basename of the script it is
+/// running (e.g. `bash deploy.sh` → `deploy.sh`, `node server.js` → `server.js`)
+/// rather than the interpreter name. An interactive shell sitting at its prompt
+/// is filtered out earlier (it holds the foreground group only when idle).
+const SCRIPT_RUNNERS: &[&str] = &[
+    // shells
+    "bash", "zsh", "fish", "sh", "dash", // interpreters
+    "node", "deno", "python", "python3", "ruby", "perl",
+];
+
+/// Package managers invoked as `<pm> [run] <script>` (e.g. `npm run dev`,
+/// `npm test`, `yarn build`, `pnpm lint`). We surface the script name, skipping a
+/// leading `run`/`run-script`/`exec` subcommand keyword.
+const PACKAGE_MANAGERS: &[&str] = &["npm", "pnpm", "yarn", "bun"];
 
 /// Query the command the user is actively running in a tmux pane, e.g. "vim",
 /// "node", or the basename of a shell script like "deploy.sh".
@@ -532,12 +543,35 @@ pub fn query_tmux_pane_foreground(tmux_name: &str) -> Option<String> {
     None
 }
 
-/// Turn a foreground process into a human-friendly label. For a shell running a
-/// script (`/bin/bash ./deploy.sh`), surface the script's basename; otherwise
-/// use the process name.
+/// Turn a foreground process into a human-friendly label. When the process is a
+/// script runner we surface the script/subcommand being run rather than the
+/// runner itself:
+///   `/bin/bash ./deploy.sh` → `deploy.sh`
+///   `node server.js`        → `server.js`
+///   `npm run dev`           → `dev`
+///   `npm test`              → `test`
+///   `yarn build`            → `build`
+/// Anything else (e.g. `vim`) is shown by its own process name.
 fn friendly_command_name(comm: &str, args: &str) -> String {
-    if SHELL_COMMANDS.contains(&comm) {
-        // First non-flag argument after the shell path is the script.
+    // Package managers: the script is the first non-flag argument, skipping a
+    // leading `run`/`run-script`/`exec` subcommand keyword.
+    if PACKAGE_MANAGERS.contains(&comm) {
+        let mut toks = args
+            .split_whitespace()
+            .skip(1)
+            .filter(|t| !t.starts_with('-'));
+        let script = match toks.next() {
+            Some("run") | Some("run-script") | Some("exec") => toks.next(),
+            other => other,
+        };
+        if let Some(name) = script.and_then(|s| std::path::Path::new(s).file_name()) {
+            return name.to_string_lossy().to_string();
+        }
+        return comm.to_string();
+    }
+
+    // Shells / interpreters: the script is the first non-flag argument.
+    if SCRIPT_RUNNERS.contains(&comm) {
         for tok in args.split_whitespace().skip(1) {
             if tok.starts_with('-') {
                 continue;
@@ -547,6 +581,7 @@ fn friendly_command_name(comm: &str, args: &str) -> String {
             }
         }
     }
+
     comm.to_string()
 }
 
@@ -752,4 +787,46 @@ fn setup_pty_threads(
         last_output,
         tmux_session_name,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::friendly_command_name;
+
+    #[test]
+    fn package_manager_scripts_surface_the_script_name() {
+        assert_eq!(friendly_command_name("npm", "npm run dev"), "dev");
+        assert_eq!(friendly_command_name("npm", "npm test"), "test");
+        assert_eq!(friendly_command_name("npm", "npm run-script build"), "build");
+        assert_eq!(friendly_command_name("yarn", "yarn build"), "build");
+        assert_eq!(friendly_command_name("pnpm", "pnpm run lint"), "lint");
+        assert_eq!(friendly_command_name("bun", "bun run start"), "start");
+    }
+
+    #[test]
+    fn package_manager_flags_are_skipped() {
+        assert_eq!(
+            friendly_command_name("npm", "npm run --silent dev"),
+            "dev"
+        );
+    }
+
+    #[test]
+    fn package_manager_without_a_script_falls_back_to_the_name() {
+        assert_eq!(friendly_command_name("npm", "npm"), "npm");
+        assert_eq!(friendly_command_name("npm", "npm run"), "npm");
+    }
+
+    #[test]
+    fn shells_and_interpreters_surface_the_script_basename() {
+        assert_eq!(friendly_command_name("bash", "/bin/bash ./deploy.sh"), "deploy.sh");
+        assert_eq!(friendly_command_name("node", "node src/server.js"), "server.js");
+        assert_eq!(friendly_command_name("node", "node --inspect app.js"), "app.js");
+    }
+
+    #[test]
+    fn plain_processes_use_their_own_name() {
+        assert_eq!(friendly_command_name("vim", "vim file.txt"), "vim");
+        assert_eq!(friendly_command_name("htop", "htop"), "htop");
+    }
 }
