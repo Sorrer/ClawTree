@@ -564,7 +564,13 @@ async fn async_main(
     }
 
     // ── Global usage poller — background thread ────────────────
-    session::spawn_global_usage_poller(event_tx.clone());
+    // Shared activity timestamp (ms since epoch) the poller reads to decide its
+    // cadence. Bumped on every keystroke and PTY output below. Seeded to "now"
+    // so the poller treats startup as active and refreshes promptly.
+    let last_activity = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
+        session::now_millis(),
+    ));
+    session::spawn_global_usage_poller(event_tx.clone(), std::sync::Arc::clone(&last_activity));
 
     // ── Update checker — one-shot background thread ──────────
     update::spawn_update_checker(event_tx.clone());
@@ -660,6 +666,7 @@ async fn async_main(
             }
             match event {
                 AppEvent::Input(CrosstermEvent::Key(key)) => {
+                    last_activity.store(session::now_millis(), std::sync::atomic::Ordering::Relaxed);
                     let session_count_before = app.sessions.len();
                     let worktree_count_before = app.worktrees.len();
                     let scroll_before = app.terminal_scroll;
@@ -997,6 +1004,7 @@ async fn async_main(
                 }
                 AppEvent::Input(_) => {}
                 AppEvent::PtyOutput => {
+                    last_activity.store(session::now_millis(), std::sync::atomic::Ordering::Relaxed);
                     app.url_cache_dirty = true;
                     needs_redraw = true;
                 }

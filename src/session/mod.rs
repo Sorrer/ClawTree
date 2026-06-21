@@ -1,9 +1,9 @@
 pub mod pty;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
 use crate::app::{AgentStatus, App};
@@ -1395,13 +1395,34 @@ pub struct GlobalUsage {
     pub sonnet_7d_reset: Option<String>,
 }
 
+/// Current time in milliseconds since the UNIX epoch. Used as a cheap,
+/// thread-shareable activity timestamp stored in an `AtomicU64`.
+pub fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Spawn a background thread that polls the Anthropic API for global usage data.
-/// Polls every 120 seconds with exponential backoff on errors (up to 10 minutes).
-/// Initial poll is deferred by 2 seconds so the TUI renders immediately without lag.
+///
+/// The poll cadence adapts to activity (tracked via `last_activity`, a shared
+/// timestamp the UI bumps on every keystroke and PTY output):
+///   • **Active** — input or terminal output within the last minute → poll
+///     every 30s so the bottom-right usage stays fresh while you work.
+///   • **Idle** — no activity → don't poll at all, except a slow ~3h heartbeat.
+///     The moment activity resumes, the next check polls immediately.
+///
+/// Errors apply exponential backoff (up to 10 minutes). The first poll is
+/// deferred ~2s so the TUI renders immediately without waiting on curl.
 pub fn spawn_global_usage_poller(
     event_tx: tokio::sync::mpsc::UnboundedSender<crate::event::AppEvent>,
+    last_activity: Arc<AtomicU64>,
 ) {
-    const BASE_INTERVAL_SECS: u64 = 120;
+    const ACTIVE_INTERVAL_SECS: u64 = 30;
+    const IDLE_INTERVAL_SECS: u64 = 3 * 60 * 60; // ~3h heartbeat when idle
+    const ACTIVITY_WINDOW_SECS: u64 = 60; // "active" if activity this recent
+    const CHECK_INTERVAL_SECS: u64 = 5; // how often to re-evaluate
     const MAX_BACKOFF_SECS: u64 = 600; // 10 minutes
 
     std::thread::Builder::new()
@@ -1409,25 +1430,52 @@ pub fn spawn_global_usage_poller(
         .spawn(move || {
             // Brief delay so the TUI starts up without waiting on the first curl
             std::thread::sleep(Duration::from_secs(2));
-            let mut current_interval = BASE_INTERVAL_SECS;
+            let mut last_poll: Option<Instant> = None;
+            let mut backoff_until: Option<Instant> = None;
+            let mut backoff_secs = CHECK_INTERVAL_SECS;
             loop {
-                match poll_global_usage() {
-                    Ok(usage) => {
-                        current_interval = BASE_INTERVAL_SECS;
-                        if event_tx
-                            .send(crate::event::AppEvent::GlobalUsageUpdated { usage })
-                            .is_err()
-                        {
-                            break;
+                let now = Instant::now();
+                let idle_secs = now_millis().saturating_sub(last_activity.load(Ordering::Relaxed))
+                    / 1000;
+                let is_active = idle_secs <= ACTIVITY_WINDOW_SECS;
+
+                let due = match last_poll {
+                    None => true, // always do an initial poll
+                    Some(t) => {
+                        let elapsed = now.duration_since(t).as_secs();
+                        let interval = if is_active {
+                            ACTIVE_INTERVAL_SECS
+                        } else {
+                            IDLE_INTERVAL_SECS
+                        };
+                        elapsed >= interval
+                    }
+                };
+                let in_backoff = backoff_until.map(|t| now < t).unwrap_or(false);
+
+                if due && !in_backoff {
+                    match poll_global_usage() {
+                        Ok(usage) => {
+                            backoff_secs = CHECK_INTERVAL_SECS;
+                            backoff_until = None;
+                            last_poll = Some(now);
+                            if event_tx
+                                .send(crate::event::AppEvent::GlobalUsageUpdated { usage })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            // Exponential backoff on consecutive failures so we
+                            // don't hammer the API while it's unhappy.
+                            backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                            backoff_until = Some(now + Duration::from_secs(backoff_secs));
                         }
                     }
-                    Err(_) => {
-                        // Exponential backoff: double the interval on each
-                        // consecutive failure, capped at MAX_BACKOFF_SECS.
-                        current_interval = (current_interval * 2).min(MAX_BACKOFF_SECS);
-                    }
                 }
-                std::thread::sleep(Duration::from_secs(current_interval));
+
+                std::thread::sleep(Duration::from_secs(CHECK_INTERVAL_SECS));
             }
         })
         .ok();
