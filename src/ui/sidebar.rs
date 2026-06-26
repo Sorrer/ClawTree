@@ -16,28 +16,24 @@ fn spinner_char(app: &App) -> char {
     theme::SPINNER_FRAMES[idx]
 }
 
-/// Compute the display name for a plain terminal session: the command the user
-/// is actively running if any, otherwise the current directory's folder name,
-/// falling back to the session label.
-pub(crate) fn terminal_display_name(session: Option<&crate::session::Session>) -> String {
-    let tmux_name = session.and_then(|s| s.tmux_session_name.as_deref());
-
-    // A command actively running in the pane (e.g. vim, node, deploy.sh) wins.
-    if let Some(cmd) = tmux_name.and_then(crate::session::pty::query_tmux_pane_foreground) {
-        return cmd;
+/// Display name for a plain terminal session: the command the user is actively
+/// running (e.g. vim, node, deploy.sh) or the cwd folder name, falling back to
+/// the session label.
+///
+/// Reads the cache populated off the render path by `spawn_terminal_name_poller`.
+/// It must NOT shell out (`query_tmux_pane_*`) here — doing so per terminal per
+/// frame blocks the render thread on tmux's single server thread and freezes the
+/// UI on instances with many sessions.
+pub(crate) fn terminal_display_name(app: &App, session: Option<&crate::session::Session>) -> String {
+    match session {
+        Some(s) => app
+            .terminal_names
+            .get(&s.id)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .unwrap_or_else(|| s.label.clone()),
+        None => "terminal".to_string(),
     }
-
-    // Otherwise show the current working directory's last component.
-    if let Some(cwd) = tmux_name.and_then(crate::session::pty::query_tmux_pane_cwd) {
-        return std::path::Path::new(&cwd)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or(cwd);
-    }
-
-    session
-        .map(|s| s.label.clone())
-        .unwrap_or_else(|| "terminal".to_string())
 }
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
@@ -214,7 +210,7 @@ fn render_project_session(
             if is_exited {
                 "[exited]".to_string()
             } else {
-                terminal_display_name(session)
+                terminal_display_name(app, session)
             }
         });
         let color = if is_exited { Color::DarkGray } else { Color::Green };
@@ -590,7 +586,7 @@ fn render_session(
 /// Render a plain terminal session item with [terminal] tag and cwd as the name.
 #[allow(clippy::too_many_arguments)]
 fn render_terminal_session(
-    _app: &App,
+    app: &App,
     session: Option<&crate::session::Session>,
     _sid: u64,
     has_bg: bool,
@@ -610,7 +606,7 @@ fn render_terminal_session(
     } else if is_exited {
         "[exited]".to_string()
     } else {
-        terminal_display_name(session)
+        terminal_display_name(app, session)
     };
 
     let tag = "[terminal]";

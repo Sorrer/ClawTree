@@ -37,7 +37,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 // Plain terminal: name after running command / cwd (or nickname).
                 let name = session
                     .and_then(|s| s.nickname.clone())
-                    .unwrap_or_else(|| super::sidebar::terminal_display_name(session));
+                    .unwrap_or_else(|| super::sidebar::terminal_display_name(app, session));
                 format!("{} {} ", focus_indicator, name)
             } else {
                 let term_title = session.and_then(|s| s.terminal_title());

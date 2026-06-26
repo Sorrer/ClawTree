@@ -5,47 +5,23 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::theme;
-use crate::app::{App, InputMode, ScreenMode, StatusSeverity};
+use crate::app::{App, InputMode, StatusSeverity};
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
-    let mode_text = match app.screen_mode {
-        ScreenMode::Mini => "MINI",
-        ScreenMode::MiniDrilldown => "MINI/DRILL",
-        ScreenMode::Normal => match app.input_mode {
-            InputMode::Normal => {
-                if app.prompt_queue_focused() {
-                    "Prompt Queue"
-                } else {
-                    "Worktrees"
-                }
+    let mode_text = match app.input_mode {
+        InputMode::Normal => {
+            if app.prompt_queue_focused() {
+                "Prompt Queue"
+            } else {
+                "Worktrees"
             }
-            InputMode::Terminal => "Claude Code",
-            InputMode::Dialog => "DIALOG",
-        },
+        }
+        InputMode::Terminal => "Claude Code",
+        InputMode::Dialog => "DIALOG",
     };
 
     let wide = area.width > 120;
-    let help_text: &str = if app.screen_mode == ScreenMode::Mini
-        && app.mini.focus == crate::app::MiniModeFocus::DetailInput
-    {
-        if wide {
-            "Tab:back to tree  Enter:send  Alt+Enter:newline  F2:normal  ?:help"
-        } else {
-            "Tab:tree Enter:send F2:normal ?:help"
-        }
-    } else if app.screen_mode == ScreenMode::Mini {
-        if wide {
-            "j/k:navigate  Tab:input  o:terminal  a:new agent  d:kill  r:rename  F2:normal  ?:help"
-        } else {
-            "j/k:nav Tab:input a:new d:kill F2:normal ?:help"
-        }
-    } else if app.screen_mode == ScreenMode::MiniDrilldown {
-        if wide {
-            "Tab:back to agents  F2:normal mode  ^q:quit  (keys forwarded to terminal)"
-        } else {
-            "Tab:back F2:normal ^q:quit"
-        }
-    } else if !app.repo_detected && app.input_mode != InputMode::Dialog {
+    let help_text: &str = if !app.repo_detected && app.input_mode != InputMode::Dialog {
         if app.regular_repo_path.is_some() {
             if wide {
                 "i:init repo  c:convert  ?:help  ^q:quit"
@@ -152,19 +128,16 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         _ => ("", Style::default()),
     };
 
-    let mode_bg = match app.screen_mode {
-        ScreenMode::Mini | ScreenMode::MiniDrilldown => theme::MODE_MINI_BG,
-        ScreenMode::Normal => match app.input_mode {
-            InputMode::Normal => {
-                if app.prompt_queue_focused() {
-                    theme::BORDER_FOCUSED_PROMPT_QUEUE
-                } else {
-                    theme::MODE_NORMAL_BG
-                }
+    let mode_bg = match app.input_mode {
+        InputMode::Normal => {
+            if app.prompt_queue_focused() {
+                theme::BORDER_FOCUSED_PROMPT_QUEUE
+            } else {
+                theme::MODE_NORMAL_BG
             }
-            InputMode::Terminal => theme::get().mode_terminal_bg,
-            InputMode::Dialog => theme::MODE_DIALOG_BG,
-        },
+        }
+        InputMode::Terminal => theme::get().mode_terminal_bg,
+        InputMode::Dialog => theme::MODE_DIALOG_BG,
     };
 
     let version = option_env!("CLAWTREE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));

@@ -537,7 +537,7 @@ async fn async_main(
                 app.load_prompt_queues();
             }
 
-            // Load saved prompt templates for mini mode
+            // Load saved prompt templates
             app.load_saved_prompts();
 
             // Auto-select the Project overview on startup
@@ -554,6 +554,10 @@ async fn async_main(
             *info = session::collect_tmux_session_info(&app);
         }
         session::spawn_tmux_title_poller(
+            event_tx.clone(),
+            std::sync::Arc::clone(&tmux_session_info),
+        );
+        session::spawn_terminal_name_poller(
             event_tx.clone(),
             std::sync::Arc::clone(&tmux_session_info),
         );
@@ -592,14 +596,38 @@ async fn async_main(
     // ── Main event loop ────────────────────────────────────────────
     let mut needs_redraw = true;
 
+    // Frame-rate ceiling. Redraws are coalesced so a session streaming a
+    // firehose of output can't drive more than ~60 repaints/sec. The vt100
+    // parser accumulates every byte regardless, so each repaint shows the
+    // latest screen state — we drop only redundant repaints, never content.
+    const MIN_FRAME: Duration = Duration::from_millis(16);
+    let mut last_draw = Instant::now() - MIN_FRAME;
+
+    // ── Optional frame profiler (CLAWTREE_PROFILE=1) ────────────────
+    // Logs redraws/sec, PtyOutput events/sec, and mean draw + URL-scan time
+    // to ~/.clawtree/logs/clawtree.log every ~2s. Off by default; zero cost
+    // when disabled beyond a couple of branch checks.
+    let profile = std::env::var("CLAWTREE_PROFILE").map(|v| v != "0").unwrap_or(false);
+    let mut pty_output_events: u64 = 0;
+    let mut prof_draws: u64 = 0;
+    let mut prof_draw_time = Duration::ZERO;
+    let mut prof_scan_time = Duration::ZERO;
+    let mut prof_window = Instant::now();
+
     loop {
         if app.should_quit {
             break;
         }
 
-        if needs_redraw {
+        // A queued pending action blocks the loop while it runs, and relies on
+        // this draw painting its loading overlay first — so it must bypass the
+        // frame-rate cap (which would otherwise skip the draw right after the
+        // keypress that queued it, leaving a stale screen during the blocking op).
+        let force_frame = app.pending_action.is_some();
+        if needs_redraw && (force_frame || last_draw.elapsed() >= MIN_FRAME) {
             // Refresh URL cache before rendering if dirty
             if app.url_cache_dirty {
+                let scan_start = if profile { Some(Instant::now()) } else { None };
                 // Only scan URLs on the live view (scroll == 0); when scrolled
                 // the tmux-captured content doesn't match the vt100 screen.
                 if app.terminal_scroll == 0 {
@@ -619,9 +647,46 @@ async fn async_main(
                     app.url_cache.hovered = None;
                 }
                 app.url_cache_dirty = false;
+                if let Some(s) = scan_start {
+                    prof_scan_time += s.elapsed();
+                }
             }
+            let draw_start = if profile { Some(Instant::now()) } else { None };
             terminal.draw(|f| ui::draw(f, &app))?;
             needs_redraw = false;
+            last_draw = Instant::now();
+            if let Some(d) = draw_start {
+                prof_draw_time += d.elapsed();
+                prof_draws += 1;
+            }
+        }
+
+        // Emit a profiling summary roughly every 2 seconds.
+        if profile && prof_window.elapsed() >= Duration::from_secs(2) {
+            let secs = prof_window.elapsed().as_secs_f64();
+            let mean_draw = if prof_draws > 0 {
+                prof_draw_time.as_secs_f64() * 1000.0 / prof_draws as f64
+            } else {
+                0.0
+            };
+            let mean_scan = if prof_draws > 0 {
+                prof_scan_time.as_secs_f64() * 1000.0 / prof_draws as f64
+            } else {
+                0.0
+            };
+            tracing::info!(
+                "PROFILE sessions={} draws/s={:.1} pty_out/s={:.1} mean_draw={:.2}ms mean_scan={:.2}ms",
+                app.sessions.len(),
+                prof_draws as f64 / secs,
+                pty_output_events as f64 / secs,
+                mean_draw,
+                mean_scan,
+            );
+            pty_output_events = 0;
+            prof_draws = 0;
+            prof_draw_time = Duration::ZERO;
+            prof_scan_time = Duration::ZERO;
+            prof_window = Instant::now();
         }
 
         // Execute pending actions after drawing the loading overlay
@@ -1003,10 +1068,20 @@ async fn async_main(
                     needs_redraw = true;
                 }
                 AppEvent::Input(_) => {}
-                AppEvent::PtyOutput => {
+                AppEvent::PtyOutput { session_id } => {
                     last_activity.store(session::now_millis(), std::sync::atomic::Ordering::Relaxed);
-                    app.url_cache_dirty = true;
-                    needs_redraw = true;
+                    pty_output_events = pty_output_events.wrapping_add(1);
+                    // The session's vt100 parser was already updated by its reader
+                    // thread, independent of any redraw. We only repaint when the
+                    // output belongs to the *active* session — this instance can be
+                    // attached to dozens of sessions, and letting every background
+                    // session force a full redraw + URL rescan on each chunk is a
+                    // storm that scales with the attached-session count. Background
+                    // titles/activity indicators still refresh via the 30fps tick.
+                    if app.active_session_id == Some(session_id) {
+                        app.url_cache_dirty = true;
+                        needs_redraw = true;
+                    }
                 }
                 AppEvent::PtyExited { session_id } => {
                     session::mark_exited(&mut app, session_id);
@@ -1194,6 +1269,12 @@ async fn async_main(
                     // Update the poller's snapshot so it knows the current titles
                     if let Ok(mut info) = tmux_session_info.lock() {
                         *info = session::collect_tmux_session_info(&app);
+                    }
+                    needs_redraw = true;
+                }
+                AppEvent::TerminalNamesUpdated { updates } => {
+                    for (session_id, name) in updates {
+                        app.terminal_names.insert(session_id, name);
                     }
                     needs_redraw = true;
                 }
@@ -1388,13 +1469,8 @@ async fn async_main(
                     // We want ~10fps for the spinner, so advance every 3rd tick
                     app.spinner_frame = app.spinner_frame.wrapping_add(1);
 
-                    // ── Mini mode agent tracking (~1/sec, on every 30th tick) ──
+                    // ── Agent tracking (~1/sec, on every 30th tick) ──
                     if app.spinner_frame.is_multiple_of(30) {
-                        // Rebuild agent list if in mini mode
-                        if app.screen_mode == ScreenMode::Mini {
-                            app.rebuild_mini_agent_list();
-                        }
-
                         // Detect Working→Idle transitions and capture summaries
                         let sids: Vec<u64> = app.sessions.keys().copied().collect();
                         for sid in &sids {

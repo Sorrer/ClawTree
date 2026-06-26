@@ -1,6 +1,5 @@
 pub mod dialogs;
 pub mod help;
-pub mod mini_mode;
 pub mod prompt_queue;
 pub mod sidebar;
 pub mod status_bar;
@@ -14,18 +13,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, ScreenMode};
+use crate::app::App;
 
 /// Draw the full UI, dispatching by screen mode.
 pub fn draw(f: &mut Frame, app: &App) {
     // Reset all layout areas so hidden panels don't have stale hit regions
     app.areas.reset();
 
-    match app.screen_mode {
-        ScreenMode::Normal => draw_normal(f, app),
-        ScreenMode::Mini => mini_mode::draw(f, app),
-        ScreenMode::MiniDrilldown => mini_mode::draw_drilldown(f, app),
-    }
+    draw_normal(f, app);
 }
 
 /// Draw the normal (full sidebar + terminal) mode.

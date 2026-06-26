@@ -103,12 +103,21 @@ pub fn scan_urls_from_screen(screen: &vt100::Screen) -> Vec<DetectedUrl> {
                     continue;
                 }
                 let contents = cell.contents();
-                for ch in contents.chars() {
-                    // Map every byte of this character to the same (row, col)
-                    let byte_start = text.len();
-                    text.push(ch);
-                    for _ in byte_start..text.len() {
-                        byte_to_pos.push((row, col));
+                if contents.is_empty() {
+                    // A blank, never-written cell (vt100 reports empty contents
+                    // rather than " "). Emit a space so adjacent words/URLs don't
+                    // fuse — otherwise dropped gaps let the regex run a single
+                    // match straight through intervening text into the next URL.
+                    byte_to_pos.push((row, col));
+                    text.push(' ');
+                } else {
+                    for ch in contents.chars() {
+                        // Map every byte of this character to the same (row, col)
+                        let byte_start = text.len();
+                        text.push(ch);
+                        for _ in byte_start..text.len() {
+                            byte_to_pos.push((row, col));
+                        }
                     }
                 }
                 if cell.is_wide() {
@@ -341,6 +350,38 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0].url, "https://a.com");
         assert_eq!(urls[1].url, "https://b.com/path");
+    }
+
+    #[test]
+    fn blank_cells_between_urls_do_not_merge_them() {
+        // Cursor-forward (\x1b[NC) leaves unwritten, empty-content cells between
+        // the URLs — exactly how Claude's input box redraws the gaps between
+        // words. These blanks must still break URL matching; otherwise the regex
+        // runs from the first https:// straight through into the second URL and
+        // highlights everything in between.
+        let urls = detect("https://a.com\u{1b}[5Chttps://b.com/path");
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0].url, "https://a.com");
+        assert_eq!(urls[1].url, "https://b.com/path");
+    }
+
+    #[test]
+    fn blank_cells_between_words_then_url_keep_urls_separate() {
+        // Two real-world-style URLs separated by prose rendered with blank gaps.
+        let line = "origin https://github.com/A/LightCloudStudio and then https://github.com/A/LightCloudStudioSAAS";
+        // Force the gaps to be unwritten cells by drawing each token with
+        // cursor-forward jumps instead of literal spaces.
+        let mut seq = String::new();
+        for tok in line.split(' ') {
+            if !seq.is_empty() {
+                seq.push_str("\u{1b}[1C"); // skip one column without writing it
+            }
+            seq.push_str(tok);
+        }
+        let urls = detect(&seq);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0].url, "https://github.com/A/LightCloudStudio");
+        assert_eq!(urls[1].url, "https://github.com/A/LightCloudStudioSAAS");
     }
 
     #[test]

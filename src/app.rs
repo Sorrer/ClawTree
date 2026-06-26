@@ -29,10 +29,6 @@ pub struct LayoutAreas {
     // Overlays
     pub help_overlay: Cell<Rect>,
     pub dialog: Cell<Rect>,
-    // Mini mode
-    pub mini_tree: Cell<Rect>,
-    pub mini_tree_inner: Cell<Rect>,
-    pub mini_detail: Cell<Rect>,
 }
 
 impl Default for LayoutAreas {
@@ -49,9 +45,6 @@ impl Default for LayoutAreas {
             sidebar_terminal_panel_inner: Cell::new(Rect::default()),
             help_overlay: Cell::new(Rect::default()),
             dialog: Cell::new(Rect::default()),
-            mini_tree: Cell::new(Rect::default()),
-            mini_tree_inner: Cell::new(Rect::default()),
-            mini_detail: Cell::new(Rect::default()),
         }
     }
 }
@@ -70,9 +63,6 @@ impl LayoutAreas {
         self.sidebar_terminal_panel_inner.set(Rect::default());
         self.help_overlay.set(Rect::default());
         self.dialog.set(Rect::default());
-        self.mini_tree.set(Rect::default());
-        self.mini_tree_inner.set(Rect::default());
-        self.mini_detail.set(Rect::default());
     }
 }
 
@@ -100,54 +90,15 @@ impl TextSelection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScreenMode {
     Normal,
-    Mini,
-    MiniDrilldown,
 }
 
-/// Computed agent status for mini mode display.
+/// Computed agent status for sidebar display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentStatus {
     Working,
     Idle,
     NeedsInput,
     Exited,
-}
-
-/// Which element has focus within mini mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MiniModeFocus {
-    AgentList,
-    DetailInput,
-    PromptInput,
-    SavedPrompts,
-    WorktreeSelector,
-}
-
-/// State for the mini mode view.
-pub struct MiniModeState {
-    pub selected: usize,
-    /// Tree items (worktrees + sessions) mirroring sidebar structure.
-    pub items: Vec<SidebarItem>,
-    pub focus: MiniModeFocus,
-    pub prompt_input: String,
-    pub saved_prompt_selected: usize,
-    pub target_worktree_idx: usize,
-    /// Input buffer for sending text to the selected agent from the detail pane.
-    pub detail_input: String,
-}
-
-impl Default for MiniModeState {
-    fn default() -> Self {
-        Self {
-            selected: 0,
-            items: Vec::new(),
-            focus: MiniModeFocus::AgentList,
-            prompt_input: String::new(),
-            saved_prompt_selected: 0,
-            target_worktree_idx: 0,
-            detail_input: String::new(),
-        }
-    }
 }
 
 /// A saved prompt template for quick agent creation.
@@ -780,16 +731,15 @@ pub struct App {
     pub next_status_refresh: Option<Instant>,
     /// Path of a worktree that needs an immediate background status fetch.
     pub request_status_fetch: Option<PathBuf>,
-    /// Current screen mode (Normal, Mini, MiniDrilldown).
+    /// Current screen mode.
     pub screen_mode: ScreenMode,
-    /// State for mini mode view.
-    pub mini: MiniModeState,
     /// Saved prompt templates for quick agent creation.
     pub saved_prompts: Vec<SavedPrompt>,
     /// Auto-captured summaries keyed by session id.
     pub agent_summaries: HashMap<u64, String>,
-    /// Session id of the agent being drilled down into.
-    pub mini_drilldown_session: Option<u64>,
+    /// Resolved display names for plain terminal sessions (running command / cwd),
+    /// refreshed off the render path by the terminal-name poller.
+    pub terminal_names: HashMap<u64, String>,
     /// Whether mouse capture is active (enables scroll wheel, disables text selection).
     pub mouse_captured: bool,
     /// When mouse capture was last disabled (for auto-re-enable timer).
@@ -890,16 +840,15 @@ impl App {
             next_status_refresh: None,
             request_status_fetch: None,
             screen_mode: ScreenMode::Normal,
-            mini: MiniModeState::default(),
             saved_prompts: Vec::new(),
             agent_summaries: HashMap::new(),
-            mini_drilldown_session: None,
             mouse_captured: true,
             mouse_capture_disabled_at: None,
             text_selection: None,
             url_cache: url::UrlCache::default(),
             url_cache_dirty: true,
             claude_usage: HashMap::new(),
+            terminal_names: HashMap::new(),
             global_usage: None,
             terminal_ids: Vec::new(),
             terminal_panel_selected: 0,
@@ -1420,23 +1369,6 @@ impl App {
         }
     }
 
-    /// Rebuild the tree item list for mini mode from all worktrees and sessions.
-    pub fn rebuild_mini_agent_list(&mut self) {
-        self.mini.items.clear();
-        for (wi, wt) in self.worktrees.iter().enumerate() {
-            self.mini.items.push(SidebarItem::Worktree(wi));
-            if wt.expanded {
-                for (si, _sid) in wt.session_ids.iter().enumerate() {
-                    self.mini.items.push(SidebarItem::Session(wi, si));
-                }
-            }
-        }
-        // Note: Project item is not shown in mini mode (it's a normal-mode-only feature)
-        if !self.mini.items.is_empty() && self.mini.selected >= self.mini.items.len() {
-            self.mini.selected = self.mini.items.len() - 1;
-        }
-    }
-
     /// Path to the saved prompts persistence file.
     fn saved_prompts_path(&self) -> PathBuf {
         self.bare_repo_path.join(".agent_prompts.json")
@@ -1452,23 +1384,6 @@ impl App {
         match serde_json::from_str(&json) {
             Ok(prompts) => self.saved_prompts = prompts,
             Err(e) => tracing::warn!("Failed to parse saved prompts: {}", e),
-        }
-    }
-
-    /// Save prompt templates to disk.
-    pub fn save_saved_prompts(&self) {
-        let path = self.saved_prompts_path();
-        if self.saved_prompts.is_empty() {
-            let _ = std::fs::remove_file(&path);
-            return;
-        }
-        match serde_json::to_string_pretty(&self.saved_prompts) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
-                    tracing::warn!("Failed to save prompts: {}", e);
-                }
-            }
-            Err(e) => tracing::warn!("Failed to serialize prompts: {}", e),
         }
     }
 

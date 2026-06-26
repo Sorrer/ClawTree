@@ -184,6 +184,25 @@ fn tmux_session_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Number of clients currently attached to a tmux session.
+///
+/// Used by reconnect to avoid hijacking sessions that another *live* clawtree
+/// instance is already attached to: attaching there would make both instances
+/// share — and fight over — the same panes, and one instance quitting would
+/// `detach-client` the other. A session left behind by a dead/restarted
+/// instance always reports 0 here (clients detach on clean shutdown, and the
+/// PTY master closing on crash sends SIGHUP to the `attach-session` client),
+/// so genuine reconnects are unaffected.
+pub fn tmux_session_attached_clients(name: &str) -> u32 {
+    Command::new("tmux")
+        .args(["display-message", "-t", name, "-p", "#{session_attached}"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
 /// Environment variable we set inside tmux to track the original worktree path.
 const TMUX_WORKTREE_ENV: &str = "CLAWTREE_WORKTREE";
 
@@ -585,6 +604,30 @@ fn friendly_command_name(comm: &str, args: &str) -> String {
     comm.to_string()
 }
 
+/// Query the pane title of every tmux session in a single subprocess call.
+///
+/// The title poller previously spawned one `tmux display-message` per session
+/// every 500ms — for an instance attached to dozens of sessions that is dozens
+/// of process spawns per cycle, all serialized on tmux's single server thread.
+/// One `list-panes -a` returns them all at once. Each clawtree session has a
+/// single pane, so `session_name → pane_title` is unambiguous.
+pub fn query_all_pane_titles() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let output = Command::new("tmux")
+        .args(["list-panes", "-a", "-F", "#{session_name}\t#{pane_title}"])
+        .output();
+    if let Ok(o) = output {
+        if o.status.success() {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                if let Some((name, title)) = line.split_once('\t') {
+                    map.insert(name.to_string(), title.to_string());
+                }
+            }
+        }
+    }
+    map
+}
+
 /// Query the pane title from an existing tmux session.
 pub fn query_tmux_pane_title(tmux_name: &str) -> Option<String> {
     let output = Command::new("tmux")
@@ -745,7 +788,7 @@ fn setup_pty_threads(
                         if let Ok(mut t) = reader_last_output.write() {
                             *t = Instant::now();
                         }
-                        let _ = reader_tx.send(AppEvent::PtyOutput);
+                        let _ = reader_tx.send(AppEvent::PtyOutput { session_id });
                     }
                     Err(_) => {
                         reader_exited.store(true, Ordering::SeqCst);

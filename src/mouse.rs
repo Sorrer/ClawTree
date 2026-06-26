@@ -5,7 +5,7 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use crate::app::{
-    self, App, FocusTarget, InputMode, MiniModeFocus, ScreenMode, SidebarItem, SidebarPanel,
+    self, App, FocusTarget, InputMode, ScreenMode, SidebarItem, SidebarPanel,
 };
 use crate::keys;
 use crate::ui::terminal_pane;
@@ -322,11 +322,7 @@ fn handle_left_click(app: &mut App, col: u16, row: u16) -> bool {
         return true;
     }
 
-    match app.screen_mode {
-        ScreenMode::Normal => handle_normal_click(app, col, row),
-        ScreenMode::Mini => handle_mini_click(app, col, row),
-        ScreenMode::MiniDrilldown => handle_drilldown_click(app, col, row),
-    }
+    handle_normal_click(app, col, row)
 }
 
 // ── Normal mode clicks ───────────────────────────────────────────────
@@ -543,15 +539,7 @@ fn handle_scroll(app: &mut App, col: u16, row: u16, up: bool) -> bool {
         return true;
     }
 
-    match app.screen_mode {
-        ScreenMode::Normal => handle_normal_scroll(app, col, row, up),
-        ScreenMode::Mini => handle_mini_scroll(app, col, row, up),
-        ScreenMode::MiniDrilldown => {
-            // In drilldown, scroll always goes to terminal
-            scroll_terminal(app, up);
-            true
-        }
-    }
+    handle_normal_scroll(app, col, row, up)
 }
 
 fn handle_normal_scroll(app: &mut App, col: u16, row: u16, up: bool) -> bool {
@@ -650,71 +638,6 @@ fn scroll_prompt_queue(app: &mut App, up: bool) {
     }
 }
 
-// ── Mini mode mouse ──────────────────────────────────────────────────
-
-fn handle_mini_click(app: &mut App, col: u16, row: u16) -> bool {
-    let tree_area = app.areas.mini_tree.get();
-    let detail_area = app.areas.mini_detail.get();
-
-    if point_in_rect(col, row, tree_area) {
-        return handle_mini_tree_click(app, col, row);
-    }
-    if point_in_rect(col, row, detail_area) {
-        // Focus detail input
-        if app.mini.focus == MiniModeFocus::AgentList {
-            app.mini.focus = MiniModeFocus::DetailInput;
-        }
-        return true;
-    }
-    false
-}
-
-fn handle_mini_tree_click(app: &mut App, col: u16, row: u16) -> bool {
-    app.mini.focus = MiniModeFocus::AgentList;
-
-    let inner = app.areas.mini_tree_inner.get();
-    if !point_in_rect(col, row, inner) {
-        return true; // clicked border
-    }
-
-    let item_row = (row - inner.y) as usize;
-    if item_row < app.mini.items.len() {
-        app.mini.selected = item_row;
-
-        // Toggle expand/collapse if clicking worktree icon
-        if let Some(SidebarItem::Worktree(wi)) = app.mini.items.get(item_row).copied() {
-            let rel_col = col.saturating_sub(inner.x) as usize;
-            if rel_col < 2 {
-                if let Some(wt) = app.worktrees.get_mut(wi) {
-                    wt.expanded = !wt.expanded;
-                    app.rebuild_mini_agent_list();
-                }
-                return true;
-            }
-        }
-    }
-    true
-}
-
-fn handle_mini_scroll(app: &mut App, col: u16, row: u16, up: bool) -> bool {
-    let tree_area = app.areas.mini_tree.get();
-
-    if point_in_rect(col, row, tree_area) {
-        // Navigate agent list
-        if up {
-            if app.mini.selected > 0 {
-                app.mini.selected -= 1;
-            }
-        } else if app.mini.selected + 1 < app.mini.items.len() {
-            app.mini.selected += 1;
-        }
-        return true;
-    }
-
-    // Default: no-op in detail pane
-    true
-}
-
 /// Handle a right-click on the sidebar. Returns true if a context menu was opened.
 pub fn handle_sidebar_right_click(app: &mut App, col: u16, row: u16) -> bool {
     // Check terminal panel area first (including borders)
@@ -764,12 +687,3 @@ pub fn handle_sidebar_right_click(app: &mut App, col: u16, row: u16) -> bool {
     false
 }
 
-fn handle_drilldown_click(app: &mut App, col: u16, row: u16) -> bool {
-    // In drilldown, the entire pane is terminal — just focus it
-    let terminal_area = app.areas.terminal_pane.get();
-    if point_in_rect(col, row, terminal_area) {
-        app.terminal_scroll = 0;
-        return true;
-    }
-    false
-}

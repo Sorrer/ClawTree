@@ -23,7 +23,6 @@ pub struct Theme {
     pub sidebar_hover_bg: Color,
     pub status_bar_bg: Color,
     pub scrollbar_track: Color,
-    pub mini_drilldown_header_bg: Color,
     pub border_focused_terminal: Color,
     pub mode_terminal_bg: Color,
     pub brand_claw: Color,
@@ -41,7 +40,6 @@ impl Theme {
                 sidebar_hover_bg: Color::Rgb(40, 40, 48),
                 status_bar_bg: Color::Rgb(30, 30, 30),
                 scrollbar_track: Color::Rgb(40, 40, 40),
-                mini_drilldown_header_bg: Color::Rgb(60, 30, 60),
                 border_focused_terminal: Color::Rgb(220, 80, 30),
                 mode_terminal_bg: Color::Rgb(220, 80, 30),
                 brand_claw: Color::Rgb(187, 134, 252),
@@ -54,7 +52,6 @@ impl Theme {
                 sidebar_hover_bg: Color::Indexed(237),
                 status_bar_bg: Color::Indexed(235),
                 scrollbar_track: Color::Indexed(236),
-                mini_drilldown_header_bg: Color::Indexed(53),
                 border_focused_terminal: Color::Indexed(166),
                 mode_terminal_bg: Color::Indexed(166),
                 brand_claw: Color::Indexed(141),
@@ -67,7 +64,6 @@ impl Theme {
                 sidebar_hover_bg: Color::DarkGray,
                 status_bar_bg: Color::DarkGray,
                 scrollbar_track: Color::DarkGray,
-                mini_drilldown_header_bg: Color::Magenta,
                 border_focused_terminal: Color::Red,
                 mode_terminal_bg: Color::Red,
                 brand_claw: Color::Magenta,
@@ -168,12 +164,8 @@ pub const SCROLLBAR_THUMB: Color = Color::DarkGray;
 // ── Spinner ──────────────────────────────────────────────────────────
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-// ── Mini mode ───────────────────────────────────────────────────
-pub const MODE_MINI_BG: Color = Color::Magenta;
-pub const AGENT_WORKING: Color = Color::Yellow;
-pub const AGENT_IDLE: Color = Color::Green;
+// ── Agent status colors ─────────────────────────────────────────
 pub const AGENT_NEEDS_INPUT: Color = Color::Cyan;
-pub const AGENT_EXITED: Color = Color::DarkGray;
 pub const AGENT_PLANNING: Color = Color::Indexed(141); // light purple
 
 // ── Brand logo (big) ────────────────────────────────────────────

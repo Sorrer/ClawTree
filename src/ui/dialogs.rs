@@ -2139,7 +2139,7 @@ fn draw_context_menu(
                 if s.is_terminal {
                     s.nickname
                         .clone()
-                        .unwrap_or_else(|| super::sidebar::terminal_display_name(Some(s)))
+                        .unwrap_or_else(|| super::sidebar::terminal_display_name(app, Some(s)))
                 } else {
                     s.nickname
                         .clone()
@@ -2156,7 +2156,7 @@ fn draw_context_menu(
             .map(|s| {
                 s.nickname
                     .clone()
-                    .unwrap_or_else(|| super::sidebar::terminal_display_name(Some(s)))
+                    .unwrap_or_else(|| super::sidebar::terminal_display_name(app, Some(s)))
             })
             .map(|n| format!(" {} ", n))
             .unwrap_or_else(|| " Actions ".to_string()),

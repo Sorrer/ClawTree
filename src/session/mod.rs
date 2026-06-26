@@ -80,26 +80,14 @@ impl Session {
             return false;
         }
 
-        // For tmux sessions, capture the full visible pane content
-        if let Some(ref tmux_name) = self.tmux_session_name {
-            if let Ok(output) = std::process::Command::new("tmux")
-                .args(["capture-pane", "-t", tmux_name, "-p"])
-                .output()
-            {
-                if output.status.success() {
-                    let content = String::from_utf8_lossy(&output.stdout);
-                    return Self::content_has_input_prompt(&content);
-                }
-            }
-        }
-
-        // Fallback: scan VT100 screen contents
+        // Scan the in-memory VT100 screen — never shell out to `tmux capture-pane`
+        // here. This runs per-session from the sidebar render path (via
+        // `agent_status`); a blocking subprocess per session per frame freezes the
+        // whole UI on instances with many sessions, all serialized on tmux's single
+        // server thread. Our parser already mirrors exactly what tmux pushed to the
+        // attached client, so its contents equal a `capture-pane -p`.
         match self.parser.try_read() {
-            Ok(guard) => {
-                let screen = guard.screen();
-                let contents = screen.contents();
-                Self::content_has_input_prompt(&contents)
-            }
+            Ok(guard) => Self::content_has_input_prompt(&guard.screen().contents()),
             Err(_) => false,
         }
     }
@@ -224,7 +212,7 @@ impl Session {
         horiz > total / 2
     }
 
-    /// Compute the agent status for mini mode display.
+    /// Compute the agent status for sidebar display.
     /// - Working: spinner chars in title (actively processing)
     /// - Idle: at the input prompt (Claude finished, waiting for next command)
     /// - NeedsInput: not active, not at prompt, not exited (Claude asked a question
@@ -250,16 +238,10 @@ impl Session {
 
     /// Get the visible terminal content (via tmux capture-pane or vt100 parser).
     pub fn get_visible_content(&self) -> String {
-        if let Some(ref tmux_name) = self.tmux_session_name {
-            if let Ok(output) = std::process::Command::new("tmux")
-                .args(["capture-pane", "-t", tmux_name, "-p"])
-                .output()
-            {
-                if output.status.success() {
-                    return String::from_utf8_lossy(&output.stdout).to_string();
-                }
-            }
-        }
+        // Read the in-memory VT100 screen rather than `tmux capture-pane`: this is
+        // reached from the tick (summary capture on Working→Idle), and a blocking
+        // subprocess on the saturated tmux thread stalls the main loop. The parser
+        // mirrors what tmux pushed to our attached client.
         match self.parser.try_read() {
             Ok(guard) => guard.screen().contents(),
             Err(_) => String::new(),
@@ -290,26 +272,12 @@ impl Session {
             return false;
         }
 
-        // For tmux sessions, capture the full visible pane content
-        if let Some(ref tmux_name) = self.tmux_session_name {
-            if let Ok(output) = std::process::Command::new("tmux")
-                .args(["capture-pane", "-t", tmux_name, "-p"])
-                .output()
-            {
-                if output.status.success() {
-                    let content = String::from_utf8_lossy(&output.stdout);
-                    return Self::content_has_plan_mode(&content);
-                }
-            }
-        }
-
-        // Fallback: scan VT100 screen contents
+        // Scan the in-memory VT100 screen — never shell out to `tmux capture-pane`
+        // here. Called per-session from the sidebar render path; a blocking
+        // subprocess per session per frame freezes the whole UI on instances with
+        // many sessions. The parser mirrors what tmux pushed to our attached client.
         match self.parser.try_read() {
-            Ok(guard) => {
-                let screen = guard.screen();
-                let contents = screen.contents();
-                Self::content_has_plan_mode(&contents)
-            }
+            Ok(guard) => Self::content_has_plan_mode(&guard.screen().contents()),
             Err(_) => false,
         }
     }
@@ -867,6 +835,7 @@ pub struct TmuxSessionInfo {
     pub tmux_name: String,
     pub current_title: String,
     pub exited: bool,
+    pub is_terminal: bool,
 }
 
 /// Collect tmux session info from the app for the background poller.
@@ -884,9 +853,64 @@ pub fn collect_tmux_session_info(app: &App) -> Vec<TmuxSessionInfo> {
                     .map(|p| p.callbacks().title.clone())
                     .unwrap_or_default(),
                 exited: s.exited.load(Ordering::SeqCst),
+                is_terminal: s.is_terminal,
             })
         })
         .collect()
+}
+
+/// Spawn a background thread that resolves display names for plain *terminal*
+/// sessions (the running command, e.g. `vim`/`npm run dev`, or the cwd folder).
+///
+/// This work used to run inline in the sidebar render via `query_tmux_pane_*`,
+/// which spawns `tmux display-message` + `ps` per terminal — dozens of blocking
+/// subprocesses per frame on instances with many sessions, all serialized on
+/// tmux's single server thread (measured ~85ms/frame). Moving it to a 2s
+/// background poll keeps it entirely off the render path; the sidebar reads the
+/// cached result. 2s is ample — the foreground command changes rarely.
+pub fn spawn_terminal_name_poller(
+    event_tx: tokio::sync::mpsc::UnboundedSender<crate::event::AppEvent>,
+    session_info: std::sync::Arc<std::sync::Mutex<Vec<TmuxSessionInfo>>>,
+) {
+    std::thread::Builder::new()
+        .name("tmux-termname-poller".into())
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(2));
+
+            let sessions = match session_info.lock() {
+                Ok(guard) => guard.clone(),
+                Err(_) => continue,
+            };
+
+            let mut updates = Vec::new();
+            for info in &sessions {
+                if info.exited || !info.is_terminal {
+                    continue;
+                }
+                // Running command wins; otherwise the cwd folder name.
+                let name = pty::query_tmux_pane_foreground(&info.tmux_name)
+                    .or_else(|| {
+                        pty::query_tmux_pane_cwd(&info.tmux_name).map(|cwd| {
+                            std::path::Path::new(&cwd)
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or(cwd)
+                        })
+                    });
+                if let Some(name) = name {
+                    updates.push((info.session_id, name));
+                }
+            }
+
+            if !updates.is_empty()
+                && event_tx
+                    .send(crate::event::AppEvent::TerminalNamesUpdated { updates })
+                    .is_err()
+            {
+                break; // channel closed, app shutting down
+            }
+        })
+        .ok();
 }
 
 /// Spawn a background thread that continuously polls tmux for pane title
@@ -912,14 +936,16 @@ pub fn spawn_tmux_title_poller(
                     continue;
                 }
 
+                // One subprocess for all sessions, instead of one per session.
+                let titles = pty::query_all_pane_titles();
                 let mut updates = Vec::new();
                 for info in &sessions {
                     if info.exited {
                         continue;
                     }
-                    if let Some(title) = pty::query_tmux_pane_title(&info.tmux_name) {
-                        if title != info.current_title {
-                            updates.push((info.session_id, title));
+                    if let Some(title) = titles.get(&info.tmux_name) {
+                        if title != &info.current_title {
+                            updates.push((info.session_id, title.clone()));
                         }
                     }
                 }
@@ -939,35 +965,23 @@ pub fn spawn_tmux_title_poller(
 /// Calculate PTY pane dimensions to match the ratatui layout exactly.
 /// Uses integer arithmetic matching ratatui's Percentage constraint.
 fn calculate_pane_size(app: &App, terminal_rows: u16, terminal_cols: u16) -> (u16, u16) {
-    use crate::app::ScreenMode;
+    let sidebar_width = if app.sidebar_visible {
+        crate::ui::theme::SIDEBAR_MAX_WIDTH.min(terminal_cols)
+    } else {
+        0
+    };
+    let pane_cols = terminal_cols
+        .saturating_sub(sidebar_width)
+        .saturating_sub(2);
 
-    match app.screen_mode {
-        ScreenMode::MiniDrilldown => {
-            // Drilldown layout: 1-row header + terminal pane (with borders) + 1-row status bar
-            let pane_cols = terminal_cols.saturating_sub(2);
-            let pane_rows = terminal_rows.saturating_sub(4); // 1 header + 1 status + 2 border
-            (pane_rows, pane_cols)
-        }
-        _ => {
-            let sidebar_width = if app.sidebar_visible && app.screen_mode == ScreenMode::Normal {
-                crate::ui::theme::SIDEBAR_MAX_WIDTH.min(terminal_cols)
-            } else {
-                0
-            };
-            let pane_cols = terminal_cols
-                .saturating_sub(sidebar_width)
-                .saturating_sub(2);
+    let queue_height = if app.prompt_queue_visible && app.active_session_id.is_some() {
+        app.queue_panel_height()
+    } else {
+        0
+    };
+    let pane_rows = terminal_rows.saturating_sub(3).saturating_sub(queue_height);
 
-            let queue_height = if app.prompt_queue_visible && app.active_session_id.is_some() {
-                app.queue_panel_height()
-            } else {
-                0
-            };
-            let pane_rows = terminal_rows.saturating_sub(3).saturating_sub(queue_height);
-
-            (pane_rows, pane_cols)
-        }
-    }
+    (pane_rows, pane_cols)
 }
 
 /// Resize all active sessions to match new terminal dimensions.
@@ -1048,6 +1062,19 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
     let mut count = 0;
 
     for (tmux_name, wt_path) in tmux_sessions {
+        // Skip sessions another live clawtree instance is already attached to.
+        // Reconnect is meant to recover sessions from a previous (now-gone)
+        // instance; those report 0 attached clients. A non-zero count means
+        // another running instance owns this session — attaching would make both
+        // share the same panes and, on quit, detach each other.
+        if pty::tmux_session_attached_clients(&tmux_name) > 0 {
+            tracing::info!(
+                "Skipping tmux session '{}' — already attached by another clawtree instance",
+                tmux_name
+            );
+            continue;
+        }
+
         // Find which worktree this session belongs to
         let wt_idx = app
             .worktrees

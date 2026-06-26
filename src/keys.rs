@@ -6,8 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{
     App, CommitPhase, ConfirmAction, ContextActionKind, Dialog, FocusTarget, InputMode,
-    MiniModeFocus, PendingAction, SavedPrompt, ScreenMode, SidebarItem, StatusSeverity,
-    UpdatePhase,
+    PendingAction, SidebarItem, StatusSeverity, UpdatePhase,
 };
 use crate::session;
 use crate::ui::terminal_pane;
@@ -34,10 +33,9 @@ pub enum KeyContext {
     Terminal,
     Queue,
     InfoPanel,
-    MiniMode,
 }
 
-pub const KEY_CONTEXT_COUNT: usize = 6;
+pub const KEY_CONTEXT_COUNT: usize = 5;
 
 impl KeyContext {
     pub const ALL: [KeyContext; KEY_CONTEXT_COUNT] = [
@@ -46,7 +44,6 @@ impl KeyContext {
         KeyContext::Terminal,
         KeyContext::Queue,
         KeyContext::InfoPanel,
-        KeyContext::MiniMode,
     ];
 
     pub const fn label(&self) -> &'static str {
@@ -56,7 +53,6 @@ impl KeyContext {
             KeyContext::Terminal => "Terminal",
             KeyContext::Queue => "Queue",
             KeyContext::InfoPanel => "Info Panel",
-            KeyContext::MiniMode => "Mini Mode",
         }
     }
 
@@ -67,7 +63,6 @@ impl KeyContext {
             KeyContext::Terminal => TERMINAL_KEYS,
             KeyContext::Queue => QUEUE_KEYS,
             KeyContext::InfoPanel => INFO_PANEL_KEYS,
-            KeyContext::MiniMode => MINI_MODE_KEYS,
         }
     }
 
@@ -113,7 +108,6 @@ const GLOBAL_KEYS: &[KeyEntry] = &[
     section("Panels"),
     ("Ctrl + B", "Toggle sidebar"),
     ("Ctrl + P", "Toggle prompt queue"),
-    ("F2", "Toggle Mini Mode"),
     section("Mouse"),
     ("Click", "Enable text selection (any key restores scroll)"),
 ];
@@ -183,25 +177,6 @@ const QUEUE_KEYS: &[KeyEntry] = &[
     ("Backspace", "Delete character"),
 ];
 
-const MINI_MODE_KEYS: &[KeyEntry] = &[
-    section("Navigation"),
-    ("j / Down", "Navigate tree"),
-    ("k / Up", "Navigate tree"),
-    ("Esc", "Return to normal mode"),
-    section("Selection & Expand"),
-    ("Tab / Enter", "Focus detail input (on agent)"),
-    ("Enter", "Toggle expand (on worktree)"),
-    ("Space", "Toggle expand/collapse worktree"),
-    ("z / Shift + Z", "Collapse / expand all"),
-    section("Actions"),
-    ("o", "Open full terminal (drilldown)"),
-    ("a", "Create new agent"),
-    ("d", "Kill agent / remove worktree"),
-    ("r", "Rename agent"),
-    ("s", "Browse saved prompts"),
-    section("Detail Pane"),
-    ("(detail)", "Type + Enter: send to agent"),
-];
 
 /// Quick-start keybindings shown on the Project overview panel.
 /// This is the single source of truth — the overview derives from here.
@@ -224,7 +199,6 @@ pub const QUICK_START_KEYS: &[KeyEntry] = &[
     ("p / Shift + P", "Push / pull"),
     section("Other"),
     ("?", "Full keybinding reference"),
-    ("F2", "Toggle Mini Mode"),
     ("Ctrl + Q", "Quit"),
 ];
 
@@ -260,42 +234,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         return;
     }
 
-    // F2 — toggle between Normal and Mini mode
-    if key.modifiers.is_empty() && key.code == KeyCode::F(2) {
-        match app.screen_mode {
-            ScreenMode::Normal => {
-                app.screen_mode = ScreenMode::Mini;
-                app.mini.focus = MiniModeFocus::AgentList;
-                app.input_mode = InputMode::Normal;
-                app.rebuild_mini_agent_list();
-            }
-            ScreenMode::Mini | ScreenMode::MiniDrilldown => {
-                app.screen_mode = ScreenMode::Normal;
-                app.input_mode = match app.focus {
-                    FocusTarget::TerminalPane if app.active_session_id.is_some() => {
-                        InputMode::Terminal
-                    }
-                    _ => InputMode::Normal,
-                };
-            }
-        }
-        session::resize_all(app, terminal_size.1, terminal_size.0);
-        return;
-    }
-
-    // ── Mini mode key handling ─────────────────────────────────────
-    if app.screen_mode == ScreenMode::Mini {
-        if app.input_mode == InputMode::Dialog {
-            handle_dialog_key(app, key, terminal_size);
-        } else {
-            handle_mini_mode_key(app, key, terminal_size);
-        }
-        return;
-    }
-    if app.screen_mode == ScreenMode::MiniDrilldown {
-        handle_mini_drilldown_key(app, key, terminal_size);
-        return;
-    }
 
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('b') {
         app.sidebar_visible = !app.sidebar_visible;
@@ -1424,14 +1362,7 @@ pub fn handle_paste(app: &mut App, data: String) {
             }
         }
         InputMode::Normal => {
-            // Mini mode detail input
-            if app.screen_mode == ScreenMode::Mini && app.mini.focus == MiniModeFocus::DetailInput {
-                app.mini.detail_input.push_str(&data);
-            } else if app.screen_mode == ScreenMode::Mini
-                && app.mini.focus == MiniModeFocus::PromptInput
-            {
-                app.mini.prompt_input.push_str(&data);
-            } else if app.focus == FocusTarget::PromptQueue {
+            if app.focus == FocusTarget::PromptQueue {
                 // Prompt queue input
                 app.prompt_queue_input.push_str(&data);
             }
@@ -3407,449 +3338,6 @@ pub fn handle_git_commit_claude_message(app: &mut App) {
             }
         })
         .ok();
-}
-
-// ── Mini mode key handlers ─────────────────────────────────────────
-
-fn handle_mini_mode_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
-    match app.mini.focus {
-        MiniModeFocus::AgentList => handle_mini_agent_list_key(app, key, terminal_size),
-        MiniModeFocus::DetailInput => handle_mini_detail_input_key(app, key, terminal_size),
-        MiniModeFocus::WorktreeSelector => handle_mini_worktree_selector_key(app, key),
-        MiniModeFocus::PromptInput => handle_mini_prompt_input_key(app, key, terminal_size),
-        MiniModeFocus::SavedPrompts => handle_mini_saved_prompts_key(app, key),
-    }
-}
-
-fn handle_mini_agent_list_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
-    // ? — help overlay
-    if key.modifiers.is_empty() && key.code == KeyCode::Char('?') {
-        app.show_help = true;
-        app.help_tab = 5; // Mini Mode tab
-        return;
-    }
-
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => {
-            if !app.mini.items.is_empty() && app.mini.selected + 1 < app.mini.items.len() {
-                app.mini.selected += 1;
-            }
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if app.mini.selected > 0 {
-                app.mini.selected -= 1;
-            }
-        }
-        KeyCode::Home => {
-            app.mini.selected = 0;
-        }
-        KeyCode::End | KeyCode::Char('G')
-            if key.modifiers == KeyModifiers::SHIFT || key.code == KeyCode::End =>
-        {
-            if !app.mini.items.is_empty() {
-                app.mini.selected = app.mini.items.len() - 1;
-            }
-        }
-        KeyCode::Tab | KeyCode::Enter => {
-            // Session → focus detail input; Worktree → toggle expand (Enter) or no-op (Tab)
-            match app.mini.items.get(app.mini.selected).copied() {
-                Some(SidebarItem::Session(_, _)) => {
-                    app.mini.focus = MiniModeFocus::DetailInput;
-                }
-                Some(SidebarItem::Worktree(wi)) if key.code == KeyCode::Enter => {
-                    if let Some(wt) = app.worktrees.get_mut(wi) {
-                        wt.expanded = !wt.expanded;
-                        app.rebuild_mini_agent_list();
-                        app.rebuild_sidebar_items();
-                    }
-                }
-                _ => {}
-            }
-        }
-        KeyCode::Char('o') => {
-            // Open full terminal drilldown for selected session
-            if let Some(SidebarItem::Session(wi, si)) =
-                app.mini.items.get(app.mini.selected).copied()
-            {
-                if let Some(wt) = app.worktrees.get(wi) {
-                    if let Some(&sid) = wt.session_ids.get(si) {
-                        app.mini_drilldown_session = Some(sid);
-                        app.active_session_id = Some(sid);
-                        app.screen_mode = ScreenMode::MiniDrilldown;
-                        app.input_mode = InputMode::Terminal;
-                        app.focus = FocusTarget::TerminalPane;
-                        app.terminal_scroll = 0;
-                        session::resize_all(app, terminal_size.1, terminal_size.0);
-                    }
-                }
-            }
-        }
-        KeyCode::Char(' ') => {
-            // Toggle expand on worktree
-            if let Some(SidebarItem::Worktree(wi)) = app.mini.items.get(app.mini.selected).copied()
-            {
-                if let Some(wt) = app.worktrees.get_mut(wi) {
-                    wt.expanded = !wt.expanded;
-                    app.rebuild_mini_agent_list();
-                    app.rebuild_sidebar_items();
-                }
-            }
-        }
-        KeyCode::Char('a') => {
-            // Create new agent — determine target worktree from selection
-            if app.worktrees.is_empty() {
-                app.set_status("No worktrees available");
-                return;
-            }
-            let target_wi = match app.mini.items.get(app.mini.selected).copied() {
-                Some(SidebarItem::Worktree(wi)) => wi,
-                Some(SidebarItem::Session(wi, _)) => wi,
-                Some(SidebarItem::Project)
-                | Some(SidebarItem::ProjectSession(_))
-                | Some(SidebarItem::Terminal(_))
-                | Some(SidebarItem::Location(_))
-                | Some(SidebarItem::LocationSession(_, _))
-                | None => 0,
-            };
-            app.mini.target_worktree_idx = target_wi;
-            // If only one worktree, skip selection and go straight to prompt
-            if app.worktrees.len() == 1 {
-                app.mini.prompt_input.clear();
-                app.mini.focus = MiniModeFocus::PromptInput;
-            } else {
-                app.mini.focus = MiniModeFocus::WorktreeSelector;
-            }
-        }
-        KeyCode::Char('d') => {
-            // Kill selected agent or delete worktree
-            match app.mini.items.get(app.mini.selected).copied() {
-                Some(SidebarItem::Session(wi, si)) => {
-                    if let Some(wt) = app.worktrees.get(wi) {
-                        if let Some(&sid) = wt.session_ids.get(si) {
-                            app.open_dialog(Dialog::Confirm {
-                                message: format!(
-                                    "Kill agent {}?",
-                                    session::session_label(app, sid)
-                                ),
-                                on_confirm: ConfirmAction::DeleteSession(sid),
-                            });
-                        }
-                    }
-                }
-                Some(SidebarItem::Worktree(wi)) => {
-                    if let Some(wt) = app.worktrees.get(wi) {
-                        let path = wt.path.clone();
-                        let has_sessions = !wt.session_ids.is_empty();
-                        let msg = if has_sessions {
-                            format!(
-                                "DELETE worktree '{}' and kill {} session(s)",
-                                wt.branch,
-                                wt.session_ids.len()
-                            )
-                        } else {
-                            format!("DELETE worktree '{}'", wt.branch)
-                        };
-                        app.open_dialog(Dialog::ConfirmDangerous {
-                            message: msg,
-                            input: String::new(),
-                            on_confirm: ConfirmAction::DeleteWorktree(path),
-                        });
-                    }
-                }
-                Some(SidebarItem::ProjectSession(si)) => {
-                    if let Some(&sid) = app.project_session_ids.get(si) {
-                        app.open_dialog(Dialog::Confirm {
-                            message: format!("Kill agent {}?", session::session_label(app, sid)),
-                            on_confirm: ConfirmAction::DeleteSession(sid),
-                        });
-                    }
-                }
-                Some(SidebarItem::Project)
-                | Some(SidebarItem::Terminal(_))
-                | Some(SidebarItem::Location(_))
-                | Some(SidebarItem::LocationSession(_, _))
-                | None => {}
-            }
-        }
-        KeyCode::Char('r') => {
-            // Rename selected agent
-            if let Some(SidebarItem::Session(wi, si)) =
-                app.mini.items.get(app.mini.selected).copied()
-            {
-                if let Some(wt) = app.worktrees.get(wi) {
-                    if let Some(&sid) = wt.session_ids.get(si) {
-                        let current = app
-                            .sessions
-                            .get(&sid)
-                            .and_then(|s| s.nickname.clone())
-                            .unwrap_or_default();
-                        app.open_dialog(Dialog::RenameSession {
-                            session_id: sid,
-                            input: current,
-                        });
-                    }
-                }
-            }
-        }
-        KeyCode::Char('s') => {
-            // Open saved prompts browser
-            app.mini.saved_prompt_selected = 0;
-            app.mini.focus = MiniModeFocus::SavedPrompts;
-        }
-        KeyCode::Char('z') => {
-            // Collapse all
-            for wt in &mut app.worktrees {
-                wt.expanded = false;
-            }
-            app.rebuild_mini_agent_list();
-            app.rebuild_sidebar_items();
-        }
-        KeyCode::Char('Z') if key.modifiers == KeyModifiers::SHIFT => {
-            // Expand all
-            for wt in &mut app.worktrees {
-                wt.expanded = true;
-            }
-            app.rebuild_mini_agent_list();
-            app.rebuild_sidebar_items();
-        }
-        KeyCode::Esc => {
-            // Return to normal mode
-            app.screen_mode = ScreenMode::Normal;
-            app.input_mode = InputMode::Normal;
-        }
-        _ => {}
-    }
-}
-
-/// Instruction appended to every message sent from mini mode (both initial prompts
-/// and follow-up messages). Tells Claude to wrap important summary output in XML
-/// tags so extract_summary() can parse it reliably.
-const CLAWTREE_INSTRUCTION: &str = "\n\nCRITICAL SYSTEM INSTRUCTION: You MUST end your response with a summary wrapped in XML tags like this:\n<IMPORTANT_CLAWTREE_OUTPUT>\n[your 1-2 sentence summary of what you did and the result]\n</IMPORTANT_CLAWTREE_OUTPUT>\nThis is required for every response. Do not skip this.";
-
-fn handle_mini_detail_input_key(app: &mut App, key: KeyEvent, _terminal_size: (u16, u16)) {
-    // Alt+Enter or Shift+Enter → insert newline
-    if key.code == KeyCode::Enter
-        && key
-            .modifiers
-            .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
-    {
-        app.mini.detail_input.push('\n');
-        return;
-    }
-
-    match key.code {
-        KeyCode::Enter => {
-            if app.mini.detail_input.is_empty() {
-                return;
-            }
-            // Send the typed text + CLAWTREE instruction + Enter to the selected agent's PTY
-            let sid = match app.mini.items.get(app.mini.selected).copied() {
-                Some(SidebarItem::Session(wi, si)) => app
-                    .worktrees
-                    .get(wi)
-                    .and_then(|wt| wt.session_ids.get(si))
-                    .copied(),
-                _ => None,
-            };
-            if let Some(sid) = sid {
-                if let Some(session) = app.sessions.get(&sid) {
-                    let user_text: String = app.mini.detail_input.drain(..).collect();
-                    let full_text = format!("{}{}", user_text, CLAWTREE_INSTRUCTION);
-
-                    if let Some(ref tmux_name) = session.tmux_session_name {
-                        let tmux = tmux_name.clone();
-                        std::thread::spawn(move || {
-                            // Use tmux set-buffer + paste-buffer for multi-line safety.
-                            // send-keys -l would interpret \n as Enter presses, submitting
-                            // each line separately. paste-buffer triggers bracketed paste
-                            // mode so the terminal receives the full text as a single paste.
-                            let _ = std::process::Command::new("tmux")
-                                .args(["set-buffer", &full_text])
-                                .output();
-                            let _ = std::process::Command::new("tmux")
-                                .args(["paste-buffer", "-t", &tmux])
-                                .output();
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                            let _ = std::process::Command::new("tmux")
-                                .args(["send-keys", "-t", &tmux, "Enter"])
-                                .output();
-                        });
-                    } else {
-                        // Non-tmux fallback: write text + CR directly to PTY
-                        let mut payload = full_text.into_bytes();
-                        payload.push(b'\r');
-                        let _ = session.write_tx.send(bytes::Bytes::from(payload));
-                    }
-                    app.set_status("Sent to agent");
-                }
-            }
-        }
-        KeyCode::Tab | KeyCode::Esc => {
-            // Back to tree sidebar
-            app.mini.focus = MiniModeFocus::AgentList;
-        }
-        KeyCode::Backspace => {
-            app.mini.detail_input.pop();
-        }
-        KeyCode::Char(c) if c != '\n' && c != '\r' => {
-            app.mini.detail_input.push(c);
-        }
-        _ => {}
-    }
-}
-
-fn handle_mini_worktree_selector_key(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => {
-            if !app.worktrees.is_empty() && app.mini.target_worktree_idx + 1 < app.worktrees.len() {
-                app.mini.target_worktree_idx += 1;
-            }
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if app.mini.target_worktree_idx > 0 {
-                app.mini.target_worktree_idx -= 1;
-            }
-        }
-        KeyCode::Enter => {
-            // Select worktree, advance to prompt input
-            app.mini.prompt_input.clear();
-            app.mini.focus = MiniModeFocus::PromptInput;
-        }
-        KeyCode::Esc => {
-            app.mini.focus = MiniModeFocus::AgentList;
-        }
-        _ => {}
-    }
-}
-
-fn handle_mini_prompt_input_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
-    // Alt+Enter or Shift+Enter → insert newline
-    if key.code == KeyCode::Enter
-        && key
-            .modifiers
-            .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
-    {
-        app.mini.prompt_input.push('\n');
-        return;
-    }
-
-    match key.code {
-        KeyCode::Enter => {
-            if app.mini.prompt_input.is_empty() {
-                app.set_status("Prompt cannot be empty");
-                return;
-            }
-            let prompt = format!("{}{}", app.mini.prompt_input, CLAWTREE_INSTRUCTION);
-            let wi = app.mini.target_worktree_idx;
-            app.mini.prompt_input.clear();
-            app.mini.focus = MiniModeFocus::AgentList;
-
-            // Spawn the agent
-            match session::spawn_session(app, wi, terminal_size, false, Some(&prompt)) {
-                Ok(_sid) => {
-                    app.rebuild_sidebar_items();
-                    app.rebuild_mini_agent_list();
-                    // Select the newly created agent (last in list)
-                    if !app.mini.items.is_empty() {
-                        app.mini.selected = app.mini.items.len() - 1;
-                    }
-                    app.set_status("Agent spawned");
-                }
-                Err(e) => {
-                    app.set_status(format!("Failed to spawn agent: {}", e));
-                }
-            }
-        }
-        KeyCode::Tab => {
-            // Switch to saved prompts picker
-            app.mini.saved_prompt_selected = 0;
-            app.mini.focus = MiniModeFocus::SavedPrompts;
-        }
-        KeyCode::Esc => {
-            app.mini.prompt_input.clear();
-            app.mini.focus = MiniModeFocus::AgentList;
-        }
-        KeyCode::Backspace => {
-            app.mini.prompt_input.pop();
-        }
-        KeyCode::Char(c) if c != '\n' && c != '\r' => {
-            app.mini.prompt_input.push(c);
-        }
-        _ => {}
-    }
-}
-
-fn handle_mini_saved_prompts_key(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => {
-            if !app.saved_prompts.is_empty()
-                && app.mini.saved_prompt_selected + 1 < app.saved_prompts.len()
-            {
-                app.mini.saved_prompt_selected += 1;
-            }
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if app.mini.saved_prompt_selected > 0 {
-                app.mini.saved_prompt_selected -= 1;
-            }
-        }
-        KeyCode::Enter => {
-            // Load selected prompt into input field
-            if let Some(sp) = app.saved_prompts.get(app.mini.saved_prompt_selected) {
-                app.mini.prompt_input = sp.prompt.clone();
-                app.mini.focus = MiniModeFocus::PromptInput;
-            }
-        }
-        KeyCode::Char('a') => {
-            // Save current input as new template
-            if app.mini.prompt_input.is_empty() {
-                app.set_status("Type a prompt first, then save it");
-                return;
-            }
-            let name = format!("Prompt {}", app.saved_prompts.len() + 1);
-            app.saved_prompts.push(SavedPrompt {
-                name,
-                prompt: app.mini.prompt_input.clone(),
-            });
-            app.save_saved_prompts();
-            app.set_status("Prompt saved");
-        }
-        KeyCode::Char('d') => {
-            // Delete selected template
-            if !app.saved_prompts.is_empty()
-                && app.mini.saved_prompt_selected < app.saved_prompts.len()
-            {
-                app.saved_prompts.remove(app.mini.saved_prompt_selected);
-                if app.mini.saved_prompt_selected >= app.saved_prompts.len()
-                    && app.mini.saved_prompt_selected > 0
-                {
-                    app.mini.saved_prompt_selected -= 1;
-                }
-                app.save_saved_prompts();
-                app.set_status("Prompt deleted");
-            }
-        }
-        KeyCode::Esc => {
-            app.mini.focus = MiniModeFocus::PromptInput;
-        }
-        _ => {}
-    }
-}
-
-fn handle_mini_drilldown_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
-    // Tab — return to mini mode agent list
-    if key.code == KeyCode::Tab {
-        app.screen_mode = ScreenMode::Mini;
-        app.input_mode = InputMode::Normal;
-        app.mini.focus = MiniModeFocus::AgentList;
-        app.terminal_scroll = 0;
-        app.rebuild_mini_agent_list();
-        session::resize_all(app, terminal_size.1, terminal_size.0);
-        return;
-    }
-
-    // All other keys forwarded to terminal
-    handle_terminal_key(app, key);
 }
 
 /// Convert a KeyEvent into raw bytes suitable for writing to a PTY.

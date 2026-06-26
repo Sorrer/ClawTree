@@ -10,8 +10,8 @@ use crate::worktree::WorktreeStatus;
 pub enum AppEvent {
     /// A crossterm input event (key press, mouse, resize).
     Input(CrosstermEvent),
-    /// PTY output is available.
-    PtyOutput,
+    /// PTY output is available for the given session.
+    PtyOutput { session_id: u64 },
     /// PTY process has exited for the given session.
     PtyExited { session_id: u64 },
     /// Periodic tick for UI refresh.
@@ -44,6 +44,9 @@ pub enum AppEvent {
     },
     /// Tmux title(s) changed — maps session_id to new title.
     TmuxTitlesChanged { updates: Vec<(u64, String)> },
+    /// Resolved display names for plain terminal sessions (running command / cwd),
+    /// computed off the render path by the terminal-name poller.
+    TerminalNamesUpdated { updates: Vec<(u64, String)> },
     /// Background git status fetch completed for a worktree.
     WorktreeStatusReady {
         worktree_path: PathBuf,
