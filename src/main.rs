@@ -1093,6 +1093,14 @@ async fn async_main(
                     if app.active_session_id == Some(session_id) {
                         app.url_cache_dirty = true;
                         needs_redraw = true;
+                    } else if let Some(session) = app.sessions.get_mut(&session_id) {
+                        // Output arrived for a session the user isn't viewing → mark
+                        // it unread so the sidebar highlights it. Repaint so the
+                        // highlight appears even though the active pane is unchanged.
+                        if !session.unread {
+                            session.unread = true;
+                            needs_redraw = true;
+                        }
                     }
                 }
                 AppEvent::PtyExited { session_id } => {

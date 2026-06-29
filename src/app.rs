@@ -1215,6 +1215,12 @@ impl App {
             }
             None => {}
         }
+        // Viewing a session marks it read.
+        if let Some(sid) = self.active_session_id {
+            if let Some(session) = self.sessions.get_mut(&sid) {
+                session.unread = false;
+            }
+        }
     }
 
     /// Refresh the cached worktree status if one is being viewed.

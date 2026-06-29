@@ -190,14 +190,16 @@ fn render_project_session(
     let sid = app.project_session_ids[si];
     let session = app.sessions.get(&sid);
     let is_active_session = app.active_session_id == Some(sid);
+    let is_unread = session.map(|s| s.unread).unwrap_or(false) && !is_active_session;
 
-    let has_bg = is_selected || is_active_session || is_hovered;
+    let has_bg = is_selected || is_active_session || is_hovered || is_unread;
     let t = theme::get();
     let bg = match (is_selected, is_active_session, is_hovered) {
         (true, true, _) => t.sidebar_sel_active_bg,
         (true, false, _) => t.sidebar_sel_bg,
         (false, true, _) => t.sidebar_active_bg,
         (false, false, true) => t.sidebar_hover_bg,
+        (false, false, false) if is_unread => t.sidebar_unread_bg,
         (false, false, false) => Color::Reset,
     };
     let bold = if is_selected {
@@ -379,12 +381,23 @@ fn render_worktree(
         })
         .count();
 
-    let has_bg = is_selected || is_hovered;
+    // When collapsed, surface unread child sessions by tinting the worktree row,
+    // since the sessions themselves are hidden.
+    let has_unread_child = !wt.expanded
+        && wt.session_ids.iter().any(|sid| {
+            app.sessions
+                .get(sid)
+                .map(|s| s.unread && app.active_session_id != Some(*sid))
+                .unwrap_or(false)
+        });
+    let has_bg = is_selected || is_hovered || has_unread_child;
     let t = theme::get();
     let bg = if is_selected {
         t.sidebar_sel_bg
     } else if is_hovered {
         t.sidebar_hover_bg
+    } else if has_unread_child {
+        t.sidebar_unread_bg
     } else {
         Color::Reset
     };
@@ -479,13 +492,15 @@ fn render_session(
     let is_terminal = session.map(|s| s.is_terminal).unwrap_or(false);
 
     // Background: selection highlight, active session highlight, and hover are independent
-    let has_bg = is_selected || is_active_session || is_hovered;
+    let is_unread = session.map(|s| s.unread).unwrap_or(false) && !is_active_session;
+    let has_bg = is_selected || is_active_session || is_hovered || is_unread;
     let t = theme::get();
     let bg = match (is_selected, is_active_session, is_hovered) {
         (true, true, _) => t.sidebar_sel_active_bg,
         (true, false, _) => t.sidebar_sel_bg,
         (false, true, _) => t.sidebar_active_bg,
         (false, false, true) => t.sidebar_hover_bg,
+        (false, false, false) if is_unread => t.sidebar_unread_bg,
         (false, false, false) => Color::Reset,
     };
     let bold = if is_selected {
@@ -1031,14 +1046,16 @@ fn render_location_session(
     let sid = loc.session_ids[si];
     let session = app.sessions.get(&sid);
     let is_active_session = app.active_session_id == Some(sid);
+    let is_unread = session.map(|s| s.unread).unwrap_or(false) && !is_active_session;
 
-    let has_bg = is_selected || is_active_session || is_hovered;
+    let has_bg = is_selected || is_active_session || is_hovered || is_unread;
     let t = theme::get();
     let bg = match (is_selected, is_active_session, is_hovered) {
         (true, true, _) => t.sidebar_sel_active_bg,
         (true, false, _) => t.sidebar_sel_bg,
         (false, true, _) => t.sidebar_active_bg,
         (false, false, true) => t.sidebar_hover_bg,
+        (false, false, false) if is_unread => t.sidebar_unread_bg,
         (false, false, false) => Color::Reset,
     };
     let bold = if is_selected {

@@ -46,6 +46,10 @@ pub struct Session {
     pub was_active: bool,
     /// True if this is a plain terminal session (not Claude Code).
     pub is_terminal: bool,
+    /// True when the session has produced output the user hasn't viewed yet.
+    /// Set when a non-active session emits PTY output; cleared when the user
+    /// switches to (views) the session. Drives the unread highlight in the sidebar.
+    pub unread: bool,
 }
 
 impl Session {
@@ -588,6 +592,7 @@ pub fn spawn_session(
         tmux_session_name: handle.tmux_session_name,
         nickname: None,
         was_active: false,
+        unread: false,
         is_terminal: false,
     };
 
@@ -649,6 +654,7 @@ pub fn spawn_terminal_session(
         tmux_session_name: handle.tmux_session_name,
         nickname: None,
         was_active: false,
+        unread: false,
         is_terminal: true,
     };
 
@@ -704,6 +710,7 @@ pub fn spawn_root_session(
         tmux_session_name: handle.tmux_session_name,
         nickname: None,
         was_active: false,
+        unread: false,
         is_terminal: false,
     };
 
@@ -752,6 +759,7 @@ pub fn spawn_root_terminal_session(
         tmux_session_name: handle.tmux_session_name,
         nickname: None,
         was_active: false,
+        unread: false,
         is_terminal: true,
     };
 
@@ -815,6 +823,7 @@ pub fn spawn_location_session(
         tmux_session_name: handle.tmux_session_name,
         nickname: None,
         was_active: false,
+        unread: false,
         is_terminal: false,
     };
 
@@ -1199,6 +1208,7 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
             tmux_session_name: handle.tmux_session_name,
             nickname: None,
             was_active: false,
+            unread: false,
             is_terminal,
         };
 
