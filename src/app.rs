@@ -98,6 +98,11 @@ pub enum AgentStatus {
     Working,
     Idle,
     NeedsInput,
+    /// Claude Code is stuck on a transient server-side rate limit (the
+    /// "API Error: Server is temporarily limiting requests" message), with
+    /// nothing else running. Cleared automatically once it retries successfully
+    /// or the user moves on (the message leaves the visible screen).
+    RateLimited,
     Exited,
 }
 

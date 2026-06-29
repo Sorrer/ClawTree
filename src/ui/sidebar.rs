@@ -247,6 +247,7 @@ fn render_project_session(
             AgentStatus::Exited => ("\u{2717}".to_string(), Color::DarkGray),
             AgentStatus::Working => (spinner_char(app).to_string(), Color::Yellow),
             AgentStatus::NeedsInput => ("\u{25cf}".to_string(), theme::AGENT_NEEDS_INPUT),
+            AgentStatus::RateLimited => ("\u{2298}".to_string(), theme::AGENT_RATE_LIMITED),
             AgentStatus::Idle => ("\u{25cb}".to_string(), Color::Gray),
         };
         (name, icon, color)
@@ -367,6 +368,16 @@ fn render_worktree(
                 .unwrap_or(false)
         })
         .count();
+    let rate_limited = wt
+        .session_ids
+        .iter()
+        .filter(|sid| {
+            app.sessions
+                .get(sid)
+                .map(|s| s.is_rate_limited())
+                .unwrap_or(false)
+        })
+        .count();
 
     let has_bg = is_selected || is_hovered;
     let t = theme::get();
@@ -417,6 +428,16 @@ fn render_worktree(
             spans.push(Span::styled(
                 format!(" {}", needs_input),
                 Style::default().fg(Color::Blue).bg(bg),
+            ));
+        }
+
+        if rate_limited > 0 {
+            // Rate-limited count in red so a collapsed worktree still surfaces it
+            spans.push(Span::styled(
+                format!(" {}", rate_limited),
+                Style::default()
+                    .fg(theme::AGENT_RATE_LIMITED)
+                    .bg(bg),
             ));
         }
     }
@@ -513,6 +534,7 @@ fn render_session(
         AgentStatus::Exited => ("✗".to_string(), Color::DarkGray),
         AgentStatus::Working => (spinner_char(app).to_string(), Color::Yellow),
         AgentStatus::NeedsInput => ("●".to_string(), theme::AGENT_NEEDS_INPUT),
+        AgentStatus::RateLimited => ("⊘".to_string(), theme::AGENT_RATE_LIMITED),
         AgentStatus::Idle => ("○".to_string(), Color::Gray),
     };
 
@@ -1050,6 +1072,7 @@ fn render_location_session(
         AgentStatus::Exited => ("\u{2717}".to_string(), Color::DarkGray),
         AgentStatus::Working => (spinner_char(app).to_string(), Color::Yellow),
         AgentStatus::NeedsInput => ("\u{25cf}".to_string(), theme::AGENT_NEEDS_INPUT),
+        AgentStatus::RateLimited => ("\u{2298}".to_string(), theme::AGENT_RATE_LIMITED),
         AgentStatus::Idle => ("\u{25cb}".to_string(), Color::Gray),
     };
 

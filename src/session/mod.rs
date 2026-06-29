@@ -227,6 +227,14 @@ impl Session {
         if self.is_terminal {
             return AgentStatus::Idle;
         }
+        // A transient server-side rate limit leaves Claude Code stuck retrying
+        // while still showing its "working" title spinner, so this must take
+        // precedence over the Working check. It clears on its own: once the
+        // retry succeeds the error line is replaced and leaves the visible
+        // screen, so the marker is no longer found.
+        if self.is_rate_limited() {
+            return AgentStatus::RateLimited;
+        }
         if self.is_active() {
             return AgentStatus::Working;
         }
@@ -234,6 +242,36 @@ impl Session {
             return AgentStatus::Idle;
         }
         AgentStatus::NeedsInput
+    }
+
+    /// Returns true if the session is showing Claude Code's transient rate-limit
+    /// error ("Server is temporarily limiting requests … Rate limited"). This is
+    /// the server-side throttle, distinct from the user's own usage limit.
+    pub fn is_rate_limited(&self) -> bool {
+        if self.exited.load(Ordering::Relaxed) || self.is_terminal {
+            return false;
+        }
+        // Scan the in-memory VT100 screen — never shell out here. Like the other
+        // status probes, this runs per-session on the render path.
+        match self.parser.try_read() {
+            Ok(guard) => Self::content_has_rate_limit(&guard.screen().contents()),
+            Err(_) => false,
+        }
+    }
+
+    /// Check if recent terminal content contains the transient rate-limit error.
+    /// Claude Code prints it on one line, e.g.:
+    ///   ● API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited
+    fn content_has_rate_limit(content: &str) -> bool {
+        content
+            .lines()
+            .rev()
+            .filter(|l| !l.trim().is_empty())
+            .take(10)
+            .any(|line| {
+                line.contains("temporarily limiting requests")
+                    || (line.contains("API Error") && line.contains("Rate limited"))
+            })
     }
 
     /// Get the visible terminal content (via tmux capture-pane or vt100 parser).
@@ -1715,6 +1753,43 @@ mod tests {
     #[test]
     fn test_content_has_input_prompt_empty() {
         assert!(!Session::content_has_input_prompt(""));
+    }
+
+    // ── content_has_rate_limit tests ────────────────────────────────────
+
+    #[test]
+    fn test_content_has_rate_limit_full_message() {
+        let content = "● API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited\n✻ Cooked for 21s\n";
+        assert!(Session::content_has_rate_limit(content));
+    }
+
+    #[test]
+    fn test_content_has_rate_limit_api_error_and_rate_limited() {
+        let content = "● API Error: blah blah · Rate limited\n";
+        assert!(Session::content_has_rate_limit(content));
+    }
+
+    #[test]
+    fn test_content_has_rate_limit_absent() {
+        let content = "Working on your request...\n✻ Thinking\n";
+        assert!(!Session::content_has_rate_limit(content));
+    }
+
+    #[test]
+    fn test_content_has_rate_limit_not_in_recent_lines() {
+        // Marker scrolled far up (>10 non-empty lines back) → ignored, the agent
+        // has moved on.
+        let mut content =
+            String::from("● API Error: Server is temporarily limiting requests · Rate limited\n");
+        for i in 0..15 {
+            content.push_str(&format!("output line {i}\n"));
+        }
+        assert!(!Session::content_has_rate_limit(&content));
+    }
+
+    #[test]
+    fn test_content_has_rate_limit_empty() {
+        assert!(!Session::content_has_rate_limit(""));
     }
 
     // ── starts_with_prompt tests ───────────────────────────────────────
