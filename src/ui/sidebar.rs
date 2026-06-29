@@ -36,6 +36,20 @@ pub(crate) fn terminal_display_name(app: &App, session: Option<&crate::session::
     }
 }
 
+/// Whether a session row should get the unread (light green) highlight.
+/// Suppressed for the session the user is currently viewing and while it is
+/// actively Working — the yellow spinner already signals activity, so green is
+/// reserved for finished/new output the user hasn't looked at yet.
+fn unread_highlight(
+    session: Option<&crate::session::Session>,
+    is_active_session: bool,
+    status: AgentStatus,
+) -> bool {
+    !is_active_session
+        && status != AgentStatus::Working
+        && session.map(|s| s.unread).unwrap_or(false)
+}
+
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == FocusTarget::Sidebar;
     let in_worktrees_panel = app.sidebar_panel == SidebarPanel::Worktrees;
@@ -190,7 +204,10 @@ fn render_project_session(
     let sid = app.project_session_ids[si];
     let session = app.sessions.get(&sid);
     let is_active_session = app.active_session_id == Some(sid);
-    let is_unread = session.map(|s| s.unread).unwrap_or(false) && !is_active_session;
+    let status = session
+        .map(|s| s.agent_status())
+        .unwrap_or(AgentStatus::Exited);
+    let is_unread = unread_highlight(session, is_active_session, status);
 
     let has_bg = is_selected || is_active_session || is_hovered || is_unread;
     let t = theme::get();
@@ -207,10 +224,6 @@ fn render_project_session(
     } else {
         Modifier::empty()
     };
-
-    let status = session
-        .map(|s| s.agent_status())
-        .unwrap_or(AgentStatus::Exited);
     let is_terminal = session.map(|s| s.is_terminal).unwrap_or(false);
     let in_plan_mode = session.map(|s| s.is_in_plan_mode()).unwrap_or(false);
     let nickname = session.and_then(|s| s.nickname.clone());
@@ -385,10 +398,12 @@ fn render_worktree(
     // since the sessions themselves are hidden.
     let has_unread_child = !wt.expanded
         && wt.session_ids.iter().any(|sid| {
-            app.sessions
-                .get(sid)
-                .map(|s| s.unread && app.active_session_id != Some(*sid))
-                .unwrap_or(false)
+            let session = app.sessions.get(sid);
+            let is_active_session = app.active_session_id == Some(*sid);
+            let status = session
+                .map(|s| s.agent_status())
+                .unwrap_or(AgentStatus::Exited);
+            unread_highlight(session, is_active_session, status)
         });
     let has_bg = is_selected || is_hovered || has_unread_child;
     let t = theme::get();
@@ -490,9 +505,12 @@ fn render_session(
     let session = app.sessions.get(&sid);
     let is_active_session = app.active_session_id == Some(sid);
     let is_terminal = session.map(|s| s.is_terminal).unwrap_or(false);
+    let status = session
+        .map(|s| s.agent_status())
+        .unwrap_or(AgentStatus::Exited);
 
     // Background: selection highlight, active session highlight, and hover are independent
-    let is_unread = session.map(|s| s.unread).unwrap_or(false) && !is_active_session;
+    let is_unread = unread_highlight(session, is_active_session, status);
     let has_bg = is_selected || is_active_session || is_hovered || is_unread;
     let t = theme::get();
     let bg = match (is_selected, is_active_session, is_hovered) {
@@ -522,9 +540,6 @@ fn render_session(
         );
     }
 
-    let status = session
-        .map(|s| s.agent_status())
-        .unwrap_or(AgentStatus::Exited);
     let in_plan_mode = session.map(|s| s.is_in_plan_mode()).unwrap_or(false);
     let nickname = session.and_then(|s| s.nickname.clone());
     let title = session.and_then(|s| s.terminal_title());
@@ -1046,7 +1061,10 @@ fn render_location_session(
     let sid = loc.session_ids[si];
     let session = app.sessions.get(&sid);
     let is_active_session = app.active_session_id == Some(sid);
-    let is_unread = session.map(|s| s.unread).unwrap_or(false) && !is_active_session;
+    let status = session
+        .map(|s| s.agent_status())
+        .unwrap_or(AgentStatus::Exited);
+    let is_unread = unread_highlight(session, is_active_session, status);
 
     let has_bg = is_selected || is_active_session || is_hovered || is_unread;
     let t = theme::get();
@@ -1064,9 +1082,6 @@ fn render_location_session(
         Modifier::empty()
     };
 
-    let status = session
-        .map(|s| s.agent_status())
-        .unwrap_or(AgentStatus::Exited);
     let in_plan_mode = session.map(|s| s.is_in_plan_mode()).unwrap_or(false);
     let nickname = session.and_then(|s| s.nickname.clone());
     let title = session.and_then(|s| s.terminal_title());

@@ -603,6 +603,17 @@ async fn async_main(
     const MIN_FRAME: Duration = Duration::from_millis(16);
     let mut last_draw = Instant::now() - MIN_FRAME;
 
+    // Unread tracking is suppressed during startup: attaching to existing tmux
+    // sessions replays their buffered scrollback, firing PtyOutput for every
+    // session, which would mark them all unread (green) on launch. We only begin
+    // tracking once that initial burst settles — a quiet gap with no PtyOutput —
+    // capped so a genuinely busy session can't hold it off forever.
+    let started_at = Instant::now();
+    let mut last_pty_output = started_at;
+    let mut unread_tracking_enabled = false;
+    const UNREAD_SETTLE_QUIET: Duration = Duration::from_millis(600);
+    const UNREAD_MAX_STARTUP_GRACE: Duration = Duration::from_secs(5);
+
     // ── Optional frame profiler (CLAWTREE_PROFILE=1) ────────────────
     // Logs redraws/sec, PtyOutput events/sec, and mean draw + URL-scan time
     // to ~/.clawtree/logs/clawtree.log every ~2s. Off by default; zero cost
@@ -1090,16 +1101,20 @@ async fn async_main(
                     // session force a full redraw + URL rescan on each chunk is a
                     // storm that scales with the attached-session count. Background
                     // titles/activity indicators still refresh via the 30fps tick.
+                    last_pty_output = Instant::now();
                     if app.active_session_id == Some(session_id) {
                         app.url_cache_dirty = true;
                         needs_redraw = true;
-                    } else if let Some(session) = app.sessions.get_mut(&session_id) {
-                        // Output arrived for a session the user isn't viewing → mark
-                        // it unread so the sidebar highlights it. Repaint so the
-                        // highlight appears even though the active pane is unchanged.
-                        if !session.unread {
-                            session.unread = true;
-                            needs_redraw = true;
+                    } else if unread_tracking_enabled {
+                        if let Some(session) = app.sessions.get_mut(&session_id) {
+                            // Output arrived for a session the user isn't viewing →
+                            // mark it unread so the sidebar highlights it. Repaint so
+                            // the highlight appears even though the active pane is
+                            // unchanged.
+                            if !session.unread {
+                                session.unread = true;
+                                needs_redraw = true;
+                            }
                         }
                     }
                 }
@@ -1448,6 +1463,15 @@ async fn async_main(
                     needs_redraw = true;
                 }
                 AppEvent::Tick => {
+                    // Enable unread tracking once the startup replay burst settles
+                    // (a quiet gap with no PtyOutput) or the max grace elapses.
+                    if !unread_tracking_enabled
+                        && (last_pty_output.elapsed() > UNREAD_SETTLE_QUIET
+                            || started_at.elapsed() > UNREAD_MAX_STARTUP_GRACE)
+                    {
+                        unread_tracking_enabled = true;
+                    }
+
                     // Auto-trigger init/convert dialog on first tick
                     if let Some(kind) = app.auto_init_pending.take() {
                         match kind {
