@@ -269,14 +269,30 @@ impl Session {
     ///
     /// The error line lingers in the transcript after Claude recovers, so its mere
     /// presence isn't enough. We only flag it while it's still the latest thing
-    /// happening: if the user has since submitted another prompt (a `❯ <command>`
-    /// line *below* the error), they've moved on and we ignore it. Once Claude
-    /// streams new output the error also scrolls past the recency window.
+    /// happening: if the user has since *submitted* another prompt (so Claude is
+    /// now working on something new), they've moved on and we ignore it.
+    ///
+    /// Crucially, a submitted command is distinct from the pending input box. The
+    /// input box is a `❯` line bounded by horizontal-rule separators and always
+    /// holds whatever the user has typed — it is NOT evidence of moving on. A
+    /// submitted command instead sits in the transcript with regular content
+    /// (e.g. a working-spinner line) directly above it. Since empty lines are
+    /// filtered out, we tell them apart by the line immediately above the prompt.
     fn content_has_rate_limit(content: &str) -> bool {
         // Recent non-empty lines, oldest-first so "below" == later in the slice.
         let recent: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
         let start = recent.len().saturating_sub(10);
         let window = &recent[start..];
+
+        let strip = |line: &str| -> String {
+            line.trim()
+                .trim_matches('\u{a0}')
+                .trim()
+                .trim_start_matches(['│', '┃', '|'])
+                .trim_end_matches(['│', '┃', '|'])
+                .trim()
+                .to_string()
+        };
 
         let Some(marker_pos) = window.iter().position(|line| {
             line.contains("temporarily limiting requests")
@@ -285,19 +301,24 @@ impl Session {
             return false;
         };
 
-        // A prompt line with a typed command below the error → user moved on.
-        let moved_on = window[marker_pos + 1..].iter().any(|line| {
-            let s = line
-                .trim()
-                .trim_matches('\u{a0}')
-                .trim()
-                .trim_start_matches(['│', '┃', '|'])
-                .trim_end_matches(['│', '┃', '|'])
-                .trim();
-            if !Self::starts_with_prompt(s) {
+        // Did the user submit a new prompt below the error? Look for a `❯ <text>`
+        // line that is NOT the bordered input box (i.e. the line above it is real
+        // content, not a separator/box border).
+        let moved_on = window.iter().enumerate().skip(marker_pos + 1).any(|(i, line)| {
+            let s = strip(line);
+            if !Self::starts_with_prompt(&s) {
                 return false;
             }
-            !s.trim_start_matches(['❯', '›']).trim().is_empty()
+            if s.trim_start_matches(['❯', '›']).trim().is_empty() {
+                return false; // empty input box
+            }
+            // Input box if the line directly above is a separator / box border.
+            let above_is_border = i > 0 && {
+                let a = strip(window[i - 1]);
+                Self::is_horizontal_rule(&a)
+                    || a.starts_with(['╭', '╮', '┌', '┐', '├', '┤', '╰', '╯'])
+            };
+            !above_is_border
         });
 
         !moved_on
@@ -1819,6 +1840,23 @@ mod tests {
                        ❯ continue\n\
                        ✻ Osmosing… (12s · thinking)\n";
         assert!(!Session::content_has_rate_limit(content));
+    }
+
+    #[test]
+    fn test_content_has_rate_limit_pending_input_box_still_flags() {
+        // Reported case: still stuck (Churned), with a survey and the pending input
+        // box (typed but not submitted) below the error. The input box's `❯` line
+        // sits under a separator, so it must NOT count as "moved on".
+        let sep = "─".repeat(80);
+        let content = format!(
+            "● API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited\n\
+             ✻ Churned for 1m 39s\n\
+             ● How is Claude doing this session? (optional)  1: Bad  2: Fine  3: Good  0: Dismiss\n\
+             {sep}\n\
+             ❯ Report the diff + deploy when it lands\n\
+             {sep}\n"
+        );
+        assert!(Session::content_has_rate_limit(&content));
     }
 
     #[test]
