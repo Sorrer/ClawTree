@@ -110,20 +110,23 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     // Record inner area for mouse hit-testing
-    app.areas.sidebar_inner.set(block.inner(area));
+    let inner = block.inner(area);
+    app.areas.sidebar_inner.set(inner);
 
     let list = List::new(items).block(block);
 
-    // Render as a stateful widget so the list scrolls to keep the selected item
-    // visible once the worktree list grows taller than the available area.
-    // Without a ListState, ratatui renders statelessly (offset 0) and clips any
-    // overflow. We drive the scroll offset from the selection only when the
-    // worktrees sub-panel is active.
-    let mut state = ListState::default();
-    if in_worktrees_panel && !app.sidebar_items.is_empty() {
-        let selected = app.sidebar_selected.min(app.sidebar_items.len() - 1);
-        state.select(Some(selected));
-    }
+    // Render as a stateful widget so the worktrees list scrolls once it grows
+    // taller than the available area. We drive the viewport via the scroll offset
+    // (not the selection) so the mouse wheel scrolls the list as a whole; keyboard
+    // navigation keeps the selection visible by nudging this same offset. The
+    // selection highlight is painted by the per-item render fns, so we don't set
+    // `selected` here (doing so would make ratatui snap the offset back to the
+    // cursor and fight free-scrolling). Clamp defensively against a stale offset.
+    let max_offset = app
+        .sidebar_items
+        .len()
+        .saturating_sub(inner.height as usize);
+    let mut state = ListState::default().with_offset(app.sidebar_scroll.min(max_offset));
     f.render_stateful_widget(list, area, &mut state);
 }
 

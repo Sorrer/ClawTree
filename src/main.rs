@@ -1013,7 +1013,8 @@ async fn async_main(
                                 let tp_inner = app.areas.sidebar_terminal_panel_inner.get();
 
                                 if mouse::point_in_rect(mouse.column, mouse.row, sidebar_inner) {
-                                    let item_row = (mouse.row - sidebar_inner.y) as usize;
+                                    let item_row = (mouse.row - sidebar_inner.y) as usize
+                                        + app.sidebar_scroll;
                                     app.sidebar_hovered = if item_row < app.sidebar_items.len() {
                                         Some(item_row)
                                     } else {

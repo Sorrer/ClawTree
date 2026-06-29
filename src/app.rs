@@ -677,6 +677,10 @@ pub struct App {
     pub pending_action: Option<PendingAction>,
     pub should_quit: bool,
     pub sidebar_selected: usize,
+    /// First visible item index of the worktrees list (viewport scroll offset).
+    /// Driven independently by the mouse wheel; keyboard navigation nudges it
+    /// only enough to keep the selected item on screen.
+    pub sidebar_scroll: usize,
     pub sidebar_hovered: Option<usize>,
     pub terminal_panel_hovered: Option<usize>,
     pub sidebar_items: Vec<SidebarItem>,
@@ -808,6 +812,7 @@ impl App {
             pending_action: None,
             should_quit: false,
             sidebar_selected: 0,
+            sidebar_scroll: 0,
             sidebar_hovered: None,
             terminal_panel_hovered: None,
             sidebar_items: Vec::new(),
@@ -928,6 +933,12 @@ impl App {
         if !self.sidebar_items.is_empty() && self.sidebar_selected >= self.sidebar_items.len() {
             self.sidebar_selected = self.sidebar_items.len() - 1;
         }
+        // Keep the scroll offset valid so render and mouse hit-testing agree even
+        // after the list shrinks (e.g. collapsing a worktree).
+        let max_scroll = self.sidebar_max_scroll();
+        if self.sidebar_scroll > max_scroll {
+            self.sidebar_scroll = max_scroll;
+        }
         self.rebuild_terminal_panel_items();
     }
 
@@ -979,6 +990,7 @@ impl App {
                 }
             }
         }
+        self.ensure_sidebar_selected_visible();
     }
 
     pub fn sidebar_down(&mut self) {
@@ -998,11 +1010,13 @@ impl App {
                 }
             }
         }
+        self.ensure_sidebar_selected_visible();
     }
 
     pub fn sidebar_jump_top(&mut self) {
         self.sidebar_panel = SidebarPanel::Worktrees;
         self.sidebar_selected = 0;
+        self.ensure_sidebar_selected_visible();
     }
 
     pub fn sidebar_jump_bottom(&mut self) {
@@ -1012,6 +1026,49 @@ impl App {
         } else if !self.sidebar_items.is_empty() {
             self.sidebar_panel = SidebarPanel::Worktrees;
             self.sidebar_selected = self.sidebar_items.len() - 1;
+        }
+        self.ensure_sidebar_selected_visible();
+    }
+
+    /// Visible height (in rows) of the worktrees list viewport, derived from the
+    /// inner area recorded during the last render. Zero before the first frame.
+    fn sidebar_viewport_height(&self) -> usize {
+        self.areas.sidebar_inner.get().height as usize
+    }
+
+    /// Largest valid scroll offset so the last item can sit at the bottom of the
+    /// viewport without leaving an empty gap below it.
+    fn sidebar_max_scroll(&self) -> usize {
+        let vh = self.sidebar_viewport_height();
+        self.sidebar_items.len().saturating_sub(vh)
+    }
+
+    /// Scroll the worktrees list viewport by `delta` rows. This moves the visible
+    /// window only — the selection is left untouched (the mouse wheel scrolls the
+    /// list, it does not move the cursor).
+    pub fn sidebar_scroll_by(&mut self, delta: isize) {
+        let max = self.sidebar_max_scroll();
+        let new = (self.sidebar_scroll as isize + delta).clamp(0, max as isize);
+        self.sidebar_scroll = new as usize;
+    }
+
+    /// Nudge the scroll offset just enough to keep the selected item visible after
+    /// a keyboard move. Items are all one row tall, so the offset maps directly to
+    /// an item index.
+    pub fn ensure_sidebar_selected_visible(&mut self) {
+        let vh = self.sidebar_viewport_height();
+        if vh == 0 {
+            return;
+        }
+        if self.sidebar_selected < self.sidebar_scroll {
+            self.sidebar_scroll = self.sidebar_selected;
+        } else if self.sidebar_selected >= self.sidebar_scroll + vh {
+            self.sidebar_scroll = self.sidebar_selected + 1 - vh;
+        }
+        // Clamp in case the list shrank since the offset was last set.
+        let max = self.sidebar_max_scroll();
+        if self.sidebar_scroll > max {
+            self.sidebar_scroll = max;
         }
     }
 

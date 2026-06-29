@@ -391,8 +391,8 @@ fn handle_sidebar_click(app: &mut App, col: u16, row: u16) -> bool {
         return true; // clicked a border, panel is already switched
     }
 
-    // Map row to item index
-    let item_row = (row - inner.y) as usize;
+    // Map row to item index, accounting for the list's scroll offset.
+    let item_row = (row - inner.y) as usize + app.sidebar_scroll;
 
     if item_row < app.sidebar_items.len() {
         app.sidebar_selected = item_row;
@@ -548,11 +548,9 @@ fn handle_normal_scroll(app: &mut App, col: u16, row: u16, up: bool) -> bool {
     let queue_area = app.areas.prompt_queue.get();
 
     if point_in_rect(col, row, sidebar_area) {
-        if up {
-            app.sidebar_up();
-        } else {
-            app.sidebar_down();
-        }
+        // Scroll the worktrees list viewport without moving the selection.
+        let delta = keys::SCROLL_LINES as isize;
+        app.sidebar_scroll_by(if up { -delta } else { delta });
         return true;
     }
     if point_in_rect(col, row, queue_area) {
@@ -671,7 +669,7 @@ pub fn handle_sidebar_right_click(app: &mut App, col: u16, row: u16) -> bool {
         return false;
     }
 
-    let item_row = (row - inner.y) as usize;
+    let item_row = (row - inner.y) as usize + app.sidebar_scroll;
     if item_row < app.sidebar_items.len() {
         app.sidebar_selected = item_row;
         if let Some(item) = app.sidebar_items.get(item_row).copied() {
