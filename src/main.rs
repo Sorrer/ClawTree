@@ -1105,18 +1105,11 @@ async fn async_main(
                     if app.active_session_id == Some(session_id) {
                         app.url_cache_dirty = true;
                         needs_redraw = true;
-                    } else if unread_tracking_enabled {
-                        if let Some(session) = app.sessions.get_mut(&session_id) {
-                            // Output arrived for a session the user isn't viewing →
-                            // mark it unread so the sidebar highlights it. Repaint so
-                            // the highlight appears even though the active pane is
-                            // unchanged.
-                            if !session.unread {
-                                session.unread = true;
-                                needs_redraw = true;
-                            }
-                        }
                     }
+                    // Unread is NOT marked here: raw PTY output includes status-bar
+                    // churn (spinner timer, token counts) that isn't new content.
+                    // We flag unread on the Working→done transition instead — see the
+                    // agent-tracking loop in the Tick handler.
                 }
                 AppEvent::PtyExited { session_id } => {
                     session::mark_exited(&mut app, session_id);
@@ -1517,6 +1510,7 @@ async fn async_main(
                     if app.spinner_frame.is_multiple_of(30) {
                         // Detect Working→Idle transitions and capture summaries
                         let sids: Vec<u64> = app.sessions.keys().copied().collect();
+                        let mut newly_done: Vec<u64> = Vec::new();
                         for sid in &sids {
                             if let Some(session) = app.sessions.get(sid) {
                                 let currently_active = session.is_active();
@@ -1536,6 +1530,14 @@ async fn async_main(
                                             app.event_tx.clone(),
                                         );
                                     }
+                                    // Claude just finished producing output. If the user
+                                    // isn't viewing this session, flag it unread (green)
+                                    // so they know there's new text to read.
+                                    if unread_tracking_enabled
+                                        && app.active_session_id != Some(*sid)
+                                    {
+                                        newly_done.push(*sid);
+                                    }
                                 }
                             }
                         }
@@ -1543,6 +1545,12 @@ async fn async_main(
                         for sid in &sids {
                             if let Some(session) = app.sessions.get_mut(sid) {
                                 session.was_active = session.is_active();
+                            }
+                        }
+                        // (The Tick handler repaints unconditionally below.)
+                        for sid in &newly_done {
+                            if let Some(session) = app.sessions.get_mut(sid) {
+                                session.unread = true;
                             }
                         }
                     }
