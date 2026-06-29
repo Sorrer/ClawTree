@@ -1065,6 +1065,17 @@ async fn async_main(
                     app.last_terminal_size = (w, h);
                     session::resize_all(&app, h, w);
                     app.text_selection = None;
+                    // Some terminals (e.g. Windows Terminal under WSL) reset DEC
+                    // private modes on resize, silently dropping mouse tracking and
+                    // bracketed paste. Our state still believes they're enabled, so
+                    // we'd never re-issue the escapes and the scroll wheel would fall
+                    // through to the host terminal's scrollback. Re-assert the modes
+                    // we own. Skip mouse capture only while the user has it disabled
+                    // for the native text-selection escape hatch.
+                    if app.mouse_captured {
+                        let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
+                    }
+                    let _ = crossterm::execute!(io::stdout(), EnableBracketedPaste);
                     needs_redraw = true;
                 }
                 AppEvent::Input(_) => {}
