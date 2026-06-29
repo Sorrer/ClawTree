@@ -259,19 +259,44 @@ impl Session {
         }
     }
 
-    /// Check if recent terminal content contains the transient rate-limit error.
-    /// Claude Code prints it on one line, e.g.:
+    /// Check if recent terminal content shows Claude Code *currently* stuck on the
+    /// transient rate-limit error. Claude prints it on one line, e.g.:
     ///   ● API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited
+    ///
+    /// The error line lingers in the transcript after Claude recovers, so its mere
+    /// presence isn't enough. We only flag it while it's still the latest thing
+    /// happening: if the user has since submitted another prompt (a `❯ <command>`
+    /// line *below* the error), they've moved on and we ignore it. Once Claude
+    /// streams new output the error also scrolls past the recency window.
     fn content_has_rate_limit(content: &str) -> bool {
-        content
-            .lines()
-            .rev()
-            .filter(|l| !l.trim().is_empty())
-            .take(10)
-            .any(|line| {
-                line.contains("temporarily limiting requests")
-                    || (line.contains("API Error") && line.contains("Rate limited"))
-            })
+        // Recent non-empty lines, oldest-first so "below" == later in the slice.
+        let recent: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        let start = recent.len().saturating_sub(10);
+        let window = &recent[start..];
+
+        let Some(marker_pos) = window.iter().position(|line| {
+            line.contains("temporarily limiting requests")
+                || (line.contains("API Error") && line.contains("Rate limited"))
+        }) else {
+            return false;
+        };
+
+        // A prompt line with a typed command below the error → user moved on.
+        let moved_on = window[marker_pos + 1..].iter().any(|line| {
+            let s = line
+                .trim()
+                .trim_matches('\u{a0}')
+                .trim()
+                .trim_start_matches(['│', '┃', '|'])
+                .trim_end_matches(['│', '┃', '|'])
+                .trim();
+            if !Self::starts_with_prompt(s) {
+                return false;
+            }
+            !s.trim_start_matches(['❯', '›']).trim().is_empty()
+        });
+
+        !moved_on
     }
 
     /// Get the visible terminal content (via tmux capture-pane or vt100 parser).
@@ -1773,6 +1798,26 @@ mod tests {
     fn test_content_has_rate_limit_absent() {
         let content = "Working on your request...\n✻ Thinking\n";
         assert!(!Session::content_has_rate_limit(content));
+    }
+
+    #[test]
+    fn test_content_has_rate_limit_cleared_after_new_prompt() {
+        // Error happened, but the user submitted "continue" and Claude resumed
+        // working below it → no longer stuck, must not flag.
+        let content = "● API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited\n\
+                       ✻ Sautéed for 2m 8s · 1 shell still running\n\
+                       ❯ continue\n\
+                       ✻ Osmosing… (12s · thinking)\n";
+        assert!(!Session::content_has_rate_limit(content));
+    }
+
+    #[test]
+    fn test_content_has_rate_limit_empty_prompt_below_still_flags() {
+        // The persistent (empty) input box below the error is not "moving on".
+        let content = "● API Error: Server is temporarily limiting requests · Rate limited\n\
+                       ✻ Cooked for 21s\n\
+                       │ ❯ │\n";
+        assert!(Session::content_has_rate_limit(content));
     }
 
     #[test]
