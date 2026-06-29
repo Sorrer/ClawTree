@@ -2,7 +2,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState};
 use ratatui::Frame;
 use std::sync::atomic::Ordering;
 
@@ -113,7 +113,18 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     app.areas.sidebar_inner.set(block.inner(area));
 
     let list = List::new(items).block(block);
-    f.render_widget(list, area);
+
+    // Render as a stateful widget so the list scrolls to keep the selected item
+    // visible once the worktree list grows taller than the available area.
+    // Without a ListState, ratatui renders statelessly (offset 0) and clips any
+    // overflow. We drive the scroll offset from the selection only when the
+    // worktrees sub-panel is active.
+    let mut state = ListState::default();
+    if in_worktrees_panel && !app.sidebar_items.is_empty() {
+        let selected = app.sidebar_selected.min(app.sidebar_items.len() - 1);
+        state.select(Some(selected));
+    }
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_project(
