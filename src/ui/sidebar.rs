@@ -246,17 +246,13 @@ fn render_project_session(
         (name, "\u{25aa}".to_string(), color)
     } else {
         let name = nickname.unwrap_or_else(|| {
-            title
+            let t = title
                 .unwrap_or_else(|| {
                     session
                         .map(|s| s.label.clone())
                         .unwrap_or_else(|| "???".to_string())
-                })
-                .trim_start_matches('\u{2733}')
-                .trim_start_matches('\u{2802}')
-                .trim_start_matches('\u{2810}')
-                .trim_start()
-                .to_string()
+                });
+            crate::session::strip_title_status_glyph(&t).to_string()
         });
         let (icon, color): (String, Color) = match status {
             AgentStatus::Exited => ("\u{2717}".to_string(), Color::DarkGray),
@@ -546,17 +542,13 @@ fn render_session(
 
     // Prefer nickname, then terminal title (stripped of Claude status chars), then label.
     let display_name = nickname.unwrap_or_else(|| {
-        title
+        let t = title
             .unwrap_or_else(|| {
                 session
                     .map(|s| s.label.clone())
                     .unwrap_or_else(|| "???".to_string())
-            })
-            .trim_start_matches('✳')
-            .trim_start_matches('⠂')
-            .trim_start_matches('⠐')
-            .trim_start()
-            .to_string()
+            });
+        crate::session::strip_title_status_glyph(&t).to_string()
     });
 
     // Status indicator and color based on agent status
@@ -1087,17 +1079,13 @@ fn render_location_session(
     let title = session.and_then(|s| s.terminal_title());
 
     let display_name = nickname.unwrap_or_else(|| {
-        title
+        let t = title
             .unwrap_or_else(|| {
                 session
                     .map(|s| s.label.clone())
                     .unwrap_or_else(|| "???".to_string())
-            })
-            .trim_start_matches('\u{2733}')
-            .trim_start_matches('\u{2802}')
-            .trim_start_matches('\u{2810}')
-            .trim_start()
-            .to_string()
+            });
+        crate::session::strip_title_status_glyph(&t).to_string()
     });
 
     let (status_icon, fg): (String, Color) = match status {

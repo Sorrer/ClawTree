@@ -336,18 +336,15 @@ impl Session {
         }
     }
 
-    /// Returns true if Claude is actively working, detected by the braille
-    /// dot spinner characters (⠂ U+2802 / ⠐ U+2810) that Claude Code sets
-    /// in the terminal title while processing.
+    /// Returns true if Claude is actively working, detected by the spinner
+    /// glyph Claude Code prefixes to the terminal title while processing
+    /// (see [`TITLE_WORKING_GLYPHS`]).
     pub fn is_active(&self) -> bool {
         if self.exited.load(Ordering::Relaxed) {
             return false;
         }
         match self.parser.try_read() {
-            Ok(guard) => {
-                let title = &guard.callbacks().title;
-                title.starts_with('⠂') || title.starts_with('⠐')
-            }
+            Ok(guard) => title_is_working(&guard.callbacks().title),
             Err(_) => false,
         }
     }
@@ -371,15 +368,48 @@ impl Session {
     }
 
     /// Check if terminal content contains Claude Code's plan mode indicator.
-    /// Claude Code shows "⏸ plan mode on" in the bottom bar when plan mode is active.
+    /// Claude Code shows "⏸ plan mode on" in the bottom bar when plan mode is
+    /// active. Since 2.1.2xx the same ⏸ glyph is also used for the default
+    /// permission mode ("⏸ manual mode on"), so the glyph alone is not enough —
+    /// the line must also name plan mode.
     fn content_has_plan_mode(content: &str) -> bool {
         content
             .lines()
             .rev()
             .filter(|l| !l.trim().is_empty())
             .take(6)
-            .any(|line| line.contains('\u{23F8}'))
+            .any(|line| line.contains('\u{23F8}') && line.to_lowercase().contains("plan mode"))
     }
+}
+
+/// Glyphs Claude Code prefixes to the terminal title while it is working.
+/// Claude Code sets the title to `"<glyph> <summary>"` and cycles the glyph
+/// while a turn is in progress:
+/// - 2.1.2xx+: half-circle spinner ◐ (U+25D0) / ◑ (U+25D1); ◒/◓ (U+25D2/U+25D3)
+///   are used by the same spinner family elsewhere in the CLI, so accept them too.
+/// - Older releases: braille dots ⠂ (U+2802) / ⠐ (U+2810).
+pub const TITLE_WORKING_GLYPHS: &[char] = &[
+    '\u{25D0}', '\u{25D1}', '\u{25D2}', '\u{25D3}', '\u{2802}', '\u{2810}',
+];
+
+/// Glyph Claude Code prefixes to the terminal title when idle at the prompt.
+pub const TITLE_IDLE_GLYPH: char = '\u{2733}'; // ✳
+
+/// Returns true if a terminal title starts with one of Claude Code's
+/// "working" spinner glyphs.
+pub fn title_is_working(title: &str) -> bool {
+    title
+        .chars()
+        .next()
+        .is_some_and(|c| TITLE_WORKING_GLYPHS.contains(&c))
+}
+
+/// Strip Claude Code's status glyph (working spinner or idle ✳) and any
+/// following whitespace from the front of a terminal title.
+pub fn strip_title_status_glyph(title: &str) -> &str {
+    title
+        .trim_start_matches(|c: char| c == TITLE_IDLE_GLYPH || TITLE_WORKING_GLYPHS.contains(&c))
+        .trim_start()
 }
 
 /// Extract a summary from the session's visible terminal output.
@@ -1809,6 +1839,61 @@ mod tests {
     #[test]
     fn test_content_has_input_prompt_empty() {
         assert!(!Session::content_has_input_prompt(""));
+    }
+
+    // ── content_has_plan_mode tests ─────────────────────────────────────
+
+    #[test]
+    fn test_content_has_plan_mode_on() {
+        let content = "❯ \n──────\n  📂 clawtree/main ⎇ main ║ ⬡ Fable 5\n  ⏸ plan mode on (shift+tab to cycle) · ← 2 agents\n";
+        assert!(Session::content_has_plan_mode(content));
+    }
+
+    #[test]
+    fn test_content_has_plan_mode_manual_mode_is_not_plan_mode() {
+        // Claude Code 2.1.2xx+ reuses ⏸ for the default permission mode.
+        let content = "❯ \n──────\n  📂 clawtree/main ⎇ main ║ ⬡ Fable 5\n  ⏸ manual mode on · ← 2 agents\n";
+        assert!(!Session::content_has_plan_mode(content));
+    }
+
+    #[test]
+    fn test_content_has_plan_mode_bypass() {
+        let content = "❯ \n──────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents\n";
+        assert!(!Session::content_has_plan_mode(content));
+    }
+
+    // ── terminal title glyph tests ──────────────────────────────────────
+
+    #[test]
+    fn test_title_is_working_half_circle_spinner() {
+        // Claude Code 2.1.2xx+ title while working: "◐ <summary>" / "◑ <summary>"
+        assert!(title_is_working("\u{25D0} Improve AAA Computer Services website"));
+        assert!(title_is_working("\u{25D1} Align status indicators with updated UI"));
+        assert!(title_is_working("\u{25D2} x"));
+        assert!(title_is_working("\u{25D3} x"));
+    }
+
+    #[test]
+    fn test_title_is_working_legacy_braille_spinner() {
+        assert!(title_is_working("\u{2802} Old Claude Code"));
+        assert!(title_is_working("\u{2810} Old Claude Code"));
+    }
+
+    #[test]
+    fn test_title_is_working_idle_and_plain() {
+        assert!(!title_is_working("\u{2733} Create fun and stylized battle tower defense"));
+        assert!(!title_is_working("bash"));
+        assert!(!title_is_working(""));
+    }
+
+    #[test]
+    fn test_strip_title_status_glyph() {
+        assert_eq!(strip_title_status_glyph("\u{25D0} Foo bar"), "Foo bar");
+        assert_eq!(strip_title_status_glyph("\u{25D1} Foo bar"), "Foo bar");
+        assert_eq!(strip_title_status_glyph("\u{2733} Foo bar"), "Foo bar");
+        assert_eq!(strip_title_status_glyph("\u{2802} Foo bar"), "Foo bar");
+        assert_eq!(strip_title_status_glyph("Foo bar"), "Foo bar");
+        assert_eq!(strip_title_status_glyph(""), "");
     }
 
     // ── content_has_rate_limit tests ────────────────────────────────────

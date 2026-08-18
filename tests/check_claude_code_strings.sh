@@ -91,18 +91,26 @@ check_string \
     "$CLI_SOURCE" \
     '\u2733'
 
-# Working title spinner: ⠂ (U+2802) and ⠐ (U+2810) braille dots
+# Working title spinner: ◐ (U+25D0) / ◑ (U+25D1) half circles (Claude Code
+# 2.1.2xx+; older releases used braille dots ⠂ U+2802 / ⠐ U+2810). The REPL
+# module defines them as an array right next to the ✳ idle glyph, e.g.
+#   Ots=["\u25D0","\u25D1"], Nts="\u2733"
 check_string \
-    "Working title spinner ⠂ (U+2802)" \
-    "⠂" \
+    "Working title spinner ◐ (U+25D0)" \
+    "◐" \
     "$CLI_SOURCE" \
-    '\u2802'
+    '\u25d0'
 
 check_string \
-    "Working title spinner ⠐ (U+2810)" \
-    "⠐" \
+    "Working title spinner ◑ (U+25D1)" \
+    "◑" \
     "$CLI_SOURCE" \
-    '\u2810'
+    '\u25d1'
+
+check_regex \
+    "Working title spinner array [\"\\u25D0\",\"\\u25D1\"]" \
+    '\["\\u25[Dd]0","\\u25[Dd]1"\]' \
+    "$CLI_SOURCE"
 
 echo ""
 
