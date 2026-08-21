@@ -439,13 +439,26 @@ impl Session {
     /// active. Since 2.1.2xx the same ⏸ glyph is also used for the default
     /// permission mode ("⏸ manual mode on"), so the glyph alone is not enough —
     /// the line must also name plan mode.
+    ///
+    /// Only the bottom bar is inspected — the lines below the input box's
+    /// bottom rule (or below a `❯` line when a dialog has replaced the box).
+    /// Transcript text above the box that merely mentions "⏸ plan mode" (e.g.
+    /// Claude quoting the bar) must not count. The bar line itself starts with
+    /// the glyph.
     fn content_has_plan_mode(content: &str) -> bool {
         content
             .lines()
             .rev()
             .filter(|l| !l.trim().is_empty())
             .take(BOTTOM_SCAN_LINES)
-            .any(|line| line.contains('\u{23F8}') && line.to_lowercase().contains("plan mode"))
+            .take_while(|l| {
+                let t = l.trim();
+                !Self::is_horizontal_rule(t) && !Self::starts_with_prompt(t)
+            })
+            .any(|line| {
+                let t = line.trim();
+                t.starts_with('\u{23F8}') && t.to_lowercase().contains("plan mode")
+            })
     }
 }
 
@@ -2104,6 +2117,27 @@ mod tests {
                        \x20Esc to cancel · Tab to amend\n";
         assert!(!Session::content_has_working_spinner(content));
         assert!(!Session::content_has_input_prompt(content));
+    }
+
+    #[test]
+    fn test_content_has_plan_mode_ignores_transcript_mentions() {
+        // Regression: Claude's own reply quoted the bar text above the input
+        // box; only the real bottom bar (below the box) may count.
+        let sep = "─".repeat(80);
+        let content = format!(
+            "● Plan mode indicator — should show when ⏸ plan mode on is present\n\
+             \x20 and ⏸ manual mode on must not trigger it.\n\
+             ✻ Brewed for 6s\n\
+             {sep}\n\
+             ❯ \n\
+             {sep}\n\
+             \x20 📂 clawtree/main ⎇ main ║ ⬡ Fable 5\n\
+             \x20 ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents\n"
+        );
+        assert!(!Session::content_has_plan_mode(&content));
+        // Same transcript, but the bar really is in plan mode.
+        let content = content.replace("⏵⏵ bypass permissions on", "⏸ plan mode on");
+        assert!(Session::content_has_plan_mode(&content));
     }
 
     #[test]
