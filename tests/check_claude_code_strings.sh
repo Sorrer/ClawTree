@@ -112,6 +112,39 @@ check_regex \
     '\["\\u25[Dd]0","\\u25[Dd]1"\]' \
     "$CLI_SOURCE"
 
+# Since 2.1.2xx the title spinner is suppressed under a terminal multiplexer
+# ($TMUX/$STY/$ZELLIJ set) by the tengu_static_title_under_mux gate, so inside
+# clawtree's tmux sessions the title stays "✳ <summary>" even mid-turn.
+# clawtree therefore also detects work from the on-screen activity line. If this
+# gate disappears the title spinner may be back under tmux — harmless, but worth
+# knowing.
+check_string \
+    "Static-title-under-mux gate (title spinner suppressed in tmux)" \
+    "tengu_static_title_under_mux" \
+    "$CLI_SOURCE"
+
+echo ""
+
+# ─── On-screen activity line ─────────────────────────────────────────
+echo "On-screen activity line (\"<glyph> Verb… (4s · thinking)\"):"
+
+# Glyph cycle at the start of the activity line. Defined as one array for
+# ghostty and one for everything else, right next to each other:
+#   ["\xB7","\u2722","\u2733","\u2736","\u273B","\u273B"]   (ghostty)
+#   ["\xB7","\u2722","*","\u2736","\u273B","\u273D"]        (default)
+check_regex \
+    "Activity spinner glyph array [\"·\",\"✢\",\"*\",\"✶\",\"✻\",\"✽\"]" \
+    '\["\\xB7","\\u2722","\*","\\u2736","\\u273B","\\u273D"\]' \
+    "$CLI_SOURCE"
+
+# Horizontal ellipsis after the verb; the finished line ("✻ Brewed for 6s")
+# has none, which is how clawtree tells in-progress from done.
+check_string \
+    "Activity line ellipsis … (U+2026)" \
+    "…" \
+    "$CLI_SOURCE" \
+    '\u2026'
+
 echo ""
 
 # ─── Mode indicators ─────────────────────────────────────────────────

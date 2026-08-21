@@ -114,7 +114,7 @@ impl Session {
             .lines()
             .rev()
             .filter(|l| !l.trim().is_empty())
-            .take(8)
+            .take(BOTTOM_SCAN_LINES)
             .collect();
 
         // Find the first ❯ line from the bottom
@@ -217,7 +217,8 @@ impl Session {
     }
 
     /// Compute the agent status for sidebar display.
-    /// - Working: spinner chars in title (actively processing)
+    /// - Working: spinner in the title or the on-screen activity line (see
+    ///   [`Self::is_active`])
     /// - Idle: at the input prompt (Claude finished, waiting for next command)
     /// - NeedsInput: not active, not at prompt, not exited (Claude asked a question
     ///   or is waiting for user input outside the normal prompt)
@@ -336,17 +337,83 @@ impl Session {
         }
     }
 
-    /// Returns true if Claude is actively working, detected by the spinner
-    /// glyph Claude Code prefixes to the terminal title while processing
-    /// (see [`TITLE_WORKING_GLYPHS`]).
+    /// Returns true if Claude is actively working.
+    ///
+    /// Two signals, either suffices:
+    /// - The spinner glyph Claude Code prefixes to the terminal title while
+    ///   processing (see [`TITLE_WORKING_GLYPHS`]). Since Claude Code 2.1.2xx
+    ///   this is suppressed under a terminal multiplexer (`$TMUX` set →
+    ///   `tengu_static_title_under_mux`), so inside clawtree's tmux sessions
+    ///   the title stays at the idle `✳` even mid-turn.
+    /// - The on-screen activity line Claude Code renders just above the input
+    ///   box while a turn is in progress, e.g. `* Channeling… (4s · thinking)`
+    ///   (see [`Self::content_has_working_spinner`]).
     pub fn is_active(&self) -> bool {
-        if self.exited.load(Ordering::Relaxed) {
+        if self.exited.load(Ordering::Relaxed) || self.is_terminal {
             return false;
         }
         match self.parser.try_read() {
-            Ok(guard) => title_is_working(&guard.callbacks().title),
+            Ok(guard) => {
+                title_is_working(&guard.callbacks().title)
+                    || Self::content_has_working_spinner(&guard.screen().contents())
+            }
             Err(_) => false,
         }
+    }
+
+    /// Check if the visible screen contains Claude Code's in-progress activity
+    /// line. While a turn runs, Claude Code shows a line directly above the
+    /// input box of the form
+    ///
+    ///   `<glyph> <Verb>… (<elapsed> · <details>)`
+    ///
+    /// e.g. `✶ Channeling… (4s · ↓ 247 tokens · thinking)` or
+    /// `* Perusing… (6m 9s · ↓ 5.4k tokens)`, where `<glyph>` cycles through
+    /// [`SCREEN_WORKING_GLYPHS`]. When the turn finishes the same line is
+    /// replaced by a summary without the ellipsis (`✻ Brewed for 6s`), so the
+    /// `…` is the discriminator.
+    ///
+    /// Only the bottom of the screen is scanned: the line sits above the input
+    /// box, which can itself be pushed up by the status line, the permission
+    /// bar and the `/tasks` sub-agent panel (`● main` / `◯ general-purpose …` /
+    /// `↓ 3 more`).
+    fn content_has_working_spinner(content: &str) -> bool {
+        content
+            .lines()
+            .rev()
+            .filter(|l| !l.trim().is_empty())
+            .take(BOTTOM_SCAN_LINES)
+            .any(Self::is_working_spinner_line)
+    }
+
+    /// Returns true for a single line of the form `<glyph> <Verb>… [(…)]`.
+    fn is_working_spinner_line(line: &str) -> bool {
+        let trimmed = line.trim().trim_matches('\u{a0}').trim();
+        let mut chars = trimmed.chars();
+        let Some(glyph) = chars.next() else {
+            return false;
+        };
+        if !SCREEN_WORKING_GLYPHS.contains(&glyph) {
+            return false;
+        }
+        if chars.next() != Some(' ') {
+            return false;
+        }
+        let rest = chars.as_str();
+        let Some((verb, tail)) = rest.split_once('\u{2026}') else {
+            return false;
+        };
+        // The verb is a single short word ("Channeling", "Osmosing", …).
+        let verb = verb.trim();
+        if verb.is_empty()
+            || verb.chars().count() > 40
+            || !verb.chars().all(|c| c.is_alphabetic() || c == '-' || c == '\'')
+        {
+            return false;
+        }
+        // After the ellipsis: nothing, or the parenthesised elapsed/details.
+        let tail = tail.trim_start();
+        tail.is_empty() || tail.starts_with('(')
     }
 
     /// Returns true if Claude Code is in plan mode, detected by the ⏸ (U+23F8)
@@ -377,7 +444,7 @@ impl Session {
             .lines()
             .rev()
             .filter(|l| !l.trim().is_empty())
-            .take(6)
+            .take(BOTTOM_SCAN_LINES)
             .any(|line| line.contains('\u{23F8}') && line.to_lowercase().contains("plan mode"))
     }
 }
@@ -394,6 +461,27 @@ pub const TITLE_WORKING_GLYPHS: &[char] = &[
 
 /// Glyph Claude Code prefixes to the terminal title when idle at the prompt.
 pub const TITLE_IDLE_GLYPH: char = '\u{2733}'; // ✳
+
+/// Glyphs Claude Code cycles through at the start of its on-screen activity
+/// line (`<glyph> Channeling… (4s · thinking)`) while a turn is in progress.
+/// Defined in the CLI as `["·","✢","*","✶","✻","✽"]` for most terminals and
+/// `["·","✢","✳","✶","✻","✻"]` under ghostty.
+pub const SCREEN_WORKING_GLYPHS: &[char] = &[
+    '\u{00B7}', // ·
+    '\u{2722}', // ✢
+    '*',
+    '\u{2736}', // ✶
+    '\u{273B}', // ✻
+    '\u{273D}', // ✽
+    '\u{2733}', // ✳ (ghostty)
+];
+
+/// How many non-empty lines from the bottom of the screen the status probes
+/// inspect. The input box and bottom bar are normally within a handful of
+/// lines of the bottom, but the `/tasks` sub-agent panel (one row per agent
+/// plus `↓ N more`), the status line and background-shell notices can push
+/// them well above that.
+const BOTTOM_SCAN_LINES: usize = 24;
 
 /// Returns true if a terminal title starts with one of Claude Code's
 /// "working" spinner glyphs.
@@ -1894,6 +1982,146 @@ mod tests {
         assert_eq!(strip_title_status_glyph("\u{2802} Foo bar"), "Foo bar");
         assert_eq!(strip_title_status_glyph("Foo bar"), "Foo bar");
         assert_eq!(strip_title_status_glyph(""), "");
+    }
+
+    // ── content_has_working_spinner tests ───────────────────────────────
+
+    #[test]
+    fn test_working_spinner_line_forms() {
+        // Captured from Claude Code 2.1.238 inside tmux (title stayed "✳ …").
+        assert!(Session::is_working_spinner_line("* Channeling… (1s · thinking)"));
+        assert!(Session::is_working_spinner_line("· Channeling… (2s · ↓ 146 tokens · thinking)"));
+        assert!(Session::is_working_spinner_line("✶ Channeling… (4s · ↓ 247 tokens · thinking)"));
+        assert!(Session::is_working_spinner_line("✽ Channeling… (5s · ↓ 357 tokens · thinking)"));
+        assert!(Session::is_working_spinner_line("* Perusing… (6m 9s · ↓ 5.4k tokens)"));
+        assert!(Session::is_working_spinner_line("✻ Osmosing… (12s · thinking)"));
+        assert!(Session::is_working_spinner_line("✢ Thinking…"));
+        assert!(Session::is_working_spinner_line("  ✳ Baking… (3s)"));
+    }
+
+    #[test]
+    fn test_working_spinner_line_rejects_finished_and_prose() {
+        // Turn-complete summaries have no ellipsis.
+        assert!(!Session::is_working_spinner_line("✻ Brewed for 6s · 1 shell still running"));
+        assert!(!Session::is_working_spinner_line("✻ Cooked for 21s"));
+        // Tool/result bullets and the sub-agent panel.
+        assert!(!Session::is_working_spinner_line("● Bash(sleep 25 && echo done)"));
+        assert!(!Session::is_working_spinner_line("● main"));
+        assert!(!Session::is_working_spinner_line("◯ general-purpose  Checking PathService diagonal mode"));
+        assert!(!Session::is_working_spinner_line("↓ 3 more"));
+        // Markdown bullets in Claude's prose that happen to trail off.
+        assert!(!Session::is_working_spinner_line("* and then some more text…"));
+        assert!(!Session::is_working_spinner_line("* Note: see below… details"));
+        assert!(!Session::is_working_spinner_line("❯ "));
+        assert!(!Session::is_working_spinner_line(""));
+    }
+
+    #[test]
+    fn test_content_has_working_spinner_mid_turn_screen() {
+        // Real screen while working: activity line above the (empty) input box.
+        let sep = "─".repeat(80);
+        let content = format!(
+            "❯ Run exactly this shell command and nothing else: sleep 25 && echo done
+             ● Bash(sleep 25 && echo done)
+               ⎿  Running in the background (↓ to manage)
+             ✽ Channeling… (5s · ↓ 357 tokens · thinking)
+             {sep}
+             ❯ 
+             {sep}
+               📂 scratchpad/probe ⎇ HEAD ║ ⬡ Haiku 4.5
+               ⏸ manual mode on · 1 shell · ← 2 agents
+"
+        );
+        assert!(Session::content_has_working_spinner(&content));
+        // The empty input box is visible at the same time; Working must win,
+        // which agent_status() guarantees by checking is_active() first.
+        assert!(Session::content_has_input_prompt(&content));
+    }
+
+    #[test]
+    fn test_content_has_working_spinner_with_agent_panel() {
+        // Waiting on sub-agents: the /tasks panel sits below the bottom bar and
+        // pushes everything up. Must still read as Working, not NeedsInput.
+        let sep = "─".repeat(80);
+        let content = format!(
+            "● Agent(Checking PathService diagonal mode)
+               ⎿  Running…
+             · Perusing… (2m 3s · ↓ 9.1k tokens)
+             {sep}
+             ❯ 
+             {sep}
+               📂 battle-td/main ⎇ main ║ ⬡ Fable 5
+               ⏵⏵ bypass permissions on (shift+tab to cycle) · /tasks to see subagents · ← 2 agents
+               ● main
+               ◯ general-purpose  Checking PathService diagonal mode
+               ◯ general-purpose  Verifying GameRoot ready-in-draft paths
+               ◯ general-purpose  Checking humanError parity
+               ◯ general-purpose  Checking RemoteBilling.Get field mapping
+               ◯ general-purpose  Checking ListInvitesByEmail case-folding
+               ◯ general-purpose  Checking OffersView.vue revoke flow
+               ↓ 3 more
+"
+        );
+        assert!(Session::content_has_working_spinner(&content));
+        assert!(Session::content_has_input_prompt(&content));
+    }
+
+    #[test]
+    fn test_content_has_working_spinner_idle_screen() {
+        let sep = "─".repeat(80);
+        let content = format!(
+            "● Command started in the background.
+             ✻ Brewed for 6s · 1 shell still running
+             {sep}
+             ❯ 
+             {sep}
+               📂 scratchpad/probe ⎇ HEAD ║ ⬡ Haiku 4.5
+               ⏸ manual mode on · 1 shell · ← 2 agents
+"
+        );
+        assert!(!Session::content_has_working_spinner(&content));
+        assert!(Session::content_has_input_prompt(&content));
+    }
+
+    #[test]
+    fn test_permission_dialog_is_needs_input() {
+        // Captured from Claude Code 2.1.238: a Write permission prompt. No
+        // activity line (turn summary instead), and the `❯ 1. Yes` cursor sits
+        // under a question, not under the input-box rule → NeedsInput.
+        let content = "✻ Baked for 3s\n\
+                       ❯ Create a file named hello.txt containing the word hi\n\
+                       ● Write(hello.txt)\n\
+                       ────────────────────────────────────────\n\
+                       \x20Create file\n\
+                       \x20hello.txt\n\
+                       ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n\
+                       \x20 1 hi\n\
+                       ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n\
+                       \x20Do you want to create hello.txt?\n\
+                       \x20❯ 1. Yes\n\
+                       \x20  2. Yes, and switch to accept edits for this session (shift+tab)\n\
+                       \x20  3. No\n\
+                       \x20Esc to cancel · Tab to amend\n";
+        assert!(!Session::content_has_working_spinner(content));
+        assert!(!Session::content_has_input_prompt(content));
+    }
+
+    #[test]
+    fn test_content_has_plan_mode_below_agent_panel() {
+        let content = "❯ 
+──────
+  📂 x ⎇ main
+  ⏸ plan mode on (shift+tab to cycle) · ← 2 agents
+  ● main
+  ◯ a 1
+  ◯ a 2
+  ◯ a 3
+  ◯ a 4
+  ◯ a 5
+  ◯ a 6
+  ↓ 3 more
+";
+        assert!(Session::content_has_plan_mode(content));
     }
 
     // ── content_has_rate_limit tests ────────────────────────────────────
