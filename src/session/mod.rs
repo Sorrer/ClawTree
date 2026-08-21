@@ -44,6 +44,10 @@ pub struct Session {
     pub nickname: Option<String>,
     /// Whether the agent was active on the previous tick (for transition detection).
     pub was_active: bool,
+    /// Set once the activity line has been seen this turn; keeps [`Self::is_active`]
+    /// true through the streaming phase, where Claude Code shows no activity
+    /// line at all and only the flow of output reveals the turn is still going.
+    pub working_latch: AtomicBool,
     /// True if this is a plain terminal session (not Claude Code).
     pub is_terminal: bool,
     /// True when the session has produced output the user hasn't viewed yet.
@@ -348,17 +352,131 @@ impl Session {
     /// - The on-screen activity line Claude Code renders just above the input
     ///   box while a turn is in progress, e.g. `* Channeling… (4s · thinking)`
     ///   (see [`Self::content_has_working_spinner`]).
+    ///
+    /// Neither signal covers the whole turn: once Claude starts streaming its
+    /// reply the activity line disappears and the text streams straight above
+    /// the input box, with the `✻ Brewed for 14s` summary only appearing at the
+    /// end. So after the activity line has been seen, the session stays active
+    /// for as long as output keeps arriving (`working_latch`); an idle Claude
+    /// Code emits nothing, so a [`WORKING_OUTPUT_SETTLE`] gap ends the turn.
     pub fn is_active(&self) -> bool {
         if self.exited.load(Ordering::Relaxed) || self.is_terminal {
             return false;
         }
-        match self.parser.try_read() {
+        let state = match self.parser.try_read() {
             Ok(guard) => {
-                title_is_working(&guard.callbacks().title)
-                    || Self::content_has_working_spinner(&guard.screen().contents())
+                if title_is_working(&guard.callbacks().title) {
+                    TurnState::Working
+                } else {
+                    Self::turn_state_from_screen(&guard.screen().contents())
+                }
             }
-            Err(_) => false,
+            Err(_) => TurnState::Unknown,
+        };
+        match state {
+            TurnState::Working => {
+                self.working_latch.store(true, Ordering::Relaxed);
+                true
+            }
+            TurnState::Finished => {
+                self.working_latch.store(false, Ordering::Relaxed);
+                false
+            }
+            TurnState::Unknown => {
+                // Streaming (text above the box, no activity line yet no
+                // summary), or a screen we can't classify (dialog open,
+                // interrupted turn). Stay Working while the latch is set and
+                // output keeps arriving; a long quiet gap ends the turn.
+                if self.working_latch.load(Ordering::Relaxed) {
+                    if !self.output_settled(WORKING_OUTPUT_SETTLE) {
+                        return true;
+                    }
+                    self.working_latch.store(false, Ordering::Relaxed);
+                }
+                false
+            }
         }
+    }
+
+    /// Classify the visible screen by what sits directly above the input box.
+    ///
+    /// Claude Code's transcript ends, just above the box's top rule, with:
+    /// - the activity line (`✶ Channeling… (4s · thinking)`) while thinking or
+    ///   running tools → [`TurnState::Working`];
+    /// - the just-submitted prompt (`❯ Write a story…`) in the first moments
+    ///   before the activity line appears → [`TurnState::Working`];
+    /// - streamed reply text while the answer is being written → no
+    ///   activity line, no summary → [`TurnState::Unknown`];
+    /// - the turn summary (`✻ Brewed for 12s`) once the turn is over →
+    ///   [`TurnState::Finished`].
+    ///
+    /// The activity line is also accepted anywhere in the bottom window (it
+    /// can sit above a `⎿ Tip:` line). If there is no input box on screen (a
+    /// permission dialog replaced it) the result is [`TurnState::Unknown`].
+    fn turn_state_from_screen(content: &str) -> TurnState {
+        if Self::content_has_working_spinner(content) {
+            return TurnState::Working;
+        }
+        match Self::last_content_line_above_input_box(content) {
+            Some(line) if Self::is_turn_summary_line(line) => TurnState::Finished,
+            Some(line) if Self::is_submitted_prompt_line(line) => TurnState::Working,
+            _ => TurnState::Unknown,
+        }
+    }
+
+    /// The last non-empty transcript line above the input box: the box is a
+    /// `❯` line sitting directly under a horizontal rule; the line above that
+    /// rule is returned. `None` if no such box is visible.
+    fn last_content_line_above_input_box(content: &str) -> Option<&str> {
+        let bottom: Vec<&str> = content
+            .lines()
+            .map(|l| l.trim().trim_matches('\u{a0}').trim())
+            .filter(|l| !l.is_empty())
+            .rev()
+            .take(BOTTOM_SCAN_LINES)
+            .collect();
+        let box_prompt = bottom.iter().position(|l| Self::starts_with_prompt(l))?;
+        let rule = bottom.get(box_prompt + 1)?;
+        if !Self::is_horizontal_rule(rule) {
+            return None;
+        }
+        bottom.get(box_prompt + 2).copied()
+    }
+
+    /// `✻ Brewed for 12s`, `✻ Sautéed for 2m 8s · 1 shell still running`,
+    /// `✻ Cooked for 21s` — the line Claude Code leaves when a turn ends.
+    fn is_turn_summary_line(line: &str) -> bool {
+        let trimmed = line.trim();
+        let mut chars = trimmed.chars();
+        let Some(glyph) = chars.next() else {
+            return false;
+        };
+        if !SCREEN_WORKING_GLYPHS.contains(&glyph) || chars.next() != Some(' ') {
+            return false;
+        }
+        let rest = chars.as_str();
+        let Some((verb, after)) = rest.split_once(" for ") else {
+            return false;
+        };
+        let verb = verb.trim();
+        verb.chars().all(|c| c.is_alphabetic() || c == '-' || c == '\'')
+            && !verb.is_empty()
+            && after.chars().next().is_some_and(|c| c.is_ascii_digit())
+    }
+
+    /// `❯ <text>` — a submitted prompt awaiting Claude's first output.
+    fn is_submitted_prompt_line(line: &str) -> bool {
+        let t = line.trim();
+        Self::starts_with_prompt(t) && !t.trim_start_matches(['❯', '›']).trim().is_empty()
+    }
+
+    /// True if no PTY output has arrived for at least `gap`.
+    pub fn output_settled(&self, gap: Duration) -> bool {
+        self.last_output
+            .read()
+            .ok()
+            .map(|t| t.elapsed() >= gap)
+            .unwrap_or(true)
     }
 
     /// Check if the visible screen contains Claude Code's in-progress activity
@@ -488,6 +606,24 @@ pub const SCREEN_WORKING_GLYPHS: &[char] = &[
     '\u{273D}', // ✽
     '\u{2733}', // ✳ (ghostty)
 ];
+
+/// What the visible screen says about the current turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnState {
+    /// Activity line or a just-submitted prompt: Claude is working.
+    Working,
+    /// The turn summary (`✻ Brewed for 12s`) sits above the input box.
+    Finished,
+    /// Streaming reply text, a dialog, or anything else unclassifiable.
+    Unknown,
+}
+
+/// Fallback only (see [`Session::is_active`]): when the screen can't say
+/// whether the turn is over — e.g. it was interrupted with Esc and no summary
+/// was printed — a turn that has gone this long without any output is treated
+/// as finished. Streamed replies normally end with a summary line, so this
+/// rarely decides anything; it just has to outlast streaming pauses.
+pub const WORKING_OUTPUT_SETTLE: Duration = Duration::from_secs(3);
 
 /// How many non-empty lines from the bottom of the screen the status probes
 /// inspect. The input box and bottom bar are normally within a handful of
@@ -744,6 +880,7 @@ pub fn spawn_session(
         tmux_session_name: handle.tmux_session_name,
         nickname: None,
         was_active: false,
+        working_latch: AtomicBool::new(false),
         unread: false,
         is_terminal: false,
     };
@@ -806,6 +943,7 @@ pub fn spawn_terminal_session(
         tmux_session_name: handle.tmux_session_name,
         nickname: None,
         was_active: false,
+        working_latch: AtomicBool::new(false),
         unread: false,
         is_terminal: true,
     };
@@ -862,6 +1000,7 @@ pub fn spawn_root_session(
         tmux_session_name: handle.tmux_session_name,
         nickname: None,
         was_active: false,
+        working_latch: AtomicBool::new(false),
         unread: false,
         is_terminal: false,
     };
@@ -911,6 +1050,7 @@ pub fn spawn_root_terminal_session(
         tmux_session_name: handle.tmux_session_name,
         nickname: None,
         was_active: false,
+        working_latch: AtomicBool::new(false),
         unread: false,
         is_terminal: true,
     };
@@ -975,6 +1115,7 @@ pub fn spawn_location_session(
         tmux_session_name: handle.tmux_session_name,
         nickname: None,
         was_active: false,
+        working_latch: AtomicBool::new(false),
         unread: false,
         is_terminal: false,
     };
@@ -1360,6 +1501,7 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
             tmux_session_name: handle.tmux_session_name,
             nickname: None,
             was_active: false,
+        working_latch: AtomicBool::new(false),
             unread: false,
             is_terminal,
         };
@@ -2117,6 +2259,77 @@ mod tests {
                        \x20Esc to cancel · Tab to amend\n";
         assert!(!Session::content_has_working_spinner(content));
         assert!(!Session::content_has_input_prompt(content));
+    }
+
+    // ── turn_state_from_screen tests ────────────────────────────────────
+
+    fn screen(transcript: &str, box_text: &str) -> String {
+        let sep = "─".repeat(80);
+        format!(
+            "{transcript}\n{sep}\n❯ {box_text}\n{sep}\n\
+             \x20 📂 scratchpad/e2e ⎇ main ║ ⬡ Fable 5\n\
+             \x20 ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents\n"
+        )
+    }
+
+    #[test]
+    fn test_turn_state_submitted_prompt_is_working() {
+        let s = screen("✻ Cogitated for 1s\n❯ Write a 300 word story about a harbor.", "");
+        assert_eq!(Session::turn_state_from_screen(&s), TurnState::Working);
+    }
+
+    #[test]
+    fn test_turn_state_activity_line_is_working() {
+        let s = screen("❯ Write a story\n✢ Leavening… (2s · ↓ 13 tokens)", "");
+        assert_eq!(Session::turn_state_from_screen(&s), TurnState::Working);
+        // Activity line above a tip line still counts.
+        let s = screen(
+            "● Bash(ls)\n  ⎿  Running…\n* Perusing… (6m 9s · ↓ 5.4k tokens)\n  ⎿  Tip: Use /btw to ask a quick side question",
+            "",
+        );
+        assert_eq!(Session::turn_state_from_screen(&s), TurnState::Working);
+    }
+
+    #[test]
+    fn test_turn_state_streaming_is_unknown() {
+        // Mid-stream: reply text directly above the box, no spinner, no summary.
+        let s = screen(
+            "❯ Write a story\n  The river had moved. Not much, but enough. The gravel bar where\n  channel that cut hard against the far bank.",
+            "",
+        );
+        assert_eq!(Session::turn_state_from_screen(&s), TurnState::Unknown);
+    }
+
+    #[test]
+    fn test_turn_state_summary_is_finished() {
+        for summary in [
+            "✻ Brewed for 12s",
+            "✻ Cogitated for 1s",
+            "✻ Sautéed for 2m 8s · 1 shell still running",
+            "✻ Baked for 3s",
+        ] {
+            let s = screen(&format!("  She finished her coffee.\n{summary}"), "");
+            assert_eq!(Session::turn_state_from_screen(&s), TurnState::Finished, "{summary}");
+        }
+        // Typed-but-unsent text in the box doesn't change the verdict.
+        let s = screen("  text\n✻ Brewed for 12s", "next question I haven't sent");
+        assert_eq!(Session::turn_state_from_screen(&s), TurnState::Finished);
+    }
+
+    #[test]
+    fn test_turn_state_no_box_is_unknown() {
+        // Permission dialog replaced the input box.
+        let s = "✻ Baked for 3s\n❯ Create a file\n● Write(hello.txt)\n────────────────────────\n Do you want to create hello.txt?\n ❯ 1. Yes\n   2. No\n Esc to cancel\n";
+        assert_eq!(Session::turn_state_from_screen(s), TurnState::Unknown);
+        assert_eq!(Session::turn_state_from_screen(""), TurnState::Unknown);
+    }
+
+    #[test]
+    fn test_is_turn_summary_line_rejects_lookalikes() {
+        assert!(!Session::is_turn_summary_line("* Perusing… (6m 9s)"));
+        assert!(!Session::is_turn_summary_line("● Waiting for input"));
+        assert!(!Session::is_turn_summary_line("* Thanks for asking"));
+        assert!(!Session::is_turn_summary_line("✻ Brewed for"));
     }
 
     #[test]

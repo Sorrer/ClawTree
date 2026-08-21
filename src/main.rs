@@ -1506,9 +1506,13 @@ async fn async_main(
                     // We want ~10fps for the spinner, so advance every 3rd tick
                     app.spinner_frame = app.spinner_frame.wrapping_add(1);
 
-                    // ── Agent tracking (~1/sec, on every 30th tick) ──
-                    if app.spinner_frame.is_multiple_of(30) {
-                        // Detect Working→Idle transitions and capture summaries
+                    // ── Agent tracking (~3/sec, on every 10th tick) ──
+                    // Fast enough that a one-second turn still shows its activity
+                    // line on at least one sample, so its Working→Idle edge fires.
+                    if app.spinner_frame.is_multiple_of(10) {
+                        // Detect Working→Idle transitions and capture summaries.
+                        // Session::is_active() already latches through the
+                        // streaming phase and repaint blips (see working_latch).
                         let sids: Vec<u64> = app.sessions.keys().copied().collect();
                         let mut newly_done: Vec<u64> = Vec::new();
                         for sid in &sids {
@@ -1517,20 +1521,20 @@ async fn async_main(
                                 let was_active = session.was_active;
                                 let exited =
                                     session.exited.load(std::sync::atomic::Ordering::Relaxed);
-                                // The on-screen activity line can blink off for a
-                                // frame while Claude repaints (observed ~250ms at
-                                // turn end). Only count a Working→Idle edge once
-                                // output has settled, so a blip can't fire a false
-                                // "done" (duplicate summary + premature unread).
-                                let settled = session
-                                    .last_output
-                                    .read()
-                                    .ok()
-                                    .map(|t| t.elapsed() > Duration::from_millis(700))
-                                    .unwrap_or(true);
+                                if was_active != currently_active {
+                                    tracing::debug!(
+                                        sid,
+                                        was_active,
+                                        currently_active,
+                                        exited,
+                                        viewing = app.active_session_id == Some(*sid),
+                                        unread_tracking_enabled,
+                                        "agent activity edge"
+                                    );
+                                }
 
                                 // Transition: was working, now idle/done
-                                if was_active && !currently_active && !exited && settled {
+                                if was_active && !currently_active && !exited {
                                     if let Some(summary) = session::extract_summary(session) {
                                         app.agent_summaries.insert(*sid, summary);
                                     } else if let Some(ref tmux_name) = session.tmux_session_name {
@@ -1547,24 +1551,16 @@ async fn async_main(
                                     if unread_tracking_enabled
                                         && app.active_session_id != Some(*sid)
                                     {
+                                        tracing::debug!(sid, "finished while not viewed → unread");
                                         newly_done.push(*sid);
                                     }
                                 }
                             }
                         }
-                        // Update was_active flags (separate loop to avoid borrow issues).
-                        // Keep was_active set while the line is momentarily absent but
-                        // output hasn't settled, so the real edge still fires later.
+                        // Update was_active flags (separate loop to avoid borrow issues)
                         for sid in &sids {
                             if let Some(session) = app.sessions.get_mut(sid) {
-                                let settled = session
-                                    .last_output
-                                    .read()
-                                    .ok()
-                                    .map(|t| t.elapsed() > Duration::from_millis(700))
-                                    .unwrap_or(true);
-                                session.was_active =
-                                    session.is_active() || (session.was_active && !settled);
+                                session.was_active = session.is_active();
                             }
                         }
                         // (The Tick handler repaints unconditionally below.)
