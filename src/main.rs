@@ -1517,9 +1517,20 @@ async fn async_main(
                                 let was_active = session.was_active;
                                 let exited =
                                     session.exited.load(std::sync::atomic::Ordering::Relaxed);
+                                // The on-screen activity line can blink off for a
+                                // frame while Claude repaints (observed ~250ms at
+                                // turn end). Only count a Working→Idle edge once
+                                // output has settled, so a blip can't fire a false
+                                // "done" (duplicate summary + premature unread).
+                                let settled = session
+                                    .last_output
+                                    .read()
+                                    .ok()
+                                    .map(|t| t.elapsed() > Duration::from_millis(700))
+                                    .unwrap_or(true);
 
                                 // Transition: was working, now idle/done
-                                if was_active && !currently_active && !exited {
+                                if was_active && !currently_active && !exited && settled {
                                     if let Some(summary) = session::extract_summary(session) {
                                         app.agent_summaries.insert(*sid, summary);
                                     } else if let Some(ref tmux_name) = session.tmux_session_name {
@@ -1541,10 +1552,19 @@ async fn async_main(
                                 }
                             }
                         }
-                        // Update was_active flags (separate loop to avoid borrow issues)
+                        // Update was_active flags (separate loop to avoid borrow issues).
+                        // Keep was_active set while the line is momentarily absent but
+                        // output hasn't settled, so the real edge still fires later.
                         for sid in &sids {
                             if let Some(session) = app.sessions.get_mut(sid) {
-                                session.was_active = session.is_active();
+                                let settled = session
+                                    .last_output
+                                    .read()
+                                    .ok()
+                                    .map(|t| t.elapsed() > Duration::from_millis(700))
+                                    .unwrap_or(true);
+                                session.was_active =
+                                    session.is_active() || (session.was_active && !settled);
                             }
                         }
                         // (The Tick handler repaints unconditionally below.)
