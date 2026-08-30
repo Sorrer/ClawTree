@@ -413,6 +413,8 @@ impl Session {
     ///   before the activity line appears → [`TurnState::Working`];
     /// - streamed reply text while the answer is being written → no
     ///   activity line, no summary → [`TurnState::Unknown`];
+    /// - `✳ Waiting for 3 background agents to finish` while blocked on the
+    ///   agents it launched → [`TurnState::Working`];
     /// - the turn summary (`✻ Brewed for 12s`) once the turn is over →
     ///   [`TurnState::Finished`].
     ///
@@ -424,6 +426,7 @@ impl Session {
             return TurnState::Working;
         }
         match Self::last_content_line_above_input_box(content) {
+            Some(line) if Self::is_awaiting_agents_line(line) => TurnState::Working,
             Some(line) if Self::is_turn_summary_line(line) => TurnState::Finished,
             Some(line) if Self::is_submitted_prompt_line(line) => TurnState::Working,
             _ => TurnState::Unknown,
@@ -467,7 +470,28 @@ impl Session {
         let verb = verb.trim();
         verb.chars().all(|c| c.is_alphabetic() || c == '-' || c == '\'')
             && !verb.is_empty()
-            && after.chars().next().is_some_and(|c| c.is_ascii_digit())
+            && Self::starts_with_duration(after)
+    }
+
+    /// `6s`, `2m 8s`, `21s · 1 shell still running` — the elapsed time a turn
+    /// summary reports. The unit matters: without it `✳ Waiting for 3
+    /// background agents to finish` reads as a finished turn and the session
+    /// drops to Idle while its agents are still running.
+    fn starts_with_duration(s: &str) -> bool {
+        let token = s.split_whitespace().next().unwrap_or("");
+        let digits = token.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+        !digits.is_empty()
+            && digits.chars().all(|c| c.is_ascii_digit())
+            && matches!(&token[digits.len()..], "s" | "m" | "h" | "ms")
+    }
+
+    /// `✳ Waiting for 3 background agents to finish` — Claude Code has said its
+    /// piece and is now blocked on the agents it launched. The turn is very much
+    /// still open, so this must not be mistaken for a turn summary.
+    fn is_awaiting_agents_line(line: &str) -> bool {
+        let t = line.trim().trim_start_matches(|c: char| !c.is_alphabetic());
+        let lower = t.to_lowercase();
+        lower.starts_with("waiting for") && lower.contains("agent") && lower.contains("to finish")
     }
 
     /// `❯ <text>` — a submitted prompt awaiting Claude's first output.
@@ -605,6 +629,8 @@ impl Session {
     /// - the bottom bar's transient `· /tasks to see subagents` hint, shown
     ///   only while agents are running (the `/tasks` panel listing them may sit
     ///   below the bar and push it up, so scan the whole bottom block);
+    /// - `✳ Waiting for 3 background agents to finish` above the input box —
+    ///   background agents (the `↓ to manage` kind) get no bar hint at all;
     /// - a `● Agent(…)` / `● Task(…)` transcript entry whose result line still
     ///   reads `⎿  Running…` — Claude Code rewrites it in place to
     ///   `⎿  Done (…)` once the agent returns.
@@ -623,6 +649,19 @@ impl Session {
             })
             .any(|line| line.to_lowercase().contains("to see subagents"));
         if bar_hint {
+            return true;
+        }
+
+        // `✳ Waiting for 3 background agents to finish`, just above the input
+        // box: Claude's own turn is done and only the agents are left. Background
+        // agents get no `/tasks` hint in the bar, so this is the only signal.
+        if content
+            .lines()
+            .rev()
+            .filter(|l| !l.trim().is_empty())
+            .take(BOTTOM_SCAN_LINES)
+            .any(Self::is_awaiting_agents_line)
+        {
             return true;
         }
 
@@ -2320,6 +2359,48 @@ mod tests {
 "
         );
         assert!(Session::content_has_running_subagents(&content));
+    }
+
+    #[test]
+    fn test_waiting_for_background_agents_is_awaiting_not_idle() {
+        // Captured from a live session: Claude has finished writing and is only
+        // waiting on the agents it launched. The waiting line has the same
+        // "<glyph> <Verb> for <n>…" shape as a turn summary, so before the
+        // duration check it read as Finished and the row went Idle.
+        let sep = "─".repeat(80);
+        let content = format!(
+            "● 2 background agents launched (↓ to manage)
+                 Fix cancellation flow — server
+                 Fix cancellation flow — web
+             ✳ Waiting for 2 background agents to finish
+             {sep}
+             ❯ commit everything once the other two finish
+             {sep}
+               📂 LightCloudStudioSAAS/main ⎇ main ║ ⬡ Fable 5
+               ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents
+               ● main
+               ◯ general-purpose  Wiring reactivate and OrgName in cloud.go
+               ◯ general-purpose  Checking errorCopyServerCoverage failures
+"
+        );
+        assert!(!Session::is_turn_summary_line(
+            "✳ Waiting for 2 background agents to finish"
+        ));
+        assert_eq!(Session::turn_state_from_screen(&content), TurnState::Working);
+        assert!(Session::content_has_running_subagents(&content));
+    }
+
+    #[test]
+    fn test_turn_summary_still_recognized() {
+        // The duration check must not cost us any real summary shape.
+        for summary in [
+            "✻ Brewed for 6s",
+            "✻ Sautéed for 2m 8s · 1 shell still running",
+            "✽ Cooked for 21s",
+            "✻ Baked for 1h 4m",
+        ] {
+            assert!(Session::is_turn_summary_line(summary), "{summary}");
+        }
     }
 
     #[test]
