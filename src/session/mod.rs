@@ -223,6 +223,8 @@ impl Session {
     /// Compute the agent status for sidebar display.
     /// - Working: spinner in the title or the on-screen activity line (see
     ///   [`Self::is_active`])
+    /// - AwaitingAgents: working, with sub-agents still running (see
+    ///   [`Self::has_running_subagents`])
     /// - Idle: at the input prompt (Claude finished, waiting for next command)
     /// - NeedsInput: not active, not at prompt, not exited (Claude asked a question
     ///   or is waiting for user input outside the normal prompt)
@@ -245,6 +247,10 @@ impl Session {
             return AgentStatus::RateLimited;
         }
         if self.is_active() {
+            // Still working, but the work is out in the sub-agents.
+            if self.has_running_subagents() {
+                return AgentStatus::AwaitingAgents;
+            }
             return AgentStatus::Working;
         }
         if self.is_at_input_prompt() {
@@ -577,6 +583,63 @@ impl Session {
                 let t = line.trim();
                 t.starts_with('\u{23F8}') && t.to_lowercase().contains("plan mode")
             })
+    }
+
+    /// Returns true if the session is waiting on sub-agents: Task/Agent tool
+    /// runs Claude Code has spawned and not yet collected. The session is still
+    /// Working, but the work is happening in the sub-agents rather than here.
+    pub fn has_running_subagents(&self) -> bool {
+        if self.exited.load(Ordering::Relaxed) || self.is_terminal {
+            return false;
+        }
+        // Scan the in-memory VT100 screen — never shell out here. Like the
+        // other status probes this runs per-session on the render path.
+        match self.parser.try_read() {
+            Ok(guard) => Self::content_has_running_subagents(&guard.screen().contents()),
+            Err(_) => false,
+        }
+    }
+
+    /// Two independent signals that sub-agents are still in flight:
+    ///
+    /// - the bottom bar's transient `· /tasks to see subagents` hint, shown
+    ///   only while agents are running (the `/tasks` panel listing them may sit
+    ///   below the bar and push it up, so scan the whole bottom block);
+    /// - a `● Agent(…)` / `● Task(…)` transcript entry whose result line still
+    ///   reads `⎿  Running…` — Claude Code rewrites it in place to
+    ///   `⎿  Done (…)` once the agent returns.
+    ///
+    /// `⎿  Running in the background` belongs to a backgrounded Bash tool, not
+    /// an agent, which is why the parent tool line has to match as well.
+    fn content_has_running_subagents(content: &str) -> bool {
+        let bar_hint = content
+            .lines()
+            .rev()
+            .filter(|l| !l.trim().is_empty())
+            .take(BOTTOM_SCAN_LINES)
+            .take_while(|l| {
+                let t = l.trim();
+                !Self::is_horizontal_rule(t) && !Self::starts_with_prompt(t)
+            })
+            .any(|line| line.to_lowercase().contains("to see subagents"));
+        if bar_hint {
+            return true;
+        }
+
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        lines.windows(2).any(|w| {
+            Self::is_agent_tool_line(w[0]) && {
+                let result = w[1].trim().trim_start_matches('\u{23bf}').trim();
+                result.starts_with("Running")
+            }
+        })
+    }
+
+    /// `● Agent(Checking PathService…)` / `● Task(…)` — the transcript entry
+    /// Claude Code writes for a spawned sub-agent.
+    fn is_agent_tool_line(line: &str) -> bool {
+        let t = line.trim().trim_start_matches('\u{25cf}').trim_start();
+        t.starts_with("Agent(") || t.starts_with("Task(")
     }
 }
 
@@ -2219,6 +2282,74 @@ mod tests {
         );
         assert!(Session::content_has_working_spinner(&content));
         assert!(Session::content_has_input_prompt(&content));
+    }
+
+    #[test]
+    fn test_running_subagents_from_tasks_hint() {
+        // The bottom bar advertises /tasks only while sub-agents are running,
+        // and the panel listing them pushes the bar up off the last rule.
+        let sep = "─".repeat(80);
+        let content = format!(
+            "● Agent(Checking PathService diagonal mode)
+               ⎿  Running…
+             · Perusing… (2m 3s · ↓ 9.1k tokens)
+             {sep}
+             ❯ 
+             {sep}
+               📂 battle-td/main ⎇ main ║ ⬡ Fable 5
+               ⏵⏵ bypass permissions on (shift+tab to cycle) · /tasks to see subagents · ← 2 agents
+               ● main
+               ◯ general-purpose  Checking PathService diagonal mode
+"
+        );
+        assert!(Session::content_has_running_subagents(&content));
+    }
+
+    #[test]
+    fn test_running_subagents_from_transcript_entry() {
+        // No bar hint (older CLI), but the Task entry is still `Running…`.
+        let sep = "─".repeat(80);
+        let content = format!(
+            "● Task(Search the codebase)
+               ⎿  Running… (12s · ↑ 1.2k tokens)
+             ✽ Channeling… (14s · thinking)
+             {sep}
+             ❯ 
+             {sep}
+               ⏸ manual mode on · ← 2 agents
+"
+        );
+        assert!(Session::content_has_running_subagents(&content));
+    }
+
+    #[test]
+    fn test_no_running_subagents() {
+        let sep = "─".repeat(80);
+        // A finished agent (`Done`), and a backgrounded Bash tool — neither is
+        // a sub-agent still in flight.
+        let content = format!(
+            "● Task(Search the codebase)
+               ⎿  Done (7 tool uses · 21.4k tokens · 1m 4s)
+             ● Bash(sleep 25 && echo done)
+               ⎿  Running in the background (↓ to manage)
+             ✽ Channeling… (5s · thinking)
+             {sep}
+             ❯ 
+             {sep}
+               ⏸ manual mode on · 1 shell · ← 2 agents
+"
+        );
+        assert!(!Session::content_has_running_subagents(&content));
+        // Nor does the transcript merely mentioning the hint above the box.
+        let quoted = format!(
+            "  the bar reads `/tasks to see subagents` when agents run
+             {sep}
+             ❯ 
+             {sep}
+               ⏸ manual mode on · ← 2 agents
+"
+        );
+        assert!(!Session::content_has_running_subagents(&quoted));
     }
 
     #[test]

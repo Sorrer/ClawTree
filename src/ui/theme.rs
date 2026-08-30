@@ -173,6 +173,8 @@ pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', 
 pub const AGENT_NEEDS_INPUT: Color = Color::Cyan;
 pub const AGENT_PLANNING: Color = Color::Indexed(141); // light purple
 pub const AGENT_RATE_LIMITED: Color = Color::Red;
+/// Working-but-waiting-on-sub-agents: the Working yellow, greyed down.
+pub const AGENT_AWAITING_AGENTS: Color = Color::Indexed(137); // muted gold
 
 // ── Brand logo (big) ────────────────────────────────────────────
 //  Three claw marks + box-drawing "CLAWTREE"

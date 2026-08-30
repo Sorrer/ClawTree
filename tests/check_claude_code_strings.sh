@@ -165,6 +165,27 @@ check_regex \
 
 echo ""
 
+# ─── Sub-agent indicators ────────────────────────────────────────────
+echo "Sub-agent indicators:"
+
+# While sub-agents are running, the bottom bar carries a "/tasks to see
+# subagents" hint (dimmed), which clawtree reads to mark a session as waiting
+# on its agents rather than working itself.
+check_string \
+    "Bottom-bar hint '/tasks to see subagents'" \
+    "/tasks to see subagents" \
+    "$CLI_SOURCE"
+
+# Tool-result corner ⎿ (U+23BF) — prefixes the "Running…"/"Done (…)" line under
+# an Agent(…)/Task(…) entry, clawtree's fallback signal when the hint is absent.
+check_string \
+    "Tool result corner ⎿ (U+23BF)" \
+    "⎿" \
+    "$CLI_SOURCE" \
+    '\u23bf'
+
+echo ""
+
 # ─── Prompt indicators ───────────────────────────────────────────────
 echo "Prompt indicators:"
 

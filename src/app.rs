@@ -96,6 +96,10 @@ pub enum ScreenMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentStatus {
     Working,
+    /// Working, but waiting on sub-agents it spawned (Task/Agent tool runs).
+    /// Rendered like Working with a muted spinner, so a glance at the sidebar
+    /// tells apart "Claude is doing this itself" from "Claude is waiting".
+    AwaitingAgents,
     Idle,
     NeedsInput,
     /// Claude Code is stuck on a transient server-side rate limit (the

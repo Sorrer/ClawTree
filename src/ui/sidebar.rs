@@ -38,7 +38,8 @@ pub(crate) fn terminal_display_name(app: &App, session: Option<&crate::session::
 
 /// Whether a session row should get the unread (light green) highlight.
 /// Suppressed for the session the user is currently viewing and while it is
-/// actively Working — the yellow spinner already signals activity, so green is
+/// actively Working (sub-agents included) — the spinner already signals
+/// activity, so green is
 /// reserved for finished/new output the user hasn't looked at yet.
 fn unread_highlight(
     session: Option<&crate::session::Session>,
@@ -47,6 +48,7 @@ fn unread_highlight(
 ) -> bool {
     !is_active_session
         && status != AgentStatus::Working
+        && status != AgentStatus::AwaitingAgents
         && session.map(|s| s.unread).unwrap_or(false)
 }
 
@@ -257,6 +259,9 @@ fn render_project_session(
         let (icon, color): (String, Color) = match status {
             AgentStatus::Exited => ("\u{2717}".to_string(), Color::DarkGray),
             AgentStatus::Working => (spinner_char(app).to_string(), Color::Yellow),
+            AgentStatus::AwaitingAgents => {
+                (spinner_char(app).to_string(), theme::AGENT_AWAITING_AGENTS)
+            }
             AgentStatus::NeedsInput => ("\u{25cf}".to_string(), theme::AGENT_NEEDS_INPUT),
             AgentStatus::RateLimited => ("\u{2298}".to_string(), theme::AGENT_RATE_LIMITED),
             AgentStatus::Idle => ("\u{25cb}".to_string(), Color::Gray),
@@ -555,6 +560,9 @@ fn render_session(
     let (status_icon, fg): (String, Color) = match status {
         AgentStatus::Exited => ("✗".to_string(), Color::DarkGray),
         AgentStatus::Working => (spinner_char(app).to_string(), Color::Yellow),
+        AgentStatus::AwaitingAgents => {
+            (spinner_char(app).to_string(), theme::AGENT_AWAITING_AGENTS)
+        }
         AgentStatus::NeedsInput => ("●".to_string(), theme::AGENT_NEEDS_INPUT),
         AgentStatus::RateLimited => ("⊘".to_string(), theme::AGENT_RATE_LIMITED),
         AgentStatus::Idle => ("○".to_string(), Color::Gray),
@@ -1091,6 +1099,9 @@ fn render_location_session(
     let (status_icon, fg): (String, Color) = match status {
         AgentStatus::Exited => ("\u{2717}".to_string(), Color::DarkGray),
         AgentStatus::Working => (spinner_char(app).to_string(), Color::Yellow),
+        AgentStatus::AwaitingAgents => {
+            (spinner_char(app).to_string(), theme::AGENT_AWAITING_AGENTS)
+        }
         AgentStatus::NeedsInput => ("\u{25cf}".to_string(), theme::AGENT_NEEDS_INPUT),
         AgentStatus::RateLimited => ("\u{2298}".to_string(), theme::AGENT_RATE_LIMITED),
         AgentStatus::Idle => ("\u{25cb}".to_string(), Color::Gray),
