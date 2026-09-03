@@ -796,6 +796,12 @@ async fn async_main(
                     needs_redraw = true;
                 }
                 AppEvent::Input(CrosstermEvent::Mouse(mouse)) => {
+                    // An application that enabled mouse reporting (Claude Code's
+                    // fullscreen renderer, vim, …) gets clicks and drags itself.
+                    if mouse::forward_to_app(&mut app, mouse) {
+                        needs_redraw = true;
+                        continue;
+                    }
                     match mouse.kind {
                         MouseEventKind::Down(MouseButton::Left) => {
                             // Clear any existing selection on new click

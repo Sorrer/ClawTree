@@ -1,14 +1,13 @@
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use crate::app::{
     self, App, FocusTarget, InputMode, ScreenMode, SidebarItem, SidebarPanel,
 };
 use crate::keys;
-use crate::ui::terminal_pane;
 
 /// Convert screen coordinates to vt100-relative (row, col) within the terminal pane.
 /// Returns None if the position is outside the terminal pane inner area.
@@ -531,6 +530,77 @@ fn handle_prompt_queue_click(app: &mut App, col: u16, row: u16) -> bool {
     true
 }
 
+// ── Forwarding to a mouse-aware application ──────────────────────────
+
+/// Forward a mouse event into the active session when the application there
+/// has enabled mouse reporting (Claude Code's fullscreen renderer, vim, …).
+///
+/// Returns true when the event was consumed. Only events over the terminal
+/// pane are forwarded; Shift+click stays the native-selection escape hatch,
+/// and the wheel is left to the scroll dispatcher (which forwards it too).
+/// The mode the application asked for decides which events it gets: press
+/// only, press/release, drag while a button is held, or all motion.
+pub fn forward_to_app(app: &mut App, event: MouseEvent) -> bool {
+    use vt100::MouseProtocolMode as Mode;
+
+    if app.show_help || app.dialog.is_some() {
+        return false;
+    }
+    if event.modifiers.contains(KeyModifiers::SHIFT) {
+        return false;
+    }
+    if !is_terminal_session_area(app, event.column, event.row) {
+        return false;
+    }
+    let Some(sid) = app.active_session_id else {
+        return false;
+    };
+    let Some(session) = app.sessions.get(&sid) else {
+        return false;
+    };
+    let Some((mode, encoding)) = session.mouse_protocol() else {
+        return false;
+    };
+
+    let button_of = |b: MouseButton| match b {
+        MouseButton::Left => keys::BTN_LEFT,
+        MouseButton::Middle => keys::BTN_MIDDLE,
+        MouseButton::Right => keys::BTN_RIGHT,
+    };
+    let (button, release) = match event.kind {
+        MouseEventKind::Down(b) => (button_of(b), false),
+        MouseEventKind::Up(b) if mode != Mode::Press => (button_of(b), true),
+        MouseEventKind::Drag(b) if matches!(mode, Mode::ButtonMotion | Mode::AnyMotion) => {
+            (button_of(b) | keys::MOTION_FLAG, false)
+        }
+        MouseEventKind::Moved if mode == Mode::AnyMotion => {
+            (keys::BTN_NONE | keys::MOTION_FLAG, false)
+        }
+        _ => return false,
+    };
+
+    let mut code = button;
+    if event.modifiers.contains(KeyModifiers::ALT) {
+        code |= keys::MOD_ALT;
+    }
+    if event.modifiers.contains(KeyModifiers::CONTROL) {
+        code |= keys::MOD_CTRL;
+    }
+
+    let (x, y) = keys::pane_cell(app, event.column, event.row);
+    let bytes = keys::mouse_report(encoding, code, x, y, release);
+    let _ = session.write_tx.send(bytes::Bytes::from(bytes));
+
+    if matches!(event.kind, MouseEventKind::Down(_)) {
+        // The application owns selection and clicks now; give it focus.
+        app.text_selection = None;
+        app.terminal_scroll = 0;
+        app.focus = FocusTarget::TerminalPane;
+        app.input_mode = InputMode::Terminal;
+    }
+    true
+}
+
 // ── Scroll dispatch ──────────────────────────────────────────────────
 
 fn handle_scroll(app: &mut App, col: u16, row: u16, up: bool) -> bool {
@@ -562,39 +632,18 @@ fn handle_normal_scroll(app: &mut App, col: u16, row: u16, up: bool) -> bool {
         if app.active_worktree_idx.is_some() && app.active_session_id.is_none() {
             scroll_info_panel(app, up);
         } else {
-            scroll_terminal(app, up);
+            scroll_terminal(app, col, row, up);
         }
         return true;
     }
 
     // Fallback: scroll terminal if active
-    scroll_terminal(app, up);
+    scroll_terminal(app, col, row, up);
     true
 }
 
-fn scroll_terminal(app: &mut App, up: bool) {
-    if app.active_session_id.is_none() {
-        return;
-    }
-    if up {
-        app.terminal_scroll = app.terminal_scroll.saturating_add(keys::SCROLL_LINES);
-        clamp_terminal_scroll(app);
-    } else {
-        app.terminal_scroll = app.terminal_scroll.saturating_sub(keys::SCROLL_LINES);
-    }
-}
-
-fn clamp_terminal_scroll(app: &mut App) {
-    if let Some(sid) = app.active_session_id {
-        if let Some(session) = app.sessions.get(&sid) {
-            if let Some(ref tmux_name) = session.tmux_session_name {
-                let history = terminal_pane::tmux_history_size(tmux_name);
-                if app.terminal_scroll > history {
-                    app.terminal_scroll = history;
-                }
-            }
-        }
-    }
+fn scroll_terminal(app: &mut App, col: u16, row: u16, up: bool) {
+    keys::scroll_terminal(app, keys::ScrollInput::Wheel { up, col, row });
 }
 
 fn scroll_info_panel(app: &mut App, up: bool) {

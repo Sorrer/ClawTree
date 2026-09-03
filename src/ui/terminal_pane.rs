@@ -601,6 +601,46 @@ pub fn capture_tmux_pane_plain(tmux_name: &str, start: i64, end: i64) -> Option<
     }
 }
 
+/// What the scroll wheel / PgUp should do for a tmux pane.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TmuxScrollInfo {
+    /// Lines in the pane's scrollback history.
+    pub history: usize,
+    /// True while the application owns the alternate screen (Claude Code's
+    /// fullscreen renderer, vim, less…). Its history is *not* in tmux's
+    /// scrollback, so scroll input must be forwarded to the application.
+    pub alternate_on: bool,
+}
+
+/// Query history size and alternate-screen state in a single tmux call.
+pub fn tmux_scroll_info(tmux_name: &str) -> TmuxScrollInfo {
+    let out = std::process::Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            tmux_name,
+            "-p",
+            "#{history_size}\t#{alternate_on}",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success());
+    let Some(out) = out else {
+        return TmuxScrollInfo::default();
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parts = text.trim().split('\t');
+    let history = parts
+        .next()
+        .and_then(|h| h.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    let alternate_on = parts.next().map(|a| a.trim() == "1").unwrap_or(false);
+    TmuxScrollInfo {
+        history,
+        alternate_on,
+    }
+}
+
 /// Query the number of lines in the tmux pane's scrollback history.
 pub fn tmux_history_size(tmux_name: &str) -> usize {
     std::process::Command::new("tmux")

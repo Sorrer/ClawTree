@@ -65,6 +65,33 @@ impl Session {
         }
     }
 
+    /// The mouse-reporting mode and encoding the application in this pane asked
+    /// for, or `None` when it did not enable mouse reporting. tmux re-emits the
+    /// pane's mouse mode on our PTY, so the parser sees it even through tmux.
+    pub fn mouse_protocol(
+        &self,
+    ) -> Option<(vt100::MouseProtocolMode, vt100::MouseProtocolEncoding)> {
+        let guard = self.parser.try_read().ok()?;
+        let screen = guard.screen();
+        match screen.mouse_protocol_mode() {
+            vt100::MouseProtocolMode::None => None,
+            mode => Some((mode, screen.mouse_protocol_encoding())),
+        }
+    }
+
+    /// Whether the application in this pane owns the alternate screen. Through
+    /// tmux the switch never reaches our parser, so ask tmux; otherwise the
+    /// parser tracks it directly.
+    pub fn in_alternate_screen(&self) -> bool {
+        if let Some(ref name) = self.tmux_session_name {
+            return crate::ui::terminal_pane::tmux_scroll_info(name).alternate_on;
+        }
+        self.parser
+            .try_read()
+            .map(|g| g.screen().alternate_screen())
+            .unwrap_or(false)
+    }
+
     /// Get the terminal title set by Claude Code (e.g. task description).
     pub fn terminal_title(&self) -> Option<String> {
         match self.parser.try_read() {

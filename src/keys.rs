@@ -431,12 +431,8 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         }
 
         // Terminal scrollback (works from sidebar too)
-        (_, KeyCode::PageUp) => {
-            app.terminal_scroll = app.terminal_scroll.saturating_add(SCROLL_PAGE);
-        }
-        (_, KeyCode::PageDown) => {
-            app.terminal_scroll = app.terminal_scroll.saturating_sub(SCROLL_PAGE);
-        }
+        (_, KeyCode::PageUp) => scroll_terminal(app, ScrollInput::Page { up: true }),
+        (_, KeyCode::PageDown) => scroll_terminal(app, ScrollInput::Page { up: false }),
 
         // Sidebar navigation
         (_, KeyCode::Char('j')) | (_, KeyCode::Down) => app.sidebar_down(),
@@ -1239,12 +1235,11 @@ fn handle_terminal_key(app: &mut App, key: KeyEvent) {
     // PgUp / PgDown scroll through history
     match key.code {
         KeyCode::PageUp => {
-            app.terminal_scroll = app.terminal_scroll.saturating_add(SCROLL_PAGE);
-            clamp_terminal_scroll(app);
+            scroll_terminal(app, ScrollInput::Page { up: true });
             return;
         }
         KeyCode::PageDown => {
-            app.terminal_scroll = app.terminal_scroll.saturating_sub(SCROLL_PAGE);
+            scroll_terminal(app, ScrollInput::Page { up: false });
             return;
         }
         _ => {}
@@ -1373,17 +1368,136 @@ pub fn handle_paste(app: &mut App, data: String) {
 pub(crate) const SCROLL_LINES: usize = 3;
 const SCROLL_PAGE: usize = 20;
 
-/// Clamp terminal_scroll to the actual tmux history size so it can't
-/// overshoot past the top, which would cause a "lag" when scrolling back down.
-fn clamp_terminal_scroll(app: &mut App) {
-    if let Some(sid) = app.active_session_id {
-        if let Some(session) = app.sessions.get(&sid) {
-            if let Some(ref tmux_name) = session.tmux_session_name {
-                let history = terminal_pane::tmux_history_size(tmux_name);
-                if app.terminal_scroll > history {
-                    app.terminal_scroll = history;
-                }
+/// A scroll request aimed at the active terminal.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ScrollInput {
+    /// One mouse-wheel notch at an absolute screen position.
+    Wheel { up: bool, col: u16, row: u16 },
+    /// PgUp / PgDn.
+    Page { up: bool },
+}
+
+/// Scroll the active terminal.
+///
+/// Where the scroll goes depends on who owns the pane's history:
+/// - The application asked for mouse reporting (Claude Code's fullscreen
+///   renderer, vim, …): the wheel is forwarded as a mouse report and PgUp/PgDn
+///   as keys, so the app scrolls its own buffer.
+/// - The application is on the alternate screen without mouse reporting
+///   (`CLAUDE_CODE_DISABLE_MOUSE`, less, …): its transcript is not in tmux's
+///   scrollback either, so both the wheel and the keys become PgUp/PgDn.
+/// - Otherwise the pane's history lives in tmux and we page through it with
+///   `capture-pane`, clamped to the real history size so an overshoot doesn't
+///   "lag" when scrolling back down.
+pub(crate) fn scroll_terminal(app: &mut App, input: ScrollInput) {
+    let Some(sid) = app.active_session_id else {
+        return;
+    };
+    let Some(session) = app.sessions.get(&sid) else {
+        return;
+    };
+
+    let up = match input {
+        ScrollInput::Wheel { up, .. } | ScrollInput::Page { up } => up,
+    };
+
+    if let Some((_, encoding)) = session.mouse_protocol() {
+        let bytes = match input {
+            ScrollInput::Wheel { col, row, .. } => {
+                let (x, y) = pane_cell(app, col, row);
+                let button = if up { WHEEL_UP } else { WHEEL_DOWN };
+                mouse_report(encoding, button, x, y, false)
             }
+            ScrollInput::Page { .. } => page_key_bytes(session, up),
+        };
+        app.terminal_scroll = 0;
+        let _ = session.write_tx.send(bytes::Bytes::from(bytes));
+        return;
+    }
+
+    let info = match session.tmux_session_name {
+        Some(ref name) => terminal_pane::tmux_scroll_info(name),
+        None => terminal_pane::TmuxScrollInfo {
+            history: usize::MAX,
+            alternate_on: session.in_alternate_screen(),
+        },
+    };
+
+    if info.alternate_on {
+        let bytes = page_key_bytes(session, up);
+        app.terminal_scroll = 0;
+        let _ = session.write_tx.send(bytes::Bytes::from(bytes));
+        return;
+    }
+
+    let step = match input {
+        ScrollInput::Wheel { .. } => SCROLL_LINES,
+        ScrollInput::Page { .. } => SCROLL_PAGE,
+    };
+    if up {
+        app.terminal_scroll = app.terminal_scroll.saturating_add(step).min(info.history);
+    } else {
+        app.terminal_scroll = app.terminal_scroll.saturating_sub(step);
+    }
+}
+
+/// Bytes for a PgUp / PgDn key press in the session's cursor mode.
+fn page_key_bytes(session: &session::Session, up: bool) -> Vec<u8> {
+    let code = if up { KeyCode::PageUp } else { KeyCode::PageDown };
+    key_to_bytes(
+        KeyEvent::new(code, KeyModifiers::NONE),
+        session.application_cursor_mode(),
+    )
+}
+
+/// Convert an absolute screen position to the 1-based cell inside the
+/// terminal pane that mouse reports use.
+pub(crate) fn pane_cell(app: &App, col: u16, row: u16) -> (u16, u16) {
+    let inner = app.areas.terminal_pane_inner.get();
+    (col.saturating_sub(inner.x) + 1, row.saturating_sub(inner.y) + 1)
+}
+
+/// xterm mouse button codes (before modifier bits are added).
+pub(crate) const BTN_LEFT: u16 = 0;
+pub(crate) const BTN_MIDDLE: u16 = 1;
+pub(crate) const BTN_RIGHT: u16 = 2;
+/// "No button" — used for motion reports without a button held.
+pub(crate) const BTN_NONE: u16 = 3;
+pub(crate) const WHEEL_UP: u16 = 64;
+pub(crate) const WHEEL_DOWN: u16 = 65;
+/// Added to a button code while it is held during motion.
+pub(crate) const MOTION_FLAG: u16 = 32;
+#[cfg(test)]
+const MOD_SHIFT: u16 = 4;
+pub(crate) const MOD_ALT: u16 = 8;
+pub(crate) const MOD_CTRL: u16 = 16;
+
+/// Encode one xterm mouse report for `button` at 1-based cell (x, y).
+///
+/// SGR (`?1006`) carries any coordinate and distinguishes a release with a
+/// trailing `m`; the legacy X10/UTF-8 encodings pack `32 + value` into a
+/// single byte (so coordinates are clamped to what fits) and signal a release
+/// as button 3.
+pub(crate) fn mouse_report(
+    encoding: vt100::MouseProtocolEncoding,
+    button: u16,
+    x: u16,
+    y: u16,
+    release: bool,
+) -> Vec<u8> {
+    match encoding {
+        vt100::MouseProtocolEncoding::Sgr => {
+            let end = if release { 'm' } else { 'M' };
+            format!("\x1b[<{};{};{}{}", button, x, y, end).into_bytes()
+        }
+        _ => {
+            let button = if release {
+                (button & !0x3) | BTN_NONE
+            } else {
+                button
+            };
+            let pack = |v: u16| (32 + v.min(223)) as u8;
+            vec![0x1b, b'[', b'M', pack(button), pack(x), pack(y)]
         }
     }
 }
@@ -3457,5 +3571,42 @@ fn f_key_bytes(n: u8, modifier: u8) -> Vec<u8> {
         11 => modified_tilde_key(23, modifier),
         12 => modified_tilde_key(24, modifier),
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+    use vt100::MouseProtocolEncoding;
+
+    #[test]
+    fn sgr_reports_carry_button_position_and_release() {
+        assert_eq!(
+            mouse_report(MouseProtocolEncoding::Sgr, WHEEL_UP, 12, 300, false),
+            b"\x1b[<64;12;300M".to_vec()
+        );
+        assert_eq!(
+            mouse_report(MouseProtocolEncoding::Sgr, BTN_LEFT | MOD_CTRL, 1, 1, false),
+            b"\x1b[<16;1;1M".to_vec()
+        );
+        assert_eq!(
+            mouse_report(MouseProtocolEncoding::Sgr, BTN_LEFT, 4, 9, true),
+            b"\x1b[<0;4;9m".to_vec()
+        );
+    }
+
+    #[test]
+    fn legacy_reports_pack_clamp_and_signal_release_as_button_3() {
+        // 32 + 64 = 96 ('`'), 32 + 5 = 37 ('%'), 32 + 7 = 39 ('\'')
+        assert_eq!(
+            mouse_report(MouseProtocolEncoding::Default, WHEEL_UP, 5, 7, false),
+            vec![0x1b, b'[', b'M', 96, 37, 39]
+        );
+        // Coordinates beyond a single byte are clamped rather than wrapping.
+        let bytes = mouse_report(MouseProtocolEncoding::Utf8, WHEEL_DOWN, 1000, 1000, false);
+        assert_eq!(&bytes[3..], &[97, 255, 255]);
+        // Release of a shift+left click keeps the modifier, swaps in button 3.
+        let bytes = mouse_report(MouseProtocolEncoding::Default, BTN_LEFT | MOD_SHIFT, 1, 1, true);
+        assert_eq!(bytes[3], 32 + 3 + 4);
     }
 }

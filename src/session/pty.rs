@@ -304,6 +304,30 @@ pub fn kill_tmux_session(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Environment for the `claude` child selecting its renderer.
+///
+/// Claude Code 2.1.239+ defaults to a "fullscreen" renderer that draws on the
+/// terminal's alternate screen and keeps the transcript in its own buffer;
+/// tmux's scrollback then only holds whatever the pane showed before Claude
+/// started. Clawtree copes with that by forwarding scroll and mouse input to
+/// the pane whenever the application has enabled mouse reporting or owns the
+/// alternate screen (see `keys::scroll_terminal` / `mouse::forward_to_app`),
+/// so Claude's own choice (`/tui`, `CLAUDE_CODE_NO_FLICKER`) is left alone.
+///
+/// Set `CLAWTREE_CLASSIC_RENDERER=1` to force the classic renderer instead,
+/// which keeps the transcript in tmux scrollback so clawtree's own scrollback
+/// view, selection and URL detection work over the whole history.
+pub fn claude_renderer_env() -> Option<(&'static str, &'static str)> {
+    let force_classic = std::env::var("CLAWTREE_CLASSIC_RENDERER")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
+    if force_classic {
+        Some(("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1"))
+    } else {
+        None
+    }
+}
+
 /// Spawn a `claude` process inside a tmux session, then attach to it via PTY.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_claude_pty_tmux(
@@ -330,6 +354,9 @@ pub fn spawn_claude_pty_tmux(
     // Run claude with COLORTERM=truecolor so it emits 24-bit RGB colors
     tmux_args.push("env".to_string());
     tmux_args.push("COLORTERM=truecolor".to_string());
+    if let Some((k, v)) = claude_renderer_env() {
+        tmux_args.push(format!("{}={}", k, v));
+    }
     tmux_args.push("claude".to_string());
     if skip_permissions {
         tmux_args.push("--dangerously-skip-permissions".to_string());
@@ -730,6 +757,9 @@ pub fn spawn_claude_pty(
     cmd.cwd(working_dir);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    if let Some((k, v)) = claude_renderer_env() {
+        cmd.env(k, v);
+    }
 
     let _child = pair
         .slave
