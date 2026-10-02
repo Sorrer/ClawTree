@@ -53,6 +53,9 @@ pub enum AppEvent {
         status: WorktreeStatus,
         next_refresh_at: Instant,
     },
+    /// The repo root or git worktree registry changed on disk; the worktree
+    /// list may need re-reading (e.g. a worktree was added by another tool).
+    WorktreeDirsChanged,
     /// Claude Code context usage data updated from debug logs.
     ClaudeUsageUpdated { updates: Vec<(u64, ClaudeUsage)> },
     /// Global account-level usage data updated from the Anthropic API.

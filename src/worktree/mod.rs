@@ -247,6 +247,106 @@ pub fn spawn_status_poller(
         .ok();
 }
 
+/// How often the worktree list watcher checks for filesystem changes.
+const WORKTREE_WATCH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Modification times of the directories whose changes signal that worktrees
+/// may have been added or removed outside clawtree: the repo root (where
+/// worktree folders usually live) and the git dir's `worktrees/` registry
+/// (where `git worktree add/remove/prune` record every worktree).
+fn worktree_dirs_fingerprint(bare_repo_path: &Path) -> Vec<Option<std::time::SystemTime>> {
+    let dot_bare = bare_repo_path.join(".bare");
+    let git_dir = if dot_bare.is_dir() {
+        dot_bare
+    } else {
+        bare_repo_path.to_path_buf()
+    };
+    [bare_repo_path.to_path_buf(), git_dir.join("worktrees")]
+        .iter()
+        .map(|dir| std::fs::metadata(dir).and_then(|m| m.modified()).ok())
+        .collect()
+}
+
+/// Spawn a background thread that watches the repo root and git worktree
+/// registry for changes and sends AppEvent::WorktreeDirsChanged when they
+/// move, so the main loop can re-list worktrees created by other tools.
+/// Only stats two directories per cycle; git is not invoked here.
+pub fn spawn_worktree_list_watcher(event_tx: mpsc::UnboundedSender<AppEvent>, bare_repo_path: PathBuf) {
+    std::thread::Builder::new()
+        .name("worktree-watcher".into())
+        .spawn(move || {
+            let mut last = worktree_dirs_fingerprint(&bare_repo_path);
+            loop {
+                std::thread::sleep(WORKTREE_WATCH_INTERVAL);
+                let current = worktree_dirs_fingerprint(&bare_repo_path);
+                if current != last {
+                    last = current;
+                    if event_tx.send(AppEvent::WorktreeDirsChanged).is_err() {
+                        return; // channel closed, app shutting down
+                    }
+                }
+            }
+        })
+        .ok();
+}
+
+/// Re-list worktrees from git and apply the result only if it differs from
+/// what is shown. Index-based UI state (active worktree, sidebar selection) is
+/// carried over by worktree path so an insertion or removal doesn't shift the
+/// user onto a different worktree. Returns true if the list changed.
+pub fn sync_worktrees(app: &mut App) -> Result<bool> {
+    let entries = git::list_worktrees(&app.bare_repo_path)?;
+    let fresh: Vec<(PathBuf, String)> = entries
+        .into_iter()
+        .filter(|e| !e.is_bare)
+        .map(|e| (e.path, e.branch.unwrap_or_else(|| "detached".to_string())))
+        .collect();
+    let unchanged = fresh.len() == app.worktrees.len()
+        && fresh
+            .iter()
+            .zip(&app.worktrees)
+            .all(|((path, branch), wt)| *path == wt.path && *branch == wt.branch);
+    if unchanged {
+        return Ok(false);
+    }
+
+    use crate::app::SidebarItem;
+    let path_of = |app: &App, wi: usize| app.worktrees.get(wi).map(|wt| wt.path.clone());
+    let active_path = app.active_worktree_idx.and_then(|wi| path_of(app, wi));
+    let selected = app.sidebar_items.get(app.sidebar_selected).copied();
+    let selected_path = match selected {
+        Some(SidebarItem::Worktree(wi)) | Some(SidebarItem::Session(wi, _)) => path_of(app, wi),
+        _ => None,
+    };
+
+    refresh_worktrees(app)?;
+
+    let index_of = |app: &App, path: &Path| app.worktrees.iter().position(|wt| wt.path == path);
+    if let Some(path) = active_path {
+        app.active_worktree_idx = index_of(app, &path);
+        if app.active_worktree_idx.is_none() {
+            // The worktree being viewed was removed externally.
+            app.worktree_status = None;
+            app.project_overview_active = app.active_session_id.is_none();
+        }
+    }
+    let new_selected = match (selected, selected_path) {
+        (Some(SidebarItem::Worktree(_)), Some(path)) => {
+            index_of(app, &path).map(SidebarItem::Worktree)
+        }
+        (Some(SidebarItem::Session(_, si)), Some(path)) => {
+            index_of(app, &path).map(|wi| SidebarItem::Session(wi, si))
+        }
+        (other, _) => other,
+    };
+    app.sidebar_selected = new_selected
+        .and_then(|item| app.sidebar_items.iter().position(|i| *i == item))
+        .unwrap_or(0);
+    app.ensure_sidebar_selected_visible();
+    app.clamp_info_panel_cursor();
+    Ok(true)
+}
+
 /// Collect worktree paths for the status poller's shared state.
 pub fn collect_worktree_paths(app: &App) -> Vec<PathBuf> {
     app.worktrees.iter().map(|wt| wt.path.clone()).collect()

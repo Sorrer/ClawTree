@@ -591,7 +591,12 @@ async fn async_main(
             std::sync::Arc::clone(&status_poller_paths),
             std::sync::Arc::clone(&app.git_lock),
         );
+        // Pick up worktrees added/removed outside clawtree (CLI, other tools).
+        worktree::spawn_worktree_list_watcher(event_tx.clone(), app.bare_repo_path.clone());
     }
+    // Set when the watcher reports a change; applied on a Tick once no dialog
+    // or queued action is holding worktree indices that a re-list could shift.
+    let mut worktree_list_dirty = false;
 
     // ── Main event loop ────────────────────────────────────────────
     let mut needs_redraw = true;
@@ -1461,7 +1466,36 @@ async fn async_main(
                     }
                     needs_redraw = true;
                 }
+                AppEvent::WorktreeDirsChanged => {
+                    worktree_list_dirty = true;
+                }
                 AppEvent::Tick => {
+                    if worktree_list_dirty
+                        && app.dialog.is_none()
+                        && app.pending_action.is_none()
+                        && app.pending_merge.is_none()
+                        && app.loading_message.is_none()
+                    {
+                        worktree_list_dirty = false;
+                        // Skip this round if a user git operation holds the lock.
+                        let git_lock = std::sync::Arc::clone(&app.git_lock);
+                        let synced = match git_lock.try_lock() {
+                            Ok(_guard) => worktree::sync_worktrees(&mut app),
+                            Err(_) => {
+                                worktree_list_dirty = true;
+                                Ok(false)
+                            }
+                        };
+                        match synced {
+                            Ok(true) => {
+                                if let Ok(mut paths) = status_poller_paths.lock() {
+                                    *paths = worktree::collect_worktree_paths(&app);
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(e) => tracing::warn!("Worktree list refresh failed: {}", e),
+                        }
+                    }
                     // Enable unread tracking once the startup replay burst settles
                     // (a quiet gap with no PtyOutput) or the max grace elapses.
                     if !unread_tracking_enabled
