@@ -1092,7 +1092,7 @@ fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u1
             if let Some(edit_idx) = app.prompt_queue_editing.take() {
                 // Save edited item back to queue
                 if !app.prompt_queue_input.is_empty() {
-                    let input = app.prompt_queue_input.drain(..).collect::<String>();
+                    let input = std::mem::take(&mut app.prompt_queue_input);
                     if let Some(queue) = app.prompt_queues.get_mut(&sid) {
                         if edit_idx < queue.len() {
                             queue[edit_idx] = input;
@@ -1103,7 +1103,7 @@ fn handle_prompt_queue_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u1
                 app.prompt_queue_cursor = 0;
             } else if !app.prompt_queue_input.is_empty() {
                 // Add new item to queue
-                let input = app.prompt_queue_input.drain(..).collect::<String>();
+                let input = std::mem::take(&mut app.prompt_queue_input);
                 app.prompt_queues.entry(sid).or_default().push(input);
                 app.save_prompt_queues();
                 app.prompt_queue_cursor = 0;
