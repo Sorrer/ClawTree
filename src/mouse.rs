@@ -94,6 +94,15 @@ pub fn extract_text_from_screen(
 /// base64 encoding, and works in Windows Terminal, iTerm2, Alacritty, kitty, etc.
 /// Falls back to external clipboard tools if the write fails.
 pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    // WSL: Windows Terminal applies OSC 52 on its output thread, and setting
+    // the Windows clipboard can stall for seconds (e.g. while another process
+    // holds it), freezing the whole window.  Hand the text to clip.exe on a
+    // background thread instead so a slow clipboard never blocks the UI.
+    if std::env::var_os("WSL_DISTRO_NAME").is_some() {
+        copy_via_clip_exe(text);
+        return Ok(());
+    }
+
     // Primary: OSC 52 — supported by all modern terminals
     if copy_via_osc52(text).is_ok() {
         return Ok(());
@@ -114,6 +123,19 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
     }
 
     Err("No clipboard tool found".to_string())
+}
+
+/// Copy via clip.exe on a background thread (fire-and-forget).  clip.exe reads
+/// stdin in the ANSI code page unless given UTF-16LE with a BOM, so encode it
+/// that way to keep non-ASCII text intact.
+fn copy_via_clip_exe(text: &str) {
+    let mut data = vec![0xFF, 0xFE];
+    data.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+    std::thread::spawn(move || {
+        if try_clipboard_cmd("clip.exe", &[], &data).is_err() {
+            tracing::warn!("clip.exe failed to set the clipboard");
+        }
+    });
 }
 
 /// Write an OSC 52 escape sequence to set the system clipboard.

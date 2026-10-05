@@ -885,21 +885,23 @@ async fn async_main(
                                 if sel.anchor != sel.endpoint {
                                     let (start, end) = sel.ordered();
                                     let extracted = if app.terminal_scroll > 0 {
-                                        // Scrollback: extract from tmux plain-text capture
+                                        // Scrollback: extract from the same capture that was
+                                        // rendered (cached, so no tmux round-trip)
                                         app.active_session_id.and_then(|sid| {
                                             let session = app.sessions.get(&sid)?;
                                             let tmux_name = session.tmux_session_name.as_ref()?;
                                             let inner = app.areas.terminal_pane_inner.get();
-                                            let visible_rows = inner.height as usize;
-                                            let history =
-                                                ui::terminal_pane::tmux_history_size(tmux_name);
-                                            let eff = app.terminal_scroll.min(history);
-                                            let s = -(eff as i64);
-                                            let e = s + visible_rows as i64 - 1;
+                                            let cached = app.scrollback_cache.borrow().clone();
+                                            let snap = match cached {
+                                                Some(snap) => snap,
+                                                None => ui::terminal_pane::scrollback_snapshot(
+                                                    &app,
+                                                    tmux_name,
+                                                    inner.height as usize,
+                                                )?,
+                                            };
                                             let content =
-                                                ui::terminal_pane::capture_tmux_pane_plain(
-                                                    tmux_name, s, e,
-                                                )?;
+                                                ui::terminal_pane::scrollback_plain_text(&snap);
                                             let text = mouse::extract_text_from_plain(
                                                 &content, start, end,
                                             );

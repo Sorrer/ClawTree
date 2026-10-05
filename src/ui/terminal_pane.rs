@@ -73,14 +73,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                     let inner = block.inner(area);
                     let visible_rows = inner.height as usize;
 
-                    // Query tmux history size to clamp scroll
-                    let history = tmux_history_size(tmux_name);
-                    let effective_scroll = app.terminal_scroll.min(history);
-
-                    if effective_scroll > 0 {
-                        let start = -(effective_scroll as i64);
-                        let end = start + visible_rows as i64 - 1;
-                        if let Some(content) = capture_tmux_pane(tmux_name, start, end) {
+                    if let Some(snap) = scrollback_snapshot(app, tmux_name, visible_rows) {
+                        let history = snap.history;
+                        let effective_scroll = snap.effective_scroll;
+                        let content = snap.content;
+                        {
                             // Render block, then clear inner area to remove PseudoTerminal artifacts
                             let inner_area = block.inner(area);
                             f.render_widget(block, area);
@@ -554,6 +551,82 @@ fn file_status_color(status: char) -> Color {
     }
 }
 
+/// One tmux scrollback capture, cached in `App::scrollback_cache`.
+#[derive(Debug, Clone)]
+pub struct ScrollbackSnapshot {
+    tmux_name: String,
+    requested_scroll: usize,
+    visible_rows: usize,
+    captured_at: Instant,
+    pub history: usize,
+    pub effective_scroll: usize,
+    /// Captured lines with ANSI escapes.
+    pub content: String,
+}
+
+/// How long a scrollback capture is reused before re-querying tmux, so new
+/// output still shows up while scrolled without a subprocess per frame.
+const SCROLLBACK_CACHE_TTL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Return the scrollback content for the current scroll position, querying
+/// tmux only when the view changed or the capture is stale.  While a text
+/// selection is in progress the capture is frozen, so dragging never blocks on
+/// tmux and the copied text matches what is highlighted.
+pub fn scrollback_snapshot(
+    app: &App,
+    tmux_name: &str,
+    visible_rows: usize,
+) -> Option<ScrollbackSnapshot> {
+    let mut cache = app.scrollback_cache.borrow_mut();
+    if let Some(snap) = cache.as_ref() {
+        let same_view = snap.tmux_name == tmux_name
+            && snap.requested_scroll == app.terminal_scroll
+            && snap.visible_rows == visible_rows;
+        if same_view
+            && (app.text_selection.is_some() || snap.captured_at.elapsed() < SCROLLBACK_CACHE_TTL)
+        {
+            return Some(snap.clone());
+        }
+    }
+
+    let history = tmux_history_size(tmux_name);
+    let effective_scroll = app.terminal_scroll.min(history);
+    if effective_scroll == 0 {
+        *cache = None;
+        return None;
+    }
+    let start = -(effective_scroll as i64);
+    let end = start + visible_rows as i64 - 1;
+    let content = capture_tmux_pane(tmux_name, start, end)?;
+    let snap = ScrollbackSnapshot {
+        tmux_name: tmux_name.to_string(),
+        requested_scroll: app.terminal_scroll,
+        visible_rows,
+        captured_at: Instant::now(),
+        history,
+        effective_scroll,
+        content,
+    };
+    *cache = Some(snap.clone());
+    Some(snap)
+}
+
+/// Plain text of a scrollback snapshot (ANSI styling stripped), line-aligned
+/// with what was rendered.
+pub fn scrollback_plain_text(snap: &ScrollbackSnapshot) -> String {
+    let text = snap.content.as_bytes().into_text().unwrap_or_default();
+    text.lines
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Capture tmux pane content for a range of lines (with ANSI escapes). Returns None on failure.
 fn capture_tmux_pane(tmux_name: &str, start: i64, end: i64) -> Option<String> {
     let output = std::process::Command::new("tmux")
@@ -563,29 +636,6 @@ fn capture_tmux_pane(tmux_name: &str, start: i64, end: i64) -> Option<String> {
             tmux_name,
             "-p",
             "-e",
-            "-S",
-            &start.to_string(),
-            "-E",
-            &end.to_string(),
-        ])
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        None
-    }
-}
-
-/// Capture tmux pane content as plain text (no ANSI escapes).
-pub fn capture_tmux_pane_plain(tmux_name: &str, start: i64, end: i64) -> Option<String> {
-    let output = std::process::Command::new("tmux")
-        .args([
-            "capture-pane",
-            "-t",
-            tmux_name,
-            "-p",
             "-S",
             &start.to_string(),
             "-E",

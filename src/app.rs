@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -759,6 +759,9 @@ pub struct App {
     pub mouse_capture_disabled_at: Option<Instant>,
     /// In-app text selection (drag-to-select in terminal pane).
     pub text_selection: Option<TextSelection>,
+    /// Last tmux scrollback capture, reused across frames so redraws (e.g.
+    /// every mouse-drag event while selecting) don't each spawn tmux.
+    pub scrollback_cache: RefCell<Option<crate::ui::terminal_pane::ScrollbackSnapshot>>,
     /// Cached URL scan results from the active terminal screen.
     pub url_cache: url::UrlCache,
     /// Whether the URL cache needs to be refreshed (set on new PTY output, scroll, etc.).
@@ -859,6 +862,7 @@ impl App {
             mouse_captured: true,
             mouse_capture_disabled_at: None,
             text_selection: None,
+            scrollback_cache: RefCell::new(None),
             url_cache: url::UrlCache::default(),
             url_cache_dirty: true,
             claude_usage: HashMap::new(),
