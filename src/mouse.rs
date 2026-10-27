@@ -96,8 +96,8 @@ pub fn extract_text_from_screen(
 pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
     // WSL: Windows Terminal applies OSC 52 on its output thread, and setting
     // the Windows clipboard can stall for seconds (e.g. while another process
-    // holds it), freezing the whole window.  Hand the text to clip.exe on a
-    // background thread instead so a slow clipboard never blocks the UI.
+    // holds it), freezing the whole window.  Set it from a separate Windows
+    // process instead so a slow clipboard never blocks the UI.
     if std::env::var_os("WSL_DISTRO_NAME").is_some() {
         copy_via_clip_exe(text);
         return Ok(());
@@ -125,17 +125,78 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
     Err("No clipboard tool found".to_string())
 }
 
-/// Copy via clip.exe on a background thread (fire-and-forget).  clip.exe reads
-/// stdin in the ANSI code page unless given UTF-16LE with a BOM, so encode it
-/// that way to keep non-ASCII text intact.
+/// Copy to the Windows clipboard from WSL without blocking the UI.
+///
+/// clip.exe guesses its input encoding with `IsTextUnicode`, and every way of
+/// steering that guess is flawed: a UTF-16 BOM is copied into the clipboard
+/// as an invisible U+FEFF (Explorer then rejects pasted paths), and raw bytes
+/// or BOM-less UTF-16 get misdetected ("Bush hid the facts", a lone `é`).
+/// The one unambiguous case is ASCII as BOM-less UTF-16LE (every high byte is
+/// zero), so ASCII goes through clip.exe and everything else through a
+/// long-lived PowerShell worker, which sets the text exactly.
 fn copy_via_clip_exe(text: &str) {
-    let mut data = vec![0xFF, 0xFE];
-    data.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
-    std::thread::spawn(move || {
-        if try_clipboard_cmd("clip.exe", &[], &data).is_err() {
-            tracing::warn!("clip.exe failed to set the clipboard");
-        }
-    });
+    if text.is_ascii() {
+        let data: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        std::thread::spawn(move || {
+            if try_clipboard_cmd("clip.exe", &[], &data).is_err() {
+                tracing::warn!("clip.exe failed to set the clipboard");
+            }
+        });
+    } else {
+        // clip.exe turns LF into CRLF; match that so pastes behave the same.
+        powershell_clipboard().send(text.replace('\n', "\r\n")).ok();
+    }
+}
+
+/// Reads base64 UTF-8 lines from stdin and puts each on the clipboard.
+const POWERSHELL_CLIPBOARD_SCRIPT: &str = "$i=[Console]::In; \
+     while(($l=$i.ReadLine()) -ne $null){ try { Set-Clipboard -Value \
+     ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($l))) } catch {} }";
+
+/// Sender to the PowerShell clipboard worker thread, started on first use.
+/// powershell.exe takes ~2s to start, so one process is kept alive and fed
+/// over stdin; it is respawned if it dies.
+fn powershell_clipboard() -> &'static std::sync::mpsc::Sender<String> {
+    static WORKER: std::sync::OnceLock<std::sync::mpsc::Sender<String>> =
+        std::sync::OnceLock::new();
+    WORKER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::Builder::new()
+            .name("clipboard-powershell".into())
+            .spawn(move || {
+                let mut child: Option<std::process::Child> = None;
+                for text in rx {
+                    let line = format!("{}\n", base64_encode(text.as_bytes()));
+                    // One retry, in case the previous process has died.
+                    for _ in 0..2 {
+                        if child.is_none() {
+                            child = Command::new("powershell.exe")
+                                .args(["-NoProfile", "-NonInteractive", "-Command"])
+                                .arg(POWERSHELL_CLIPBOARD_SCRIPT)
+                                .stdin(Stdio::piped())
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::null())
+                                .spawn()
+                                .ok();
+                        }
+                        let Some(c) = child.as_mut() else { break };
+                        let stdin = c.stdin.as_mut().expect("stdin is piped");
+                        if stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()).is_ok() {
+                            break;
+                        }
+                        if let Some(mut dead) = child.take() {
+                            let _ = dead.kill();
+                            let _ = dead.wait();
+                        }
+                    }
+                    if child.is_none() {
+                        tracing::warn!("powershell.exe failed to set the clipboard");
+                    }
+                }
+            })
+            .ok();
+        tx
+    })
 }
 
 /// Write an OSC 52 escape sequence to set the system clipboard.

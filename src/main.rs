@@ -748,7 +748,6 @@ async fn async_main(
             match event {
                 AppEvent::Input(CrosstermEvent::Key(key)) => {
                     last_activity.store(session::now_millis(), std::sync::atomic::Ordering::Relaxed);
-                    let session_count_before = app.sessions.len();
                     let worktree_count_before = app.worktrees.len();
                     let scroll_before = app.terminal_scroll;
                     let size = terminal.size()?;
@@ -766,12 +765,6 @@ async fn async_main(
                     }
                     // Clear any in-progress text selection on keypress
                     app.text_selection = None;
-                    // If sessions changed, update the tmux poller's snapshot
-                    if tmux_available && app.sessions.len() != session_count_before {
-                        if let Ok(mut info) = tmux_session_info.lock() {
-                            *info = session::collect_tmux_session_info(&app);
-                        }
-                    }
                     // If worktrees changed, update the status poller's snapshot
                     if repo_detected && app.worktrees.len() != worktree_count_before {
                         if let Ok(mut paths) = status_poller_paths.lock() {
@@ -1472,6 +1465,15 @@ async fn async_main(
                     worktree_list_dirty = true;
                 }
                 AppEvent::Tick => {
+                    // Keep the title/name pollers' snapshot in step with the
+                    // session list, however sessions were added or removed.
+                    if tmux_available {
+                        if let Ok(mut info) = tmux_session_info.lock() {
+                            if !session::tmux_session_info_is_current(&info, &app) {
+                                *info = session::collect_tmux_session_info(&app);
+                            }
+                        }
+                    }
                     if worktree_list_dirty
                         && app.dialog.is_none()
                         && app.pending_action.is_none()

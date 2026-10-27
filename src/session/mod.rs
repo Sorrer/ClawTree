@@ -1353,6 +1353,25 @@ pub fn collect_tmux_session_info(app: &App) -> Vec<TmuxSessionInfo> {
         .collect()
 }
 
+/// Whether the poller snapshot still covers exactly the app's live tmux
+/// sessions. Sessions are created and killed from many paths (keys, context
+/// menu clicks, dialogs), so the event loop checks this every tick rather than
+/// trusting each path to refresh the snapshot; a session missing from it
+/// would never get its title or terminal name updated.
+pub fn tmux_session_info_is_current(info: &[TmuxSessionInfo], app: &App) -> bool {
+    let tracked = app
+        .sessions
+        .values()
+        .filter(|s| s.tmux_session_name.is_some())
+        .count();
+    info.len() == tracked
+        && info.iter().all(|i| {
+            app.sessions
+                .get(&i.session_id)
+                .is_some_and(|s| s.exited.load(Ordering::SeqCst) == i.exited)
+        })
+}
+
 /// Spawn a background thread that resolves display names for plain *terminal*
 /// sessions (the running command, e.g. `vim`/`npm run dev`, or the cwd folder).
 ///
