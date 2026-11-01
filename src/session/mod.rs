@@ -1927,14 +1927,23 @@ fn find_task_uuid_in_proc(pid: u32, home: &str) -> Option<String> {
 }
 
 /// Global account-level usage data from the Anthropic API.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GlobalUsage {
-    pub five_hour_pct: f64,
-    pub five_hour_reset: String,
-    pub seven_day_pct: f64,
-    pub seven_day_reset: String,
-    pub sonnet_7d_pct: Option<f64>,
-    pub sonnet_7d_reset: Option<String>,
+    /// One entry per usage window the account currently has, in API order.
+    /// Which windows exist varies by plan and over time (the 5-hour window can
+    /// be absent, model-scoped weekly limits come and go), so nothing here is
+    /// assumed to be present.
+    pub windows: Vec<UsageWindow>,
+}
+
+/// A single usage window, e.g. the weekly limit or a model-scoped weekly limit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageWindow {
+    /// Short display label, e.g. "5h", "7d", "Fable 7d".
+    pub label: String,
+    pub pct: f64,
+    /// ISO 8601 reset time, when the API gives one.
+    pub reset: Option<String>,
 }
 
 /// Current time in milliseconds since the UNIX epoch. Used as a cheap,
@@ -2090,49 +2099,106 @@ fn poll_global_usage() -> Result<GlobalUsage, ()> {
         return Err(());
     }
 
-    let five_hour = json.get("five_hour").ok_or_else(|| {
-        tracing::warn!("Usage: missing 'five_hour' in response");
-    })?;
-    let seven_day = json.get("seven_day").ok_or_else(|| {
-        tracing::warn!("Usage: missing 'seven_day' in response");
-    })?;
+    Ok(parse_global_usage(&json))
+}
 
-    // seven_day_sonnet may be null when unused
-    let (sonnet_7d_pct, sonnet_7d_reset) = json
-        .get("seven_day_sonnet")
-        .and_then(|v| v.as_object())
-        .map(|snt| {
-            let pct = snt.get("utilization").and_then(|v| v.as_f64());
-            let reset = snt
-                .get("resets_at")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            (pct, reset)
+/// Extract the usage windows from an `/api/oauth/usage` response.
+///
+/// Prefers the generic `limits` array, which describes every window the
+/// account has (including ones added later). Older responses only have fixed
+/// top-level fields (`five_hour`, `seven_day`, ...), any of which may be null,
+/// so those are read individually as a fallback.
+fn parse_global_usage(json: &serde_json::Value) -> GlobalUsage {
+    let windows: Vec<UsageWindow> = json
+        .get("limits")
+        .and_then(|v| v.as_array())
+        .map(|limits| limits.iter().filter_map(parse_usage_limit).collect())
+        .unwrap_or_default();
+    if !windows.is_empty() {
+        return GlobalUsage { windows };
+    }
+
+    const LEGACY_WINDOWS: &[(&str, &str)] = &[
+        ("five_hour", "5h"),
+        ("seven_day", "7d"),
+        ("seven_day_opus", "Opus 7d"),
+        ("seven_day_sonnet", "Sonnet 7d"),
+    ];
+    let windows = LEGACY_WINDOWS
+        .iter()
+        .filter_map(|(key, label)| {
+            let w = json.get(*key)?.as_object()?;
+            Some(UsageWindow {
+                label: label.to_string(),
+                pct: w.get("utilization")?.as_f64()?,
+                reset: w.get("resets_at").and_then(|v| v.as_str()).map(String::from),
+            })
         })
-        .unwrap_or((None, None));
+        .collect();
+    GlobalUsage { windows }
+}
 
-    Ok(GlobalUsage {
-        five_hour_pct: five_hour
-            .get("utilization")
-            .and_then(|v| v.as_f64())
-            .ok_or(())?,
-        five_hour_reset: five_hour
-            .get("resets_at")
-            .and_then(|v| v.as_str())
-            .ok_or(())?
-            .to_string(),
-        seven_day_pct: seven_day
-            .get("utilization")
-            .and_then(|v| v.as_f64())
-            .ok_or(())?,
-        seven_day_reset: seven_day
-            .get("resets_at")
-            .and_then(|v| v.as_str())
-            .ok_or(())?
-            .to_string(),
-        sonnet_7d_pct,
-        sonnet_7d_reset,
+/// One entry of the `limits` array. Inactive limits with no usage (e.g. a
+/// model-scoped limit for a model you haven't used) are skipped.
+fn parse_usage_limit(limit: &serde_json::Value) -> Option<UsageWindow> {
+    let pct = limit.get("percent")?.as_f64()?;
+    let is_active = limit.get("is_active").and_then(|v| v.as_bool()).unwrap_or(true);
+    if !is_active && pct <= 0.0 {
+        return None;
+    }
+    let field = |key: &str| limit.get(key).and_then(|v| v.as_str()).unwrap_or("");
+    let window = usage_window_label(field("group"), field("kind"));
+    let label = match usage_scope_name(limit.get("scope")) {
+        Some(name) => format!("{} {}", name, window),
+        None => window,
+    };
+    Some(UsageWindow {
+        label,
+        pct,
+        reset: limit.get("resets_at").and_then(|v| v.as_str()).map(String::from),
     })
+}
+
+/// Short label for a limit's time window, from its `group` (e.g. "weekly")
+/// or, failing that, its `kind`. Unknown windows show their own name.
+fn usage_window_label(group: &str, kind: &str) -> String {
+    let name = if group.is_empty() { kind } else { group };
+    let known = [
+        ("five_hour", "5h"),
+        ("session", "5h"),
+        ("week", "7d"),
+        ("seven_day", "7d"),
+        ("dai", "1d"),
+        ("month", "30d"),
+    ];
+    for (pattern, label) in known {
+        if name.contains(pattern) {
+            return label.to_string();
+        }
+    }
+    let name: String = name.chars().take(6).collect();
+    if name.is_empty() { "?".to_string() } else { name }
+}
+
+/// Display name of what a scoped limit applies to (a model or a surface),
+/// shortened to fit the sidebar.
+fn usage_scope_name(scope: Option<&serde_json::Value>) -> Option<String> {
+    let scope = scope?.as_object()?;
+    let name_of = |v: &serde_json::Value| -> Option<String> {
+        let name = match v {
+            serde_json::Value::String(s) => s.as_str(),
+            serde_json::Value::Object(o) => o
+                .get("display_name")
+                .or_else(|| o.get("id"))
+                .and_then(|v| v.as_str())?,
+            _ => return None,
+        };
+        (!name.is_empty()).then(|| name.chars().take(8).collect())
+    };
+    scope
+        .get("model")
+        .and_then(name_of)
+        .or_else(|| scope.get("surface").and_then(name_of))
 }
 
 /// Parse the last `autocompact:` line from a Claude debug log file.
@@ -2780,5 +2846,87 @@ mod tests {
         let content = "just regular output with no tags";
         let result = extract_clawtree_tagged_output(content);
         assert!(result.is_none());
+    }
+
+    fn usage_labels(json: serde_json::Value) -> Vec<(String, f64)> {
+        parse_global_usage(&json)
+            .windows
+            .into_iter()
+            .map(|w| (w.label, w.pct))
+            .collect()
+    }
+
+    #[test]
+    fn test_usage_limits_array_without_five_hour() {
+        // Shape of a real response: no 5-hour window, the legacy field is
+        // null, and an inactive unused model-scoped limit.
+        let json = serde_json::json!({
+            "five_hour": null,
+            "seven_day": { "utilization": 3.0, "resets_at": "2026-11-07T23:00:00+00:00" },
+            "seven_day_sonnet": null,
+            "limits": [
+                { "kind": "weekly_all", "group": "weekly", "percent": 3, "severity": "normal",
+                  "resets_at": "2026-11-07T23:00:00.453271+00:00", "scope": null, "is_active": true },
+                { "kind": "weekly_scoped", "group": "weekly", "percent": 0, "severity": "normal",
+                  "resets_at": "2026-11-07T23:00:00+00:00",
+                  "scope": { "model": { "id": null, "display_name": "Fable" }, "surface": null },
+                  "is_active": false }
+            ]
+        });
+        let usage = parse_global_usage(&json);
+        assert_eq!(
+            usage.windows,
+            vec![UsageWindow {
+                label: "7d".into(),
+                pct: 3.0,
+                reset: Some("2026-11-07T23:00:00.453271+00:00".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_usage_limits_scoped_and_unknown_windows() {
+        let json = serde_json::json!({
+            "limits": [
+                { "kind": "five_hour", "group": "session", "percent": 41, "is_active": true,
+                  "resets_at": "2026-11-01T23:00:00+00:00" },
+                { "kind": "weekly_scoped", "group": "weekly", "percent": 12, "is_active": false,
+                  "scope": { "model": { "display_name": "Fable" } } },
+                { "kind": "weekly_scoped", "group": "weekly", "percent": 5, "is_active": true,
+                  "scope": { "model": null, "surface": { "display_name": "Cowork" } } },
+                { "kind": "fortnightly_all", "group": "fortnight", "percent": 7.5 },
+                { "kind": "broken", "percent": "n/a" }
+            ]
+        });
+        assert_eq!(
+            usage_labels(json),
+            vec![
+                ("5h".into(), 41.0),
+                ("Fable 7d".into(), 12.0),
+                ("Cowork 7d".into(), 5.0),
+                ("fortni".into(), 7.5),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_usage_legacy_fields_any_may_be_null() {
+        let json = serde_json::json!({
+            "five_hour": null,
+            "seven_day": { "utilization": 20.0, "resets_at": "2026-11-07T23:00:00+00:00" },
+            "seven_day_opus": { "utilization": 9.0, "resets_at": null },
+            "seven_day_sonnet": null
+        });
+        let usage = parse_global_usage(&json);
+        assert_eq!(usage.windows.len(), 2);
+        assert_eq!(usage.windows[0].label, "7d");
+        assert_eq!(usage.windows[1].label, "Opus 7d");
+        assert_eq!(usage.windows[1].reset, None);
+    }
+
+    #[test]
+    fn test_usage_no_windows() {
+        assert!(parse_global_usage(&serde_json::json!({ "limits": [] })).windows.is_empty());
+        assert!(parse_global_usage(&serde_json::json!({})).windows.is_empty());
     }
 }

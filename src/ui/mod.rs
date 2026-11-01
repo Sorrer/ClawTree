@@ -52,7 +52,12 @@ fn draw_normal(f: &mut Frame, app: &App) {
         // Split sidebar area for terminal panel and global usage panel
         {
             let has_terminals = !app.terminal_ids.is_empty();
-            let has_usage = app.global_usage.is_some();
+            // One line per usage window (which windows exist varies by
+            // account and over time), plus borders; capped so a long list
+            // can't crowd out the worktree list.
+            let usage_windows = app.global_usage.as_ref().map_or(0, |u| u.windows.len());
+            let has_usage = usage_windows > 0;
+            let usage_panel_height = (usage_windows as u16).min(6) + 2;
             let terminal_panel_height = if has_terminals {
                 (app.terminal_ids.len() as u16 + 2).min(8)
             } else {
@@ -66,7 +71,7 @@ fn draw_normal(f: &mut Frame, app: &App) {
                         .constraints([
                             Constraint::Min(5),                        // worktree list
                             Constraint::Length(terminal_panel_height), // terminal panel
-                            Constraint::Length(5),                     // global usage
+                            Constraint::Length(usage_panel_height), // global usage
                         ])
                         .split(main_chunks[0]);
                     sidebar::draw(f, app, sidebar_chunks[0]);
@@ -89,7 +94,7 @@ fn draw_normal(f: &mut Frame, app: &App) {
                         .direction(Direction::Vertical)
                         .constraints([
                             Constraint::Min(5),    // worktree list
-                            Constraint::Length(5), // global usage
+                            Constraint::Length(usage_panel_height), // global usage
                         ])
                         .split(main_chunks[0]);
                     sidebar::draw(f, app, sidebar_chunks[0]);

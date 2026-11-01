@@ -848,46 +848,34 @@ pub fn draw_global_usage(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    if inner.height < 2 || inner.width < 10 {
+    if inner.height < 1 || inner.width < 10 {
         return;
     }
 
     let bar_width: usize = 6;
     let inner_w = inner.width as usize;
+    // Pad labels to a common width so the percentages and bars line up.
+    let label_w = usage.windows.iter().map(|w| w.label.chars().count()).max().unwrap_or(0) + 1;
 
-    let five_hour_line = format_usage_line(
-        "5h",
-        usage.five_hour_pct,
-        &usage.five_hour_reset,
-        bar_width,
-        inner_w,
-    );
-    let seven_day_line = format_usage_line(
-        "7d",
-        usage.seven_day_pct,
-        &usage.seven_day_reset,
-        bar_width,
-        inner_w,
-    );
-
-    let mut lines = vec![five_hour_line];
-    if inner.height >= 2 {
-        lines.push(seven_day_line);
-    }
-    if inner.height >= 3 {
-        if let (Some(pct), Some(ref reset)) = (usage.sonnet_7d_pct, &usage.sonnet_7d_reset) {
-            lines.push(format_usage_line("SN", pct, reset, bar_width, inner_w));
-        }
-    }
+    let lines: Vec<Line> = usage
+        .windows
+        .iter()
+        .take(inner.height as usize)
+        .map(|w| {
+            let label = format!("{:<label_w$}", format!("{}:", w.label));
+            format_usage_line(&label, w.pct, w.reset.as_deref(), bar_width, inner_w)
+        })
+        .collect();
 
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Format a single usage line with label, percentage, mini bar, and reset datetime.
+/// Format a single usage line with label (including its colon), percentage,
+/// mini bar, and reset datetime.
 fn format_usage_line(
     label: &str,
     pct: f64,
-    reset_iso: &str,
+    reset_iso: Option<&str>,
     bar_width: usize,
     inner_w: usize,
 ) -> Line<'static> {
@@ -906,16 +894,17 @@ fn format_usage_line(
         Color::Green
     };
 
-    let reset_display = format_reset_datetime(reset_iso);
+    let reset_display = reset_iso.map(format_reset_datetime).unwrap_or_default();
     let grey = Style::default().fg(Color::DarkGray);
 
     // Build the core spans, then conditionally append reset time if it fits
-    let core_text_len = 1 + label.len() + 2 + 4 + 1 + bar_width; // " 5h: 45% ██████"
-    let reset_fits = core_text_len + 1 + reset_display.len() <= inner_w;
+    let core_text_len = 1 + label.chars().count() + 1 + 4 + 1 + bar_width; // " 5h:  45% ██████"
+    let reset_fits =
+        !reset_display.is_empty() && core_text_len + 1 + reset_display.len() <= inner_w;
 
     let mut spans = vec![
-        Span::styled(format!(" {}: ", label), grey),
-        Span::styled(format!("{:>2}%", pct_clamped as u32), grey),
+        Span::styled(format!(" {} ", label), grey),
+        Span::styled(format!("{:>3}%", pct_clamped as u32), grey),
         Span::raw(" "),
         Span::styled(bar_filled, Style::default().fg(bar_color)),
         Span::styled(bar_empty, Style::default().fg(Color::DarkGray)),
