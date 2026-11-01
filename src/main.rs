@@ -747,6 +747,7 @@ async fn async_main(
             }
             match event {
                 AppEvent::Input(CrosstermEvent::Key(key)) => {
+                    app.last_key_at = Some(Instant::now());
                     last_activity.store(session::now_millis(), std::sync::atomic::Ordering::Relaxed);
                     let worktree_count_before = app.worktrees.len();
                     let scroll_before = app.terminal_scroll;
@@ -1069,6 +1070,7 @@ async fn async_main(
                     }
                 }
                 AppEvent::Input(CrosstermEvent::Paste(data)) => {
+                    app.last_key_at = Some(Instant::now());
                     // Re-enable mouse capture on paste (user finished selecting).
                     if !app.mouse_captured {
                         app.mouse_captured = true;
@@ -1365,17 +1367,15 @@ async fn async_main(
                     needs_redraw = true;
                 }
                 AppEvent::UpdateAvailable { latest_version } => {
-                    app.update_available = Some(latest_version.clone());
-                    // Show the update dialog if not skipped, not already shown, and no dialog open
-                    let is_skipped =
-                        app.skipped_update_version.as_deref() == Some(latest_version.as_str());
-                    if !is_skipped && !app.update_dialog_shown && app.dialog.is_none() {
-                        app.update_dialog_shown = true;
-                        app.open_dialog(Dialog::UpdateAvailable {
-                            latest_version,
-                            selected: 0,
-                            phase: UpdatePhase::Prompt,
-                        });
+                    // Already installed in-app (awaiting restart): only a
+                    // release newer than that one is news.
+                    let already_installed = app
+                        .update_installed
+                        .as_deref()
+                        .is_some_and(|v| !update::version_is_newer(&latest_version, v));
+                    if !already_installed {
+                        app.update_available = Some(latest_version);
+                        app.maybe_show_update_dialog();
                     }
                     needs_redraw = true;
                 }
@@ -1415,6 +1415,7 @@ async fn async_main(
                 AppEvent::UpdateReplaceComplete { result, version } => {
                     match result {
                         Ok(()) => {
+                            let version_installed = version.clone();
                             // The new binary is installed but this process is still
                             // running the old one. Prompt the user to restart (or do
                             // it for them) so the update actually takes effect.
@@ -1426,6 +1427,7 @@ async fn async_main(
                             app.input_mode = app::InputMode::Dialog;
                             // Clear the update indicator since we've updated
                             app.update_available = None;
+                            app.update_installed = Some(version_installed);
                         }
                         Err(e) => {
                             if let Some(Dialog::UpdateAvailable {
@@ -1465,6 +1467,9 @@ async fn async_main(
                     worktree_list_dirty = true;
                 }
                 AppEvent::Tick => {
+                    // An update prompt held back (another dialog open, or the
+                    // user mid-typing) appears once it's safe.
+                    app.maybe_show_update_dialog();
                     // Keep the title/name pollers' snapshot in step with the
                     // session list, however sessions were added or removed.
                     if tmux_available {

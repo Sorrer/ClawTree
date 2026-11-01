@@ -1675,7 +1675,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             UpdatePhase::Prompt => {
                 match key.code {
                     KeyCode::Esc => {
-                        app.update_dialog_shown = true;
+                        app.update_dialog_dismissed = app.update_available.clone();
                         app.close_dialog();
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
@@ -1721,15 +1721,15 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                                     );
                                 }
                                 1 => {
-                                    // Dismiss — close dialog, don't show again this session
-                                    app.update_dialog_shown = true;
+                                    // Dismiss — don't show this version again this
+                                    // session (a newer release still prompts)
+                                    app.update_dialog_dismissed = Some(latest_version);
                                     app.close_dialog();
                                 }
                                 2 => {
                                     // Skip this version permanently
                                     app.save_skipped_update_version(&latest_version);
                                     app.skipped_update_version = Some(latest_version);
-                                    app.update_dialog_shown = true;
                                     app.close_dialog();
                                 }
                                 _ => {
@@ -1784,7 +1784,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
             UpdatePhase::Failed(_) => {
                 match key.code {
                     KeyCode::Enter | KeyCode::Esc => {
-                        app.update_dialog_shown = true;
+                        app.update_dialog_dismissed = app.update_available.clone();
                         app.close_dialog();
                     }
                     _ => {} // consume all other keys

@@ -1,14 +1,23 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::AppEvent;
 
 /// Startup delay before checking for updates (seconds).
 const UPDATE_CHECK_DELAY_SECS: u64 = 5;
+/// How often a running instance re-checks for updates, so one left open for
+/// days still learns about new releases.
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Retry sooner when a check fails (offline, GitHub rate limit).
+const UPDATE_RETRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
+/// Granularity of the wait between checks.
+const UPDATE_WAIT_STEP: Duration = Duration::from_secs(60);
 
-/// Spawn a background thread that checks GitHub Releases for a newer version.
-/// One-shot: sleeps, checks once, sends an event if newer, then exits.
+/// Spawn a background thread that checks GitHub Releases for a newer version:
+/// shortly after startup, then every 24 hours. Sends an event whenever the
+/// latest release is newer than the running binary; the app decides whether
+/// to prompt.
 pub fn spawn_update_checker(event_tx: UnboundedSender<AppEvent>) {
     std::thread::Builder::new()
         .name("update-checker".into())
@@ -16,12 +25,29 @@ pub fn spawn_update_checker(event_tx: UnboundedSender<AppEvent>) {
             // Let the TUI start up first
             std::thread::sleep(Duration::from_secs(UPDATE_CHECK_DELAY_SECS));
 
-            if let Some(latest) = fetch_latest_version() {
-                let current = option_env!("CLAWTREE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
-                if version_is_newer(&latest, current) {
-                    let _ = event_tx.send(AppEvent::UpdateAvailable {
-                        latest_version: latest,
-                    });
+            let current = option_env!("CLAWTREE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+            loop {
+                let wait = match fetch_latest_version() {
+                    Some(latest) => {
+                        if version_is_newer(&latest, current)
+                            && event_tx
+                                .send(AppEvent::UpdateAvailable {
+                                    latest_version: latest,
+                                })
+                                .is_err()
+                        {
+                            break; // app shutting down
+                        }
+                        UPDATE_CHECK_INTERVAL
+                    }
+                    None => UPDATE_RETRY_INTERVAL,
+                };
+                // Wait on the wall clock rather than one long sleep: the
+                // monotonic clock stops while the machine is suspended, which
+                // would push the next check back by however long it slept.
+                let due = SystemTime::now() + wait;
+                while SystemTime::now() < due {
+                    std::thread::sleep(UPDATE_WAIT_STEP);
                 }
             }
         })
@@ -54,7 +80,7 @@ fn fetch_latest_version() -> Option<String> {
 }
 
 /// Returns true if `latest` is strictly newer than `current` using semver comparison.
-fn version_is_newer(latest: &str, current: &str) -> bool {
+pub fn version_is_newer(latest: &str, current: &str) -> bool {
     let parse = |s: &str| -> Vec<u64> {
         s.split('.')
             .map(|part| part.parse::<u64>().unwrap_or(0))

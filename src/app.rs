@@ -784,8 +784,15 @@ pub struct App {
     pub update_available: Option<String>,
     /// Version string the user chose to permanently skip (loaded from config file).
     pub skipped_update_version: Option<String>,
-    /// Whether the update dialog has already been shown this session (dismiss = don't re-show).
-    pub update_dialog_shown: bool,
+    /// Version whose update dialog the user dismissed this session. A newer
+    /// release (found by the periodic check) prompts again.
+    pub update_dialog_dismissed: Option<String>,
+    /// Version installed by the in-app updater while this process keeps
+    /// running the old binary; releases up to it aren't offered again.
+    pub update_installed: Option<String>,
+    /// When the user last pressed a key or pasted. The update dialog waits for
+    /// a pause so a keystroke meant for a session can't answer it.
+    pub last_key_at: Option<Instant>,
     /// Set when the user chooses "Restart now" after an in-app update; the main
     /// loop exits and re-execs the freshly installed binary.
     pub restart_requested: bool,
@@ -875,7 +882,9 @@ impl App {
             areas: LayoutAreas::default(),
             update_available: None,
             skipped_update_version: None,
-            update_dialog_shown: false,
+            update_dialog_dismissed: None,
+            update_installed: None,
+            last_key_at: None,
             restart_requested: false,
             git_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
             locations: Vec::new(),
@@ -1477,6 +1486,29 @@ impl App {
         config_dir.join("skip-update-version")
     }
 
+    /// Open the update dialog for `update_available` if the user hasn't skipped
+    /// or dismissed that version, no other dialog is open, and they've paused
+    /// typing. Called when a check finds a release and on every tick, so a
+    /// prompt held back by an open dialog or typing shows up once it's safe.
+    pub fn maybe_show_update_dialog(&mut self) {
+        const TYPING_PAUSE: std::time::Duration = std::time::Duration::from_secs(3);
+        let Some(latest) = self.update_available.as_deref() else {
+            return;
+        };
+        let declined = self.skipped_update_version.as_deref() == Some(latest)
+            || self.update_dialog_dismissed.as_deref() == Some(latest);
+        let typing = self.last_key_at.is_some_and(|t| t.elapsed() < TYPING_PAUSE);
+        if declined || typing || self.dialog.is_some() {
+            return;
+        }
+        let latest_version = latest.to_string();
+        self.open_dialog(Dialog::UpdateAvailable {
+            latest_version,
+            selected: 0,
+            phase: UpdatePhase::Prompt,
+        });
+    }
+
     /// Load the skipped update version from the config file.
     pub fn load_skipped_update_version(&mut self) {
         let path = Self::skip_update_path();
@@ -1619,5 +1651,75 @@ mod expand_path_tests {
         );
         assert_eq!(expand_path("./rel"), PathBuf::from("./rel"));
         assert_eq!(expand_path("../up"), PathBuf::from("../up"));
+    }
+}
+
+#[cfg(test)]
+mod update_dialog_tests {
+    use super::{App, Dialog};
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    fn update_test_app() -> App {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        App::new(PathBuf::from("/tmp"), tx, false, false, false)
+    }
+
+    fn showing_update(app: &App) -> Option<&str> {
+        match &app.dialog {
+            Some(Dialog::UpdateAvailable { latest_version, .. }) => Some(latest_version),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn test_update_dialog_shows_for_available_release() {
+        let mut app = update_test_app();
+        app.maybe_show_update_dialog();
+        assert_eq!(showing_update(&app), None, "nothing available yet");
+        app.update_available = Some("0.3.0".into());
+        app.maybe_show_update_dialog();
+        assert_eq!(showing_update(&app), Some("0.3.0"));
+    }
+
+    #[test]
+    fn test_update_dialog_waits_for_typing_pause_and_other_dialogs() {
+        let mut app = update_test_app();
+        app.update_available = Some("0.3.0".into());
+        app.last_key_at = Some(Instant::now());
+        app.maybe_show_update_dialog();
+        assert_eq!(showing_update(&app), None, "user is typing");
+
+        app.last_key_at = Some(Instant::now() - std::time::Duration::from_secs(10));
+        app.open_dialog(Dialog::MergeSuccess { message: String::new() });
+        app.maybe_show_update_dialog();
+        assert!(matches!(app.dialog, Some(Dialog::MergeSuccess { .. })), "never replaces another dialog");
+
+        app.close_dialog();
+        app.maybe_show_update_dialog();
+        assert_eq!(showing_update(&app), Some("0.3.0"));
+    }
+
+    #[test]
+    fn test_update_dialog_dismiss_holds_until_a_newer_release() {
+        let mut app = update_test_app();
+        app.update_available = Some("0.3.0".into());
+        app.update_dialog_dismissed = Some("0.3.0".into());
+        app.maybe_show_update_dialog();
+        assert_eq!(showing_update(&app), None);
+
+        // A later daily check finds a newer release.
+        app.update_available = Some("0.3.1".into());
+        app.maybe_show_update_dialog();
+        assert_eq!(showing_update(&app), Some("0.3.1"));
+    }
+
+    #[test]
+    fn test_update_dialog_respects_skipped_version() {
+        let mut app = update_test_app();
+        app.update_available = Some("0.3.0".into());
+        app.skipped_update_version = Some("0.3.0".into());
+        app.maybe_show_update_dialog();
+        assert_eq!(showing_update(&app), None);
     }
 }
