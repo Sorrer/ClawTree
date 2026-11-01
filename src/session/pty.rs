@@ -206,6 +206,15 @@ pub fn tmux_session_attached_clients(name: &str) -> u32 {
 /// Environment variable we set inside tmux to track the original worktree path.
 const TMUX_WORKTREE_ENV: &str = "CLAWTREE_WORKTREE";
 
+/// Re-point a tmux session at a different worktree, so a later reconnect
+/// files it under that worktree (used when its original worktree vanished).
+pub fn set_tmux_worktree_env(tmux_name: &str, worktree: &std::path::Path) {
+    let _ = Command::new("tmux")
+        .args(["set-environment", "-t", tmux_name, TMUX_WORKTREE_ENV])
+        .arg(worktree)
+        .output();
+}
+
 /// List all tmux sessions that belong to us (prefixed with TMUX_PREFIX).
 /// Returns (session_name, worktree_path) pairs sorted by creation time (oldest first).
 pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf)> {

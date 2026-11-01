@@ -34,11 +34,13 @@ pub fn refresh_worktrees(app: &mut App) -> Result<()> {
     let entries = git::list_worktrees(&app.bare_repo_path)?;
 
     // Preserve existing session associations
-    let old_sessions: std::collections::HashMap<PathBuf, Vec<u64>> = app
+    let old_order: Vec<(PathBuf, Vec<u64>)> = app
         .worktrees
         .iter()
         .map(|wt| (wt.path.clone(), wt.session_ids.clone()))
         .collect();
+    let old_sessions: std::collections::HashMap<PathBuf, Vec<u64>> =
+        old_order.iter().cloned().collect();
 
     let old_expanded: std::collections::HashMap<PathBuf, bool> = app
         .worktrees
@@ -69,8 +71,95 @@ pub fn refresh_worktrees(app: &mut App) -> Result<()> {
         })
         .collect();
 
+    rehome_orphaned_sessions(app, old_order);
+
     app.rebuild_sidebar_items();
     Ok(())
+}
+
+/// Give a home to sessions whose worktree vanished from git's list without
+/// going through clawtree (removed or moved from a shell, pruned, ...).
+/// Otherwise they'd keep running in tmux but drop out of the sidebar.
+///
+/// Each session moves to the worktree its process now sits in (a
+/// `git worktree move` carries the process along), else the main/master
+/// worktree, else the worktree that came after the vanished one. With no
+/// worktrees left, sessions whose folder is gone are killed; any whose
+/// folder still exists go under Project rather than being killed.
+fn rehome_orphaned_sessions(app: &mut App, old_order: Vec<(PathBuf, Vec<u64>)>) {
+    for (old_idx, (old_path, session_ids)) in old_order.into_iter().enumerate() {
+        if app.worktrees.iter().any(|wt| wt.path == old_path) {
+            continue;
+        }
+        for sid in session_ids {
+            let Some(session) = app.sessions.get(&sid) else { continue };
+            let tmux_name = session.tmux_session_name.clone();
+            let is_terminal = session.is_terminal;
+
+            let current_dir = tmux_name
+                .as_deref()
+                .and_then(crate::session::pty::query_tmux_pane_cwd)
+                .map(PathBuf::from);
+            let target = pick_orphan_home(&app.worktrees, current_dir.as_deref(), old_idx);
+
+            let new_path = match target {
+                Some(wi) => {
+                    let wt = &mut app.worktrees[wi];
+                    wt.session_ids.push(sid);
+                    wt.expanded = true;
+                    wt.path.clone()
+                }
+                // Project folder check: an unmounted drive must not read as
+                // every worktree having been removed.
+                None if !old_path.exists() && app.bare_repo_path.is_dir() => {
+                    tracing::info!(
+                        "Worktree {} is gone and none remain; killing session {}",
+                        old_path.display(),
+                        sid
+                    );
+                    crate::session::kill_session(app, sid);
+                    continue;
+                }
+                None => {
+                    if is_terminal {
+                        app.terminal_ids.push(sid);
+                    } else {
+                        app.project_session_ids.push(sid);
+                        app.project_expanded = true;
+                    }
+                    app.bare_repo_path.clone()
+                }
+            };
+            tracing::info!(
+                "Worktree {} is gone; moved session {} to {}",
+                old_path.display(),
+                sid,
+                new_path.display()
+            );
+            if let Some(name) = tmux_name {
+                crate::session::pty::set_tmux_worktree_env(&name, &new_path);
+            }
+            if let Some(session) = app.sessions.get_mut(&sid) {
+                session.worktree_path = new_path;
+            }
+        }
+    }
+}
+
+/// Which remaining worktree an orphaned session moves to (see
+/// `rehome_orphaned_sessions`; also used on reconnect). `old_idx` is the vanished worktree's position
+/// in the previous list. None when no worktrees remain.
+pub(crate) fn pick_orphan_home(worktrees: &[Worktree], current_dir: Option<&Path>, old_idx: usize) -> Option<usize> {
+    current_dir
+        .and_then(|dir| worktrees.iter().position(|wt| dir.starts_with(&wt.path)))
+        .or_else(|| {
+            worktrees
+                .iter()
+                .position(|wt| wt.branch == "main" || wt.branch == "master")
+        })
+        // The vanished worktree's old slot now holds the one after it.
+        .or_else(|| (old_idx < worktrees.len()).then_some(old_idx))
+        .or_else(|| worktrees.len().checked_sub(1))
 }
 
 /// Remove a worktree. Kills any associated sessions and terminals first.
@@ -409,4 +498,49 @@ pub fn commit(app: &App, worktree_idx: usize, message: &str) -> Result<()> {
         .get(worktree_idx)
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
     git::commit(&wt.path, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wt(path: &str, branch: &str) -> Worktree {
+        Worktree {
+            path: PathBuf::from(path),
+            branch: branch.to_string(),
+            commit_hash: String::new(),
+            session_ids: Vec::new(),
+            expanded: false,
+        }
+    }
+
+    #[test]
+    fn test_orphan_home_prefers_worktree_process_moved_into() {
+        let wts = [wt("/r/main", "main"), wt("/r/feat-b", "feat-b")];
+        let moved = Path::new("/r/feat-b/src");
+        assert_eq!(pick_orphan_home(&wts, Some(moved), 0), Some(1));
+    }
+
+    #[test]
+    fn test_orphan_home_falls_back_to_main_or_master() {
+        let wts = [wt("/r/a", "a"), wt("/r/main", "main")];
+        assert_eq!(pick_orphan_home(&wts, Some(Path::new("/r/gone")), 0), Some(1));
+        let wts = [wt("/r/a", "a"), wt("/r/master", "master")];
+        assert_eq!(pick_orphan_home(&wts, None, 0), Some(1));
+    }
+
+    #[test]
+    fn test_orphan_home_falls_back_to_next_worktree() {
+        // Old list was [a, gone, c, d]; "gone" (index 1) vanished, so the
+        // worktree after it (c) now sits at index 1.
+        let wts = [wt("/r/a", "a"), wt("/r/c", "c"), wt("/r/d", "d")];
+        assert_eq!(pick_orphan_home(&wts, None, 1), Some(1));
+        // The vanished one was last: fall back to the new last worktree.
+        assert_eq!(pick_orphan_home(&wts, None, 3), Some(2));
+    }
+
+    #[test]
+    fn test_orphan_home_none_when_no_worktrees_remain() {
+        assert_eq!(pick_orphan_home(&[], Some(Path::new("/r/x")), 0), None);
+    }
 }

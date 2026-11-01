@@ -1574,7 +1574,7 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
 
     let mut count = 0;
 
-    for (tmux_name, wt_path) in tmux_sessions {
+    for (tmux_name, mut wt_path) in tmux_sessions {
         // Skip sessions another live clawtree instance is already attached to.
         // Reconnect is meant to recover sessions from a previous (now-gone)
         // instance; those report 0 attached clients. A non-zero count means
@@ -1589,10 +1589,56 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
         }
 
         // Find which worktree this session belongs to
-        let wt_idx = app
+        let mut wt_idx = app
             .worktrees
             .iter()
             .position(|wt| wt.path == wt_path || wt_path.starts_with(&wt.path));
+
+        // A session recorded inside the project folder whose folder no longer
+        // exists belonged to a worktree removed while clawtree wasn't running.
+        // Apply the same rule as a live removal (`worktree::rehome_orphaned_sessions`):
+        // move it to another worktree, or clean it up if none remain. Sessions
+        // are only ever recorded at a worktree or the project root itself, so
+        // the project-folder prefix proves it is ours, not another repo's.
+        // The project folder itself must exist, so an unmounted drive (every
+        // folder "missing") never reads as every worktree being removed.
+        if wt_idx.is_none()
+            && wt_path != app.bare_repo_path
+            && wt_path.starts_with(&app.bare_repo_path)
+            && !wt_path.exists()
+            && app.bare_repo_path.is_dir()
+        {
+            let current_dir = pty::query_tmux_pane_cwd(&tmux_name).map(PathBuf::from);
+            // Where the vanished worktree would sit in git's (path-sorted) list.
+            let old_idx = app
+                .worktrees
+                .iter()
+                .position(|wt| wt.path > wt_path)
+                .unwrap_or(app.worktrees.len());
+            match crate::worktree::pick_orphan_home(&app.worktrees, current_dir.as_deref(), old_idx) {
+                Some(wi) => {
+                    let new_path = app.worktrees[wi].path.clone();
+                    tracing::info!(
+                        "Reconnect: worktree {} is gone; moving '{}' to {}",
+                        wt_path.display(),
+                        tmux_name,
+                        new_path.display()
+                    );
+                    pty::set_tmux_worktree_env(&tmux_name, &new_path);
+                    wt_path = new_path;
+                    wt_idx = Some(wi);
+                }
+                None => {
+                    tracing::info!(
+                        "Reconnect: worktree {} is gone and none remain; killing '{}'",
+                        wt_path.display(),
+                        tmux_name
+                    );
+                    pty::kill_tmux_session(&tmux_name);
+                    continue;
+                }
+            }
+        }
 
         // Check if this is a root/project session (path matches bare repo)
         let is_root = wt_idx.is_none()
