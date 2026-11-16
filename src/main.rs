@@ -378,11 +378,15 @@ async fn async_main(
     // Enable keyboard enhancement if the terminal supports it (kitty protocol).
     // This allows detecting Shift+Enter, Ctrl+key combos, etc. Silently ignored
     // on terminals that don't support it.
+    //
+    // Only disambiguation is requested. Reporting all keys as escape codes
+    // makes text keys arrive as the unshifted key plus a modifier, so Shift
+    // and Caps Lock stop producing capitals and symbols; reporting event
+    // types adds a release event for every key.
     let _ = crossterm::execute!(
         io::stdout(),
         crossterm::event::PushKeyboardEnhancementFlags(
-            crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
         )
     );
     let backend = CrosstermBackend::new(stdout);
@@ -746,9 +750,8 @@ async fn async_main(
                 break;
             }
             match event {
-                // REPORT_EVENT_TYPES makes kitty-protocol terminals send a
-                // release event for every key; acting on it would handle
-                // each keystroke twice.
+                // A terminal reporting key releases would otherwise have
+                // each keystroke handled twice.
                 AppEvent::Input(CrosstermEvent::Key(key))
                     if key.kind == crossterm::event::KeyEventKind::Release => {}
                 AppEvent::Input(CrosstermEvent::Key(key)) => {
