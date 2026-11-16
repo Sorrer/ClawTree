@@ -746,6 +746,11 @@ async fn async_main(
                 break;
             }
             match event {
+                // REPORT_EVENT_TYPES makes kitty-protocol terminals send a
+                // release event for every key; acting on it would handle
+                // each keystroke twice.
+                AppEvent::Input(CrosstermEvent::Key(key))
+                    if key.kind == crossterm::event::KeyEventKind::Release => {}
                 AppEvent::Input(CrosstermEvent::Key(key)) => {
                     app.last_key_at = Some(Instant::now());
                     last_activity.store(session::now_millis(), std::sync::atomic::Ordering::Relaxed);
