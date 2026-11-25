@@ -1,4 +1,7 @@
+pub mod layout;
 pub mod pty;
+pub mod recovery;
+pub mod tmux;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -54,6 +57,16 @@ pub struct Session {
     /// Set when a non-active session emits PTY output; cleared when the user
     /// switches to (views) the session. Drives the unread highlight in the sidebar.
     pub unread: bool,
+    /// Claude was launched with `--dangerously-skip-permissions`.
+    pub skip_permissions: bool,
+    /// The Claude conversation id, once known: assigned at spawn with
+    /// `--session-id`, or discovered by the session-id poller.
+    pub claude_session_id: Option<String>,
+    /// Unix seconds when the session was created.
+    pub created_at: u64,
+    /// The session ended because the tmux server died (not because its
+    /// process exited), so the layout manifest keeps offering it for restore.
+    pub lost_with_server: bool,
 }
 
 impl Session {
@@ -896,7 +909,7 @@ pub fn generate_oneshot_summary(
     let tmux_name = tmux_session_name.to_string();
     std::thread::spawn(move || {
         // Capture last 200 lines of tmux scrollback (visible + history)
-        let capture = std::process::Command::new("tmux")
+        let capture = crate::session::tmux::tmux_cmd()
             .args(["capture-pane", "-t", &tmux_name, "-p", "-S", "-200"])
             .output();
         let content = match capture {
@@ -952,6 +965,199 @@ pub fn generate_oneshot_summary(
     });
 }
 
+/// Where a new session goes in the sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnParent {
+    Worktree(usize),
+    Root,
+    Location(usize),
+}
+
+/// Extra options for [`spawn_in`]; the defaults give a brand-new session.
+#[derive(Debug, Default)]
+pub struct SpawnOpts {
+    /// Use this tmux name if no tmux session has it (keeps manifest keys
+    /// stable across a restore); otherwise a fresh name is generated.
+    pub preferred_tmux_name: Option<String>,
+    /// How to start claude (e.g. `--resume <id>`). Default: a new
+    /// conversation with an assigned id where supported.
+    pub launch: Option<tmux::ClaudeLaunch>,
+    pub nickname: Option<String>,
+    /// Terminals: start the shell here instead of the parent folder.
+    pub start_dir: Option<PathBuf>,
+    pub created_at: Option<u64>,
+}
+
+/// Spawn a Claude session or terminal under `parent`. Every spawn path goes
+/// through here.
+pub fn spawn_in(
+    app: &mut App,
+    parent: SpawnParent,
+    is_terminal: bool,
+    terminal_size: (u16, u16),
+    skip_permissions: bool,
+    initial_prompt: Option<&str>,
+    opts: SpawnOpts,
+) -> anyhow::Result<u64> {
+    // Resolve the folder, the name stem used for the tmux session, and the
+    // initial label.
+    let (path, name_stem, label) = match parent {
+        SpawnParent::Worktree(wi) => {
+            let wt = app
+                .worktrees
+                .get(wi)
+                .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
+            let label = if is_terminal {
+                wt.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "terminal".to_string())
+            } else {
+                "Initializing...".to_string()
+            };
+            (wt.path.clone(), wt.branch.clone(), label)
+        }
+        SpawnParent::Root => {
+            let label = if is_terminal { "root-terminal" } else { "root" };
+            (
+                app.bare_repo_path.clone(),
+                "root".to_string(),
+                label.to_string(),
+            )
+        }
+        SpawnParent::Location(li) => {
+            let loc = app
+                .locations
+                .get(li)
+                .ok_or_else(|| anyhow::anyhow!("Invalid location index"))?;
+            let loc_label = loc.name.clone().unwrap_or_else(|| {
+                loc.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "location".to_string())
+            });
+            let label = if is_terminal {
+                loc_label.clone()
+            } else {
+                "Initializing...".to_string()
+            };
+            (loc.path.clone(), format!("loc-{}", loc_label), label)
+        }
+    };
+
+    // Only a Claude session in a worktree has a non-tmux fallback.
+    let needs_tmux = is_terminal || !matches!(parent, SpawnParent::Worktree(_));
+    if needs_tmux && !app.tmux_available {
+        anyhow::bail!(if is_terminal {
+            "tmux is required for terminal sessions"
+        } else {
+            "tmux is required for this session"
+        });
+    }
+
+    let session_id = app.next_session_id;
+    app.next_session_id += 1;
+
+    let (rows, cols) = calculate_pane_size(app, terminal_size.1, terminal_size.0);
+
+    let launch = opts.launch.unwrap_or_else(|| tmux::ClaudeLaunch::New {
+        session_id: layout::assign_session_id(),
+        initial_prompt: initial_prompt.map(|p| p.to_string()),
+    });
+    // The non-tmux fallback doesn't take a launch spec, so it has no known id.
+    let claude_session_id = if is_terminal || !app.tmux_available {
+        None
+    } else {
+        launch.known_session_id().map(|s| s.to_string())
+    };
+
+    let handle = if app.tmux_available {
+        let tmux_name = match opts.preferred_tmux_name {
+            Some(n) if !tmux::session_exists(&n) => n,
+            _ if is_terminal => {
+                pty::tmux_terminal_session_name(&name_stem, session_id, &app.layout_reserved_names)
+            }
+            _ => pty::tmux_session_name(&name_stem, session_id, &app.layout_reserved_names),
+        };
+        if is_terminal {
+            pty::spawn_terminal_pty_tmux(
+                &path,
+                opts.start_dir.as_deref().filter(|d| d.is_dir()),
+                session_id,
+                app.event_tx.clone(),
+                rows,
+                cols,
+                &tmux_name,
+            )?
+        } else {
+            pty::spawn_claude_pty_tmux(
+                &path,
+                session_id,
+                app.event_tx.clone(),
+                rows,
+                cols,
+                skip_permissions,
+                &tmux_name,
+                &launch,
+            )?
+        }
+    } else {
+        pty::spawn_claude_pty(
+            &path,
+            session_id,
+            app.event_tx.clone(),
+            rows,
+            cols,
+            skip_permissions,
+            initial_prompt,
+        )?
+    };
+
+    let session = Session {
+        id: session_id,
+        worktree_path: path,
+        label,
+        parser: handle.parser,
+        write_tx: handle.write_tx,
+        master_pty: handle.master_pty,
+        exited: handle.exited,
+        last_output: handle.last_output,
+        tmux_session_name: handle.tmux_session_name,
+        nickname: opts.nickname,
+        was_active: false,
+        working_latch: AtomicBool::new(false),
+        unread: false,
+        is_terminal,
+        skip_permissions: skip_permissions && !is_terminal,
+        claude_session_id,
+        created_at: opts.created_at.unwrap_or_else(layout::now_secs),
+        lost_with_server: false,
+    };
+
+    app.sessions.insert(session_id, session);
+
+    match parent {
+        SpawnParent::Worktree(wi) => {
+            if let Some(wt) = app.worktrees.get_mut(wi) {
+                wt.session_ids.push(session_id);
+                wt.expanded = true;
+            }
+        }
+        SpawnParent::Root => {
+            app.project_session_ids.push(session_id);
+            app.project_expanded = true;
+        }
+        SpawnParent::Location(li) => {
+            if let Some(loc) = app.locations.get_mut(li) {
+                loc.session_ids.push(session_id);
+                loc.expanded = true;
+            }
+        }
+    }
+
+    Ok(session_id)
+}
+
 /// Spawn a new Claude session in the given worktree.
 /// If `initial_prompt` is Some, it is passed as a CLI argument so Claude starts working on it immediately.
 pub fn spawn_session(
@@ -961,67 +1167,15 @@ pub fn spawn_session(
     skip_permissions: bool,
     initial_prompt: Option<&str>,
 ) -> anyhow::Result<u64> {
-    let wt = app
-        .worktrees
-        .get(worktree_idx)
-        .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
-
-    let session_id = app.next_session_id;
-    app.next_session_id += 1;
-
-    let (rows, cols) = calculate_pane_size(app, terminal_size.1, terminal_size.0);
-
-    let handle = if app.tmux_available {
-        let tmux_name = pty::tmux_session_name(&wt.branch, session_id);
-        pty::spawn_claude_pty_tmux(
-            &wt.path,
-            session_id,
-            app.event_tx.clone(),
-            rows,
-            cols,
-            skip_permissions,
-            &tmux_name,
-            initial_prompt,
-        )?
-    } else {
-        pty::spawn_claude_pty(
-            &wt.path,
-            session_id,
-            app.event_tx.clone(),
-            rows,
-            cols,
-            skip_permissions,
-            initial_prompt,
-        )?
-    };
-
-    let label = "Initializing...".to_string();
-
-    let session = Session {
-        id: session_id,
-        worktree_path: wt.path.clone(),
-        label,
-        parser: handle.parser,
-        write_tx: handle.write_tx,
-        master_pty: handle.master_pty,
-        exited: handle.exited,
-        last_output: handle.last_output,
-        tmux_session_name: handle.tmux_session_name,
-        nickname: None,
-        was_active: false,
-        working_latch: AtomicBool::new(false),
-        unread: false,
-        is_terminal: false,
-    };
-
-    app.sessions.insert(session_id, session);
-
-    if let Some(wt) = app.worktrees.get_mut(worktree_idx) {
-        wt.session_ids.push(session_id);
-        wt.expanded = true;
-    }
-
-    Ok(session_id)
+    spawn_in(
+        app,
+        SpawnParent::Worktree(worktree_idx),
+        false,
+        terminal_size,
+        skip_permissions,
+        initial_prompt,
+        SpawnOpts::default(),
+    )
 }
 
 /// Spawn a plain terminal shell session in the given worktree (tmux only).
@@ -1030,62 +1184,15 @@ pub fn spawn_terminal_session(
     worktree_idx: usize,
     terminal_size: (u16, u16),
 ) -> anyhow::Result<u64> {
-    if !app.tmux_available {
-        anyhow::bail!("tmux is required for terminal sessions");
-    }
-
-    let wt = app
-        .worktrees
-        .get(worktree_idx)
-        .ok_or_else(|| anyhow::anyhow!("Invalid worktree index"))?;
-
-    let session_id = app.next_session_id;
-    app.next_session_id += 1;
-
-    let (rows, cols) = calculate_pane_size(app, terminal_size.1, terminal_size.0);
-
-    let tmux_name = pty::tmux_terminal_session_name(&wt.branch, session_id);
-    let handle = pty::spawn_terminal_pty_tmux(
-        &wt.path,
-        session_id,
-        app.event_tx.clone(),
-        rows,
-        cols,
-        &tmux_name,
-    )?;
-
-    let label = wt
-        .path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "terminal".to_string());
-
-    let session = Session {
-        id: session_id,
-        worktree_path: wt.path.clone(),
-        label,
-        parser: handle.parser,
-        write_tx: handle.write_tx,
-        master_pty: handle.master_pty,
-        exited: handle.exited,
-        last_output: handle.last_output,
-        tmux_session_name: handle.tmux_session_name,
-        nickname: None,
-        was_active: false,
-        working_latch: AtomicBool::new(false),
-        unread: false,
-        is_terminal: true,
-    };
-
-    app.sessions.insert(session_id, session);
-
-    // Terminals appear inline under their worktree, alongside Claude sessions.
-    if let Some(wt) = app.worktrees.get_mut(worktree_idx) {
-        wt.session_ids.push(session_id);
-        wt.expanded = true;
-    }
-
-    Ok(session_id)
+    spawn_in(
+        app,
+        SpawnParent::Worktree(worktree_idx),
+        true,
+        terminal_size,
+        false,
+        None,
+        SpawnOpts::default(),
+    )
 }
 
 /// Spawn a Claude session at the bare repo root (for the Project overview).
@@ -1094,51 +1201,15 @@ pub fn spawn_root_session(
     terminal_size: (u16, u16),
     skip_permissions: bool,
 ) -> anyhow::Result<u64> {
-    if !app.tmux_available {
-        anyhow::bail!("tmux is required for root sessions");
-    }
-
-    let session_id = app.next_session_id;
-    app.next_session_id += 1;
-
-    let (rows, cols) = calculate_pane_size(app, terminal_size.1, terminal_size.0);
-
-    let tmux_name = pty::tmux_session_name("root", session_id);
-    let handle = pty::spawn_claude_pty_tmux(
-        &app.bare_repo_path,
-        session_id,
-        app.event_tx.clone(),
-        rows,
-        cols,
+    spawn_in(
+        app,
+        SpawnParent::Root,
+        false,
+        terminal_size,
         skip_permissions,
-        &tmux_name,
         None,
-    )?;
-
-    let label = "root".to_string();
-
-    let session = Session {
-        id: session_id,
-        worktree_path: app.bare_repo_path.clone(),
-        label,
-        parser: handle.parser,
-        write_tx: handle.write_tx,
-        master_pty: handle.master_pty,
-        exited: handle.exited,
-        last_output: handle.last_output,
-        tmux_session_name: handle.tmux_session_name,
-        nickname: None,
-        was_active: false,
-        working_latch: AtomicBool::new(false),
-        unread: false,
-        is_terminal: false,
-    };
-
-    app.sessions.insert(session_id, session);
-    app.project_session_ids.push(session_id);
-    app.project_expanded = true;
-
-    Ok(session_id)
+        SpawnOpts::default(),
+    )
 }
 
 /// Spawn a plain terminal at the bare repo root (for the Project overview).
@@ -1146,49 +1217,15 @@ pub fn spawn_root_terminal_session(
     app: &mut App,
     terminal_size: (u16, u16),
 ) -> anyhow::Result<u64> {
-    if !app.tmux_available {
-        anyhow::bail!("tmux is required for terminal sessions");
-    }
-
-    let session_id = app.next_session_id;
-    app.next_session_id += 1;
-
-    let (rows, cols) = calculate_pane_size(app, terminal_size.1, terminal_size.0);
-
-    let tmux_name = pty::tmux_terminal_session_name("root", session_id);
-    let handle = pty::spawn_terminal_pty_tmux(
-        &app.bare_repo_path,
-        session_id,
-        app.event_tx.clone(),
-        rows,
-        cols,
-        &tmux_name,
-    )?;
-
-    let label = "root-terminal".to_string();
-
-    let session = Session {
-        id: session_id,
-        worktree_path: app.bare_repo_path.clone(),
-        label,
-        parser: handle.parser,
-        write_tx: handle.write_tx,
-        master_pty: handle.master_pty,
-        exited: handle.exited,
-        last_output: handle.last_output,
-        tmux_session_name: handle.tmux_session_name,
-        nickname: None,
-        was_active: false,
-        working_latch: AtomicBool::new(false),
-        unread: false,
-        is_terminal: true,
-    };
-
-    app.sessions.insert(session_id, session);
-    app.project_session_ids.push(session_id);
-    app.project_expanded = true;
-
-    Ok(session_id)
+    spawn_in(
+        app,
+        SpawnParent::Root,
+        true,
+        terminal_size,
+        false,
+        None,
+        SpawnOpts::default(),
+    )
 }
 
 /// Spawn a Claude session in an extra location directory.
@@ -1198,65 +1235,15 @@ pub fn spawn_location_session(
     terminal_size: (u16, u16),
     skip_permissions: bool,
 ) -> anyhow::Result<u64> {
-    if !app.tmux_available {
-        anyhow::bail!("tmux is required for location sessions");
-    }
-
-    let loc = app
-        .locations
-        .get(location_idx)
-        .ok_or_else(|| anyhow::anyhow!("Invalid location index"))?;
-
-    let loc_path = loc.path.clone();
-    let loc_label = loc.name.clone().unwrap_or_else(|| {
-        loc_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "location".to_string())
-    });
-
-    let session_id = app.next_session_id;
-    app.next_session_id += 1;
-
-    let (rows, cols) = calculate_pane_size(app, terminal_size.1, terminal_size.0);
-
-    let tmux_name = pty::tmux_session_name(&format!("loc-{}", loc_label), session_id);
-    let handle = pty::spawn_claude_pty_tmux(
-        &loc_path,
-        session_id,
-        app.event_tx.clone(),
-        rows,
-        cols,
+    spawn_in(
+        app,
+        SpawnParent::Location(location_idx),
+        false,
+        terminal_size,
         skip_permissions,
-        &tmux_name,
         None,
-    )?;
-
-    let session = Session {
-        id: session_id,
-        worktree_path: loc_path,
-        label: "Initializing...".to_string(),
-        parser: handle.parser,
-        write_tx: handle.write_tx,
-        master_pty: handle.master_pty,
-        exited: handle.exited,
-        last_output: handle.last_output,
-        tmux_session_name: handle.tmux_session_name,
-        nickname: None,
-        was_active: false,
-        working_latch: AtomicBool::new(false),
-        unread: false,
-        is_terminal: false,
-    };
-
-    app.sessions.insert(session_id, session);
-
-    if let Some(loc) = app.locations.get_mut(location_idx) {
-        loc.session_ids.push(session_id);
-        loc.expanded = true;
-    }
-
-    Ok(session_id)
+        SpawnOpts::default(),
+    )
 }
 
 /// Kill a session and clean up. Also kills the tmux session if applicable.
@@ -1264,9 +1251,11 @@ pub fn kill_session(app: &mut App, session_id: u64) {
     if let Some(session) = app.sessions.get(&session_id) {
         // Kill the tmux session if present
         if let Some(ref tmux_name) = session.tmux_session_name {
-            let _ = std::process::Command::new("tmux")
+            let _ = crate::session::tmux::tmux_cmd()
                 .args(["kill-session", "-t", tmux_name])
                 .output();
+            // An explicit close: drop it from the layout manifest too.
+            app.closed_tmux_names.insert(tmux_name.clone());
         }
     }
 
@@ -1303,11 +1292,39 @@ pub fn session_label(app: &App, session_id: u64) -> String {
 pub fn mark_exited(app: &mut App, session_id: u64) {
     if let Some(session) = app.sessions.get_mut(&session_id) {
         session.exited.store(true, Ordering::SeqCst);
+        // The tmux client's parting line says why it ended: "[exited]" when
+        // the session's own process ended, "[server exited]" / "[lost server]"
+        // when the whole server went away (OOM, kill-server, crash).
+        if session.tmux_session_name.is_some() {
+            session.lost_with_server = session
+                .parser
+                .read()
+                .map(|p| client_saw_server_loss(&p.screen().contents()))
+                .unwrap_or(false);
+            if session.lost_with_server {
+                tracing::warn!(
+                    "Session {} ended because the tmux server went away",
+                    session_id
+                );
+            }
+        }
         if !session.label.contains("[exited]") {
             session.label = format!("{} [exited]", session.label);
         }
     }
     app.rebuild_sidebar_items();
+}
+
+/// Whether a running process was started with `arg` (from /proc/<pid>/cmdline).
+fn process_has_arg(pid: u32, arg: &str) -> bool {
+    std::fs::read(format!("/proc/{}/cmdline", pid))
+        .map(|b| b.split(|&c| c == 0).any(|a| a == arg.as_bytes()))
+        .unwrap_or(false)
+}
+
+/// Whether a tmux client's final screen reports losing its server.
+pub fn client_saw_server_loss(screen_text: &str) -> bool {
+    screen_text.contains("[server exited]") || screen_text.contains("[lost server]")
 }
 
 /// Apply title updates received from the background tmux poller.
@@ -1330,6 +1347,7 @@ pub struct TmuxSessionInfo {
     pub current_title: String,
     pub exited: bool,
     pub is_terminal: bool,
+    pub claude_session_id: Option<String>,
 }
 
 /// Collect tmux session info from the app for the background poller.
@@ -1348,6 +1366,7 @@ pub fn collect_tmux_session_info(app: &App) -> Vec<TmuxSessionInfo> {
                     .unwrap_or_default(),
                 exited: s.exited.load(Ordering::SeqCst),
                 is_terminal: s.is_terminal,
+                claude_session_id: s.claude_session_id.clone(),
             })
         })
         .collect()
@@ -1396,31 +1415,87 @@ pub fn spawn_terminal_name_poller(
             };
 
             let mut updates = Vec::new();
+            let mut cwds = Vec::new();
             for info in &sessions {
                 if info.exited || !info.is_terminal {
                     continue;
                 }
+                // The cwd is also recorded in the layout manifest, so a
+                // restored terminal reopens where the user left it.
+                let cwd = pty::query_tmux_pane_cwd(&info.tmux_name);
                 // Running command wins; otherwise the cwd folder name.
-                let name = pty::query_tmux_pane_foreground(&info.tmux_name)
-                    .or_else(|| {
-                        pty::query_tmux_pane_cwd(&info.tmux_name).map(|cwd| {
-                            std::path::Path::new(&cwd)
-                                .file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or(cwd)
-                        })
-                    });
+                let name = pty::query_tmux_pane_foreground(&info.tmux_name).or_else(|| {
+                    cwd.as_ref().map(|cwd| {
+                        std::path::Path::new(cwd)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| cwd.clone())
+                    })
+                });
                 if let Some(name) = name {
                     updates.push((info.session_id, name));
                 }
+                if let Some(cwd) = cwd {
+                    cwds.push((info.session_id, PathBuf::from(cwd)));
+                }
             }
 
-            if !updates.is_empty()
+            if (!updates.is_empty() || !cwds.is_empty())
                 && event_tx
-                    .send(crate::event::AppEvent::TerminalNamesUpdated { updates })
+                    .send(crate::event::AppEvent::TerminalNamesUpdated { updates, cwds })
                     .is_err()
             {
                 break; // channel closed, app shutting down
+            }
+        })
+        .ok();
+}
+
+/// Spawn a background thread that keeps each Claude session's conversation
+/// id current. Claude Code records the live id of every running process in
+/// `~/.claude/sessions/<pid>.json`; the id changes on `/clear`, `/resume` and
+/// some compactions, so this re-reads it every few seconds (one tmux call for
+/// all panes plus a small file read per session) and reports changes.
+pub fn spawn_claude_session_id_poller(
+    event_tx: tokio::sync::mpsc::UnboundedSender<crate::event::AppEvent>,
+    session_info: std::sync::Arc<std::sync::Mutex<Vec<TmuxSessionInfo>>>,
+) {
+    std::thread::Builder::new()
+        .name("claude-session-id-poller".into())
+        .spawn(move || {
+            let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+            std::thread::sleep(Duration::from_secs(3));
+            loop {
+                let sessions = match session_info.lock() {
+                    Ok(guard) => guard.clone(),
+                    Err(_) => continue,
+                };
+                let wanted: Vec<&TmuxSessionInfo> = sessions
+                    .iter()
+                    .filter(|s| !s.exited && !s.is_terminal)
+                    .collect();
+                if !wanted.is_empty() {
+                    let pids = pty::query_all_pane_pids();
+                    let mut updates = Vec::new();
+                    for info in wanted {
+                        let Some(&pid) = pids.get(&info.tmux_name) else {
+                            continue;
+                        };
+                        if let Some(id) = layout::claude_session_id_for_pid(&home, pid) {
+                            if info.claude_session_id.as_deref() != Some(id.as_str()) {
+                                updates.push((info.session_id, id));
+                            }
+                        }
+                    }
+                    if !updates.is_empty()
+                        && event_tx
+                            .send(crate::event::AppEvent::ClaudeSessionIds { updates })
+                            .is_err()
+                    {
+                        break;
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(5));
             }
         })
         .ok();
@@ -1542,7 +1617,7 @@ pub fn resize_all(app: &App, rows: u16, cols: u16) {
             // above would skip the PTY resize, but the tmux window itself
             // is still at the old dimensions.
             if let Some(ref tmux_name) = session.tmux_session_name {
-                let _ = std::process::Command::new("tmux")
+                let _ = crate::session::tmux::tmux_cmd()
                     .args([
                         "resize-window",
                         "-t",
@@ -1566,6 +1641,8 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
     }
 
     let tmux_sessions = pty::list_tmux_sessions();
+    // Pane pids, to read a session's launch flags when tmux didn't record them.
+    let pane_pids = pty::query_all_pane_pids();
     if tmux_sessions.is_empty() {
         return 0;
     }
@@ -1574,7 +1651,7 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
 
     let mut count = 0;
 
-    for (tmux_name, mut wt_path) in tmux_sessions {
+    for (tmux_name, mut wt_path, created_at) in tmux_sessions {
         // Skip sessions another live clawtree instance is already attached to.
         // Reconnect is meant to recover sessions from a previous (now-gone)
         // instance; those report 0 attached clients. A non-zero count means
@@ -1698,6 +1775,19 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
         working_latch: AtomicBool::new(false),
             unread: false,
             is_terminal,
+            // Sessions started before clawtree set the env var: ask the process.
+            skip_permissions: !is_terminal
+                && (tmux::show_env(&tmux_name, tmux::SKIP_PERMISSIONS_ENV).as_deref() == Some("1")
+                    || pane_pids.get(&tmux_name).is_some_and(|&pid| {
+                        process_has_arg(pid, "--dangerously-skip-permissions")
+                    })),
+            claude_session_id: if is_terminal {
+                None
+            } else {
+                tmux::show_env(&tmux_name, tmux::CLAUDE_SESSION_ENV)
+            },
+            created_at,
+            lost_with_server: false,
         };
 
         app.sessions.insert(session_id, session);
@@ -1822,7 +1912,7 @@ fn discover_debug_file_for_session(
     claimed_paths: &std::collections::HashSet<String>,
 ) -> Option<String> {
     // Get the pane PID from tmux (one lightweight subprocess call)
-    let output = std::process::Command::new("tmux")
+    let output = crate::session::tmux::tmux_cmd()
         .args(["display-message", "-t", tmux_name, "-p", "#{pane_pid}"])
         .output()
         .ok()?;
@@ -2315,6 +2405,14 @@ fn parse_autocompact_line(line: &str) -> Option<ClaudeUsage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_loss_is_told_apart_from_process_exit() {
+        assert!(client_saw_server_loss("some output\n[server exited]\n"));
+        assert!(client_saw_server_loss("[lost server]"));
+        assert!(!client_saw_server_loss("some output\n[exited]\n"));
+        assert!(!client_saw_server_loss(""));
+    }
 
     // ── content_has_input_prompt tests ──────────────────────────────────
 

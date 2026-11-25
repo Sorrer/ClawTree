@@ -37,6 +37,7 @@ A terminal UI for empowering your parallized usage of claude and git worktrees.
   - [Prompt Queue](#prompt-queue)
   - [Mini Mode](#mini-mode)
   - [Terminal & UI](#terminal--ui)
+  - [Recovering after a crash](#recovering-after-a-crash)
 - [Requirements](#requirements)
 - [Future Goals](#future-goals)
 
@@ -147,6 +148,32 @@ Queue up one-shot tasks for Claude to handle sequentially while you focus on oth
 <p align="center">
   <img src="docs/screenshots/help-overlay.png" alt="Help overlay" width="800">
 </p>
+
+### Recovering after a crash
+
+Sessions live in tmux, so they survive closing clawtree, and the next launch reattaches them. tmux itself can't survive a reboot, a WSL VM crash or a killed tmux server, though: when it goes, every session goes with it. That's why clawtree also keeps a **layout manifest** on disk recording which sessions each project had, and rewrites it within a second of any change (spawn, close, rename, worktree removal).
+
+- **Where:** `~/.clawtree/state/<project-path>-<hash>.json`, one file per project. Each entry records the tmux name, the worktree/root/location, Claude or terminal, the nickname, YOLO mode, a terminal's last folder, and the **Claude conversation id**. New sessions are started with `claude --session-id <uuid>`, and clawtree follows the id when it changes (`/clear`, `/resume`).
+- **On the next launch**, sessions that are in the manifest but not in tmux are offered in a *Restore previous sessions* dialog. Each Claude session resumes its own conversation (`claude --resume <id>`), and terminals reopen in their last folder.
+
+  | Key | Action |
+  |-----|--------|
+  | `Enter` | Restore the checked sessions (unchecked ones are discarded) |
+  | `a` | Restore all |
+  | `space` | Check / uncheck the selected session |
+  | `c` | When the conversation had to be guessed, try the next candidate |
+  | `d` | Discard all: stop offering them (transcripts are never deleted) |
+  | `Esc` | Decide later: offered again next launch |
+
+  Sessions whose worktree no longer exists are listed with their conversation id, so you can `claude --resume <id>` them by hand.
+- **From the command line:**
+  ```bash
+  clawtree restore [dir]            # restore everything, then open the TUI
+  clawtree restore --list [dir]     # show restorable / stale / live sessions, change nothing
+  clawtree restore --no-tui [dir]   # restore and exit (scripts)
+  ```
+
+A session still running in tmux (including one attached by another clawtree) is never offered, so nothing is restored twice. `--cleanup` / `--cleanup-all` also remove the sessions they kill from the manifest. Set `CLAWTREE_SKIP_LAYOUT=1` to turn the manifest off, and `CLAWTREE_TMUX_SOCKET=<name>` to run all of clawtree's tmux sessions on a private server (`tmux -L <name>`). That's handy for testing recovery: `tmux -L <name> kill-server` simulates a crash.
 
 ### Platform
 - Linux (x86_64, aarch64) and macOS (Intel, Apple Silicon)

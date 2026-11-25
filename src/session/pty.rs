@@ -8,6 +8,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tokio::sync::mpsc;
 
+use super::tmux::{self as tm, tmux_cmd, ClaudeLaunch};
 use crate::event::AppEvent;
 
 /// Callbacks that capture the window title set by Claude Code.
@@ -54,43 +55,7 @@ pub struct PtyHandle {
     pub tmux_session_name: Option<String>,
 }
 
-/// Prefix for all tmux sessions we manage.
-const TMUX_PREFIX: &str = "clawtree";
-
-/// Configure the tmux server for truecolor passthrough (called once per process).
-///
-/// tmux decides whether to pass 24-bit RGB colors through to the outer terminal
-/// (our PTY) or downconvert them to the 256-color palette.  It checks the `Tc`
-/// capability in `terminal-overrides` (tmux < 3.2) and the `RGB` flag in
-/// `terminal-features` (tmux >= 3.2).  We need both to cover all tmux versions.
-///
-/// We also set `default-terminal` to `tmux-256color` so programs *inside* tmux
-/// (e.g. Claude Code) see a TERM that advertises full color, rather than the
-/// default `screen` which only declares 8 colors.
-fn ensure_tmux_truecolor() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        // 1. Wildcard Tc — tells tmux that ANY outer terminal supports truecolor.
-        //    Uses `-sa` (server-append) so we don't clobber user overrides.
-        let _ = Command::new("tmux")
-            .args(["set", "-sa", "terminal-overrides", ",*:Tc"])
-            .output();
-
-        // 2. terminal-features RGB — the modern equivalent for tmux >= 3.2.
-        //    Harmless on older tmux (unrecognized option is silently ignored).
-        let _ = Command::new("tmux")
-            .args(["set", "-sa", "terminal-features", ",xterm-256color:RGB"])
-            .output();
-
-        // 3. default-terminal — controls what TERM is set inside tmux panes.
-        //    `tmux-256color` advertises 256-color + tmux-specific capabilities.
-        //    Programs like Claude Code check TERM to decide their color output level.
-        let _ = Command::new("tmux")
-            .args(["set", "-g", "default-terminal", "tmux-256color"])
-            .output();
-    });
-}
+use super::tmux::TMUX_PREFIX;
 
 /// Return all prefixes we should scan for when listing/reconnecting tmux sessions.
 /// Always includes TMUX_PREFIX. Additional legacy prefixes can be supplied via the
@@ -116,7 +81,7 @@ fn all_tmux_prefixes() -> Vec<&'static str> {
 
 /// Check if tmux is available on the system.
 pub fn tmux_available() -> bool {
-    Command::new("tmux")
+    tmux_cmd()
         .arg("-V")
         .output()
         .map(|o| o.status.success())
@@ -136,52 +101,52 @@ fn sanitize_tmux_name(s: &str) -> String {
         .collect()
 }
 
-/// Generate a unique tmux session name for a plain terminal in a worktree.
-pub fn tmux_terminal_session_name(branch: &str, session_id: u64) -> String {
-    let base = format!(
-        "{}-term-{}-{}",
-        TMUX_PREFIX,
-        sanitize_tmux_name(branch),
-        session_id
-    );
-    if tmux_session_exists(&base) {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        format!("{}-{}", base, ts % 10000)
-    } else {
-        base
+/// `base`, or `base-<n>` for the first n that is free: not an existing tmux
+/// session and not `reserved` (names the layout manifest still holds for
+/// sessions waiting to be restored).
+pub fn unique_tmux_name(base: String, reserved: &std::collections::HashSet<String>) -> String {
+    let taken = |n: &str| reserved.contains(n) || tm::session_exists(n);
+    if !taken(&base) {
+        return base;
     }
+    (1..)
+        .map(|i| format!("{}-{}", base, i))
+        .find(|n| !taken(n))
+        .expect("unbounded search")
+}
+
+/// Generate a unique tmux session name for a plain terminal in a worktree.
+pub fn tmux_terminal_session_name(
+    branch: &str,
+    session_id: u64,
+    reserved: &std::collections::HashSet<String>,
+) -> String {
+    unique_tmux_name(
+        format!(
+            "{}-term-{}-{}",
+            TMUX_PREFIX,
+            sanitize_tmux_name(branch),
+            session_id
+        ),
+        reserved,
+    )
 }
 
 /// Generate a unique tmux session name for a worktree branch + session id.
-pub fn tmux_session_name(branch: &str, session_id: u64) -> String {
-    let base = format!(
-        "{}-{}-{}",
-        TMUX_PREFIX,
-        sanitize_tmux_name(branch),
-        session_id
-    );
-    // If name already taken, append a suffix
-    if tmux_session_exists(&base) {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        format!("{}-{}", base, ts % 10000)
-    } else {
-        base
-    }
-}
-
-/// Check if a tmux session with the given name exists.
-fn tmux_session_exists(name: &str) -> bool {
-    Command::new("tmux")
-        .args(["has-session", "-t", name])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+pub fn tmux_session_name(
+    branch: &str,
+    session_id: u64,
+    reserved: &std::collections::HashSet<String>,
+) -> String {
+    unique_tmux_name(
+        format!(
+            "{}-{}-{}",
+            TMUX_PREFIX,
+            sanitize_tmux_name(branch),
+            session_id
+        ),
+        reserved,
+    )
 }
 
 /// Number of clients currently attached to a tmux session.
@@ -194,7 +159,7 @@ fn tmux_session_exists(name: &str) -> bool {
 /// PTY master closing on crash sends SIGHUP to the `attach-session` client),
 /// so genuine reconnects are unaffected.
 pub fn tmux_session_attached_clients(name: &str) -> u32 {
-    Command::new("tmux")
+    tmux_cmd()
         .args(["display-message", "-t", name, "-p", "#{session_attached}"])
         .output()
         .ok()
@@ -203,23 +168,23 @@ pub fn tmux_session_attached_clients(name: &str) -> u32 {
         .unwrap_or(0)
 }
 
-/// Environment variable we set inside tmux to track the original worktree path.
-const TMUX_WORKTREE_ENV: &str = "CLAWTREE_WORKTREE";
+use super::tmux::WORKTREE_ENV as TMUX_WORKTREE_ENV;
 
 /// Re-point a tmux session at a different worktree, so a later reconnect
 /// files it under that worktree (used when its original worktree vanished).
 pub fn set_tmux_worktree_env(tmux_name: &str, worktree: &std::path::Path) {
-    let _ = Command::new("tmux")
+    let _ = tmux_cmd()
         .args(["set-environment", "-t", tmux_name, TMUX_WORKTREE_ENV])
         .arg(worktree)
         .output();
 }
 
 /// List all tmux sessions that belong to us (prefixed with TMUX_PREFIX).
-/// Returns (session_name, worktree_path) pairs sorted by creation time (oldest first).
-pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf)> {
+/// Returns (session_name, worktree_path, created_unix_secs) sorted by creation
+/// time (oldest first).
+pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf, u64)> {
     // Request session_created alongside the name so we can sort by creation time
-    let output = match Command::new("tmux")
+    let output = match tmux_cmd()
         .args(["list-sessions", "-F", "#{session_created}\t#{session_name}"])
         .output()
     {
@@ -244,9 +209,9 @@ pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf)> {
     our_sessions.sort_by_key(|(ts, _)| *ts);
 
     let mut results = Vec::new();
-    for (_ts, name) in our_sessions {
+    for (ts, name) in our_sessions {
         // First try our env var (reliable — set at creation time)
-        let env_output = Command::new("tmux")
+        let env_output = tmux_cmd()
             .args(["show-environment", "-t", &name, TMUX_WORKTREE_ENV])
             .output();
 
@@ -266,7 +231,7 @@ pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf)> {
 
         // Fall back to pane_current_path if env var not set (old sessions)
         let path = path.or_else(|| {
-            Command::new("tmux")
+            tmux_cmd()
                 .args(["display-message", "-t", &name, "-p", "#{pane_current_path}"])
                 .output()
                 .ok()
@@ -276,7 +241,7 @@ pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf)> {
 
         if let Some(p) = path {
             if !p.is_empty() {
-                results.push((name, std::path::PathBuf::from(p)));
+                results.push((name, std::path::PathBuf::from(p), ts));
             }
         }
     }
@@ -287,7 +252,7 @@ pub fn list_tmux_sessions() -> Vec<(String, std::path::PathBuf)> {
 /// List just the names of all tmux sessions that belong to us.
 /// Cheaper than `list_tmux_sessions()` — skips worktree path resolution.
 pub fn list_tmux_session_names() -> Vec<String> {
-    let output = match Command::new("tmux")
+    let output = match tmux_cmd()
         .args(["list-sessions", "-F", "#{session_name}"])
         .output()
     {
@@ -306,7 +271,7 @@ pub fn list_tmux_session_names() -> Vec<String> {
 
 /// Kill a tmux session by name. Returns true if the kill command succeeded.
 pub fn kill_tmux_session(name: &str) -> bool {
-    Command::new("tmux")
+    tmux_cmd()
         .args(["kill-session", "-t", name])
         .output()
         .map(|o| o.status.success())
@@ -347,154 +312,45 @@ pub fn spawn_claude_pty_tmux(
     cols: u16,
     skip_permissions: bool,
     tmux_name: &str,
-    initial_prompt: Option<&str>,
+    launch: &ClaudeLaunch,
 ) -> Result<PtyHandle> {
-    // Create the tmux session running claude
-    let mut tmux_args = vec![
-        "new-session".to_string(),
-        "-d".to_string(),
-        "-s".to_string(),
-        tmux_name.to_string(),
-        "-x".to_string(),
-        cols.to_string(),
-        "-y".to_string(),
-        rows.to_string(),
-    ];
-    // Run claude with COLORTERM=truecolor so it emits 24-bit RGB colors
-    tmux_args.push("env".to_string());
-    tmux_args.push("COLORTERM=truecolor".to_string());
-    if let Some((k, v)) = claude_renderer_env() {
-        tmux_args.push(format!("{}={}", k, v));
-    }
-    tmux_args.push("claude".to_string());
-    if skip_permissions {
-        tmux_args.push("--dangerously-skip-permissions".to_string());
-    }
-    if let Some(prompt) = initial_prompt {
-        tmux_args.push(prompt.to_string());
-    }
-
-    // Ensure the tmux server is configured for truecolor passthrough (once)
-    ensure_tmux_truecolor();
-
-    let output = Command::new("tmux")
-        .args(&tmux_args)
-        .current_dir(working_dir)
-        .env("TERM", "xterm-256color")
-        .output()
-        .context("Failed to create tmux session")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "tmux new-session failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    // Disable the tmux status bar so the pane fills the full PTY dimensions.
-    // This eliminates the 1-row discrepancy between PTY size and pane size
-    // that causes content reflow / extra blank lines on resize.
-    let _ = Command::new("tmux")
-        .args(["set-option", "-t", tmux_name, "status", "off"])
-        .output();
-
-    // Store the worktree path and COLORTERM in the tmux session environment
-    let _ = Command::new("tmux")
-        .args([
-            "set-environment",
-            "-t",
-            tmux_name,
-            TMUX_WORKTREE_ENV,
-            &working_dir.to_string_lossy(),
-        ])
-        .output();
-    let _ = Command::new("tmux")
-        .args(["set-environment", "-t", tmux_name, "COLORTERM", "truecolor"])
-        .output();
-
-    // Allow passthrough of escape sequences that tmux normally strips
-    // (OSC for hyperlinks, styled underlines, kitty graphics, etc.)
-    let _ = Command::new("tmux")
-        .args(["set-option", "-t", tmux_name, "allow-passthrough", "on"])
-        .output();
-
-    // Clear the default pane title (usually username@host) so it doesn't
-    // show up before Claude sets its own title
-    let _ = Command::new("tmux")
-        .args(["select-pane", "-t", tmux_name, "-T", ""])
-        .output();
-
-    // Now attach to that tmux session via a PTY
+    tm::create_claude_session(
+        working_dir,
+        rows,
+        cols,
+        skip_permissions,
+        tmux_name,
+        launch,
+        claude_renderer_env(),
+    )?;
     attach_tmux_session(tmux_name, session_id, event_tx, rows, cols)
 }
 
 /// Spawn a plain shell inside a tmux session, then attach to it via PTY.
+/// `working_dir` is the session's home (worktree/root/location); the shell
+/// starts in `start_dir` (defaults to `working_dir`).
 pub fn spawn_terminal_pty_tmux(
     working_dir: &Path,
+    start_dir: Option<&Path>,
     session_id: u64,
     event_tx: mpsc::UnboundedSender<AppEvent>,
     rows: u16,
     cols: u16,
     tmux_name: &str,
 ) -> Result<PtyHandle> {
-    let tmux_args = vec![
-        "new-session".to_string(),
-        "-d".to_string(),
-        "-s".to_string(),
-        tmux_name.to_string(),
-        "-x".to_string(),
-        cols.to_string(),
-        "-y".to_string(),
-        rows.to_string(),
-    ];
-
-    ensure_tmux_truecolor();
-
-    let output = Command::new("tmux")
-        .args(&tmux_args)
-        .current_dir(working_dir)
-        .env("TERM", "xterm-256color")
-        .output()
-        .context("Failed to create tmux terminal session")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "tmux new-session failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let _ = Command::new("tmux")
-        .args(["set-option", "-t", tmux_name, "status", "off"])
-        .output();
-
-    let _ = Command::new("tmux")
-        .args([
-            "set-environment",
-            "-t",
-            tmux_name,
-            TMUX_WORKTREE_ENV,
-            &working_dir.to_string_lossy(),
-        ])
-        .output();
-    let _ = Command::new("tmux")
-        .args(["set-environment", "-t", tmux_name, "COLORTERM", "truecolor"])
-        .output();
-
-    let _ = Command::new("tmux")
-        .args(["set-option", "-t", tmux_name, "allow-passthrough", "on"])
-        .output();
-
-    let _ = Command::new("tmux")
-        .args(["select-pane", "-t", tmux_name, "-T", ""])
-        .output();
-
+    tm::create_terminal_session(
+        working_dir,
+        start_dir.unwrap_or(working_dir),
+        rows,
+        cols,
+        tmux_name,
+    )?;
     attach_tmux_session(tmux_name, session_id, event_tx, rows, cols)
 }
 
 /// Query the current working directory of a tmux session's pane.
 pub fn query_tmux_pane_cwd(tmux_name: &str) -> Option<String> {
-    let output = Command::new("tmux")
+    let output = tmux_cmd()
         .args([
             "display-message",
             "-t",
@@ -541,7 +397,7 @@ const PACKAGE_MANAGERS: &[&str] = &["npm", "pnpm", "yarn", "bun"];
 /// foreground process is the command the user is running.
 pub fn query_tmux_pane_foreground(tmux_name: &str) -> Option<String> {
     // The pid tmux launched (the interactive shell) and the pane's tty.
-    let output = Command::new("tmux")
+    let output = tmux_cmd()
         .args([
             "display-message",
             "-t",
@@ -649,7 +505,7 @@ fn friendly_command_name(comm: &str, args: &str) -> String {
 /// single pane, so `session_name → pane_title` is unambiguous.
 pub fn query_all_pane_titles() -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
-    let output = Command::new("tmux")
+    let output = tmux_cmd()
         .args(["list-panes", "-a", "-F", "#{session_name}\t#{pane_title}"])
         .output();
     if let Ok(o) = output {
@@ -664,9 +520,29 @@ pub fn query_all_pane_titles() -> std::collections::HashMap<String, String> {
     map
 }
 
+/// The pid of every tmux session's (single) pane, in one subprocess call.
+pub fn query_all_pane_pids() -> std::collections::HashMap<String, u32> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(o) = tmux_cmd()
+        .args(["list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}"])
+        .output()
+    {
+        if o.status.success() {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                if let Some((name, pid)) = line.split_once('\t') {
+                    if let Ok(pid) = pid.trim().parse() {
+                        map.entry(name.to_string()).or_insert(pid);
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
 /// Query the pane title from an existing tmux session.
 pub fn query_tmux_pane_title(tmux_name: &str) -> Option<String> {
-    let output = Command::new("tmux")
+    let output = tmux_cmd()
         .args(["display-message", "-t", tmux_name, "-p", "#{pane_title}"])
         .output()
         .ok()?;
@@ -688,10 +564,10 @@ pub fn attach_tmux_session(
     cols: u16,
 ) -> Result<PtyHandle> {
     // Ensure truecolor is configured (idempotent — runs once per process)
-    ensure_tmux_truecolor();
+    tm::ensure_truecolor();
 
     // Ensure status bar is off so pane fills the full PTY dimensions
-    let _ = Command::new("tmux")
+    let _ = tmux_cmd()
         .args(["set-option", "-t", tmux_name, "status", "off"])
         .output();
 
@@ -711,6 +587,7 @@ pub fn attach_tmux_session(
         .context("Failed to open PTY")?;
 
     let mut cmd = CommandBuilder::new("tmux");
+    cmd.args(tm::socket_args());
     cmd.args(["attach-session", "-t", tmux_name]);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
