@@ -155,7 +155,137 @@ pub fn draw(f: &mut Frame, app: &App) {
         Dialog::AddLocation { path_input, error } => {
             draw_add_location(f, app, path_input, error.as_deref());
         }
+        Dialog::RestoreLayout {
+            rows,
+            stale,
+            selected,
+            ..
+        } => draw_restore_layout(f, app, rows, stale, *selected),
     }
+}
+
+/// "Restore previous sessions?" — offered at startup when sessions in the
+/// layout manifest no longer exist in tmux.
+fn draw_restore_layout(
+    f: &mut Frame,
+    app: &App,
+    rows: &[crate::session::layout::RestoreRow],
+    stale: &[crate::session::layout::LayoutEntry],
+    selected: usize,
+) {
+    use crate::session::layout::{entry_label, EntryKind};
+
+    let screen = f.area();
+    // Body lines: intro(2) + rows + (blank + stale header + stale lines) ; frame: borders(2) + footer(2)
+    let stale_lines = if stale.is_empty() { 0 } else { stale.len() + 2 };
+    let wanted = 2 + rows.len().max(1) + stale_lines + 4;
+    let height = (wanted as u16).min(screen.height.saturating_sub(2)).max(8);
+    let area = centered_rect(80, height, screen);
+    app.areas.dialog.set(area);
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Restore previous sessions ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // intro
+            Constraint::Min(1),    // list
+            Constraint::Length(2), // footer
+        ])
+        .split(inner);
+
+    let intro = if rows.is_empty() {
+        "These saved sessions belonged to folders that no longer exist.".to_string()
+    } else {
+        format!(
+            "{} session(s) from your last run are gone from tmux (crash or reboot?). \
+             Claude sessions resume their own conversations.",
+            rows.len()
+        )
+    };
+    f.render_widget(
+        Paragraph::new(intro)
+            .style(Style::default().fg(Color::White))
+            .wrap(ratatui::widgets::Wrap { trim: true }),
+        chunks[0],
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        let is_sel = i == selected;
+        let check = if r.checked { "[x]" } else { "[ ]" };
+        let icon = match r.entry.kind {
+            EntryKind::Claude if r.skip_permissions() => "✦!",
+            EntryKind::Claude => "✦ ",
+            EntryKind::Terminal => "› ",
+        };
+        let base = if is_sel {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if is_sel { "> " } else { "  " }, base),
+            Span::styled(format!("{} {} ", check, icon), base),
+            Span::styled(entry_label(&r.entry), base),
+            Span::styled(
+                format!("  {}", r.summary()),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+    if !stale.is_empty() {
+        if !rows.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{} session(s) belonged to worktrees that no longer exist (resume by hand):",
+                stale.len()
+            ),
+            Style::default().fg(Color::Yellow),
+        )));
+        for e in stale {
+            let id = e
+                .claude_session_id
+                .as_deref()
+                .map(|id| format!("  claude --resume {}", id))
+                .unwrap_or_default();
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("    {}", entry_label(e)),
+                    Style::default().fg(Color::Gray),
+                ),
+                Span::styled(id, Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+    }
+    // Keep the selected row visible.
+    let visible = chunks[1].height as usize;
+    let offset = scroll_offset_for(selected, visible).min(lines.len().saturating_sub(visible));
+    f.render_widget(
+        Paragraph::new(lines.into_iter().skip(offset).collect::<Vec<_>>()),
+        chunks[1],
+    );
+
+    let footer = if rows.is_empty() {
+        "d: discard these   Esc: decide later"
+    } else {
+        "Enter: restore checked (discard unchecked)   a: restore all   space: toggle\n\
+         c: next guess   d: discard all   Esc: decide later"
+    };
+    f.render_widget(
+        Paragraph::new(footer).style(Style::default().fg(Color::DarkGray)),
+        chunks[2],
+    );
 }
 
 fn centered_rect(percent_x: u16, height: u16, r: Rect) -> Rect {

@@ -1279,7 +1279,7 @@ pub fn handle_paste(app: &mut App, data: String) {
                             app.set_status("Pasting from clipboard…");
                             std::thread::spawn(move || {
                                 // ESC [ 2 0 0 ~   ESC [ 2 0 1 ~
-                                let _ = std::process::Command::new("tmux")
+                                let _ = crate::session::tmux::tmux_cmd()
                                     .args([
                                         "send-keys",
                                         "-t",
@@ -1618,6 +1618,12 @@ pub fn execute_context_action(
 }
 
 fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
+    // ── Restore layout dialog ────────────────────────────────────────
+    if let Some(Dialog::RestoreLayout { .. }) = &app.dialog {
+        handle_restore_layout_key(app, key);
+        return;
+    }
+
     // ── Context Menu ─────────────────────────────────────────────────
     if let Some(Dialog::ContextMenu { .. }) = &app.dialog {
         match key.code {
@@ -2145,6 +2151,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                             session.nickname = Some(input);
                         }
                     }
+                    app.mark_layout_dirty();
                     app.close_dialog();
                 }
                 Some(Dialog::MergeConflict {
@@ -2540,7 +2547,7 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
                         });
                     }
                 }
-                Some(Dialog::ContextMenu { .. }) => {
+                Some(Dialog::ContextMenu { .. }) | Some(Dialog::RestoreLayout { .. }) => {
                     // Handled in the early return above
                 }
                 Some(Dialog::UpdateAvailable { .. }) => {
@@ -2950,6 +2957,92 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
 
 /// Try to insert a character into the current dialog's text input field.
 /// Returns true if the character was consumed (dialog has active text input).
+/// Keys for the "restore previous sessions" dialog shown after a crash.
+fn handle_restore_layout_key(app: &mut App, key: KeyEvent) {
+    let Some(Dialog::RestoreLayout {
+        rows,
+        stale,
+        selected,
+        ..
+    }) = app.dialog.as_mut()
+    else {
+        return;
+    };
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if *selected + 1 < rows.len() {
+                *selected += 1;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            *selected = selected.saturating_sub(1);
+        }
+        KeyCode::Char(' ') => {
+            if let Some(r) = rows.get_mut(*selected) {
+                r.checked = !r.checked;
+            }
+        }
+        KeyCode::Char('c') => {
+            if let Some(r) = rows.get_mut(*selected) {
+                r.next_candidate(std::path::Path::new(
+                    &std::env::var("HOME").unwrap_or_default(),
+                ));
+            }
+        }
+        KeyCode::Esc => {
+            // Decide later: the manifest is untouched, so the next launch asks again.
+            app.close_dialog();
+            app.set_status("Session restore postponed — it will be offered again next launch");
+        }
+        KeyCode::Char('d') => {
+            let names: Vec<String> = rows
+                .iter()
+                .map(|r| r.entry.tmux_name.clone())
+                .chain(stale.iter().map(|e| e.tmux_name.clone()))
+                .collect();
+            let n = names.len();
+            app.close_dialog();
+            session::recovery::discard(app, names);
+            app.set_status(format!(
+                "Discarded {} saved session(s); transcripts are kept",
+                n
+            ));
+        }
+        KeyCode::Enter | KeyCode::Char('a') => {
+            let all = key.code == KeyCode::Char('a');
+            let Some(Dialog::RestoreLayout {
+                rows,
+                active_tmux_name,
+                ..
+            }) = app.dialog.take()
+            else {
+                return;
+            };
+            app.close_dialog();
+            let (picked, skipped): (Vec<_>, Vec<_>) =
+                rows.into_iter().partition(|r| all || r.checked);
+            // Unchecked rows were declined: stop offering them.
+            if !skipped.is_empty() {
+                session::recovery::discard(app, skipped.into_iter().map(|r| r.entry.tmux_name));
+            }
+            if !picked.is_empty() {
+                let total = picked.len();
+                app.queue_action(
+                    format!("Restoring 1/{}…", total),
+                    crate::app::PendingAction::RestoreLayout {
+                        queue: picked,
+                        done: 0,
+                        total,
+                        failed: Vec::new(),
+                        focus: active_tmux_name,
+                    },
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
 fn dialog_insert_char(app: &mut App, c: char) -> bool {
     match &mut app.dialog {
         Some(Dialog::CreateWorktree {

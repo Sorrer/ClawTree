@@ -92,6 +92,9 @@ fn main() -> Result<()> {
                 }
 
                 if SIGNAL_RECEIVED.load(Ordering::SeqCst) {
+                    // A closed terminal window arrives as SIGHUP: save any
+                    // layout change still waiting for the debounce.
+                    session::layout::flush_pending();
                     restore_terminal();
                     eprintln!("\nSignal received, exiting.");
                     std::thread::sleep(std::time::Duration::from_millis(WATCHDOG_POLL_MS));
@@ -138,39 +141,49 @@ fn main() -> Result<()> {
     // Set up panic hook to restore terminal
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
+        // Best effort: save a layout change still waiting for the debounce.
+        session::layout::flush_pending();
         restore_terminal();
         original_hook(panic_info);
     }));
 
-    // Parse CLI arguments: supports --color-mode <mode>, --cleanup, --cleanup-all, and a positional directory
-    let mut color_mode_override: Option<ui::theme::ColorMode> = None;
-    let mut positional_dir: Option<String> = None;
-    let mut do_cleanup = false;
-    let mut do_cleanup_all = false;
-    {
-        let mut args = std::env::args().skip(1);
-        while let Some(arg) = args.next() {
-            if arg == "--color-mode" {
-                if let Some(val) = args.next() {
-                    color_mode_override = match val.to_lowercase().as_str() {
-                        "truecolor" | "true" | "24bit" => Some(ui::theme::ColorMode::TrueColor),
-                        "256" | "256color" => Some(ui::theme::ColorMode::Color256),
-                        "basic" | "16" | "ansi" => Some(ui::theme::ColorMode::Basic),
-                        _ => {
-                            eprintln!("Unknown color mode '{}'. Use: truecolor, 256, basic", val);
-                            std::process::exit(1);
-                        }
-                    };
-                }
-            } else if arg == "--cleanup-all" {
-                do_cleanup_all = true;
-            } else if arg == "--cleanup" {
-                do_cleanup = true;
-            } else if positional_dir.is_none() {
-                positional_dir = Some(arg);
-            }
+    // Parse CLI arguments (see `parse_args` / `USAGE`).
+    let cli = match parse_args(std::env::args().skip(1)) {
+        Ok(c) => c,
+        Err(msg) => {
+            eprintln!("clawtree: {}\n\n{}", msg, USAGE);
+            alive.store(false, Ordering::Relaxed);
+            std::process::exit(2);
         }
+    };
+    match cli.command {
+        CliCommand::Version => {
+            println!("clawtree {}", env!("CARGO_PKG_VERSION"));
+            alive.store(false, Ordering::Relaxed);
+            return Ok(());
+        }
+        CliCommand::Help => {
+            println!("{}", USAGE);
+            alive.store(false, Ordering::Relaxed);
+            return Ok(());
+        }
+        _ => {}
     }
+    let color_mode_override: Option<ui::theme::ColorMode> = match cli.color_mode.as_deref() {
+        None => None,
+        Some(val) => match val.to_lowercase().as_str() {
+            "truecolor" | "true" | "24bit" => Some(ui::theme::ColorMode::TrueColor),
+            "256" | "256color" => Some(ui::theme::ColorMode::Color256),
+            "basic" | "16" | "ansi" => Some(ui::theme::ColorMode::Basic),
+            _ => {
+                eprintln!("Unknown color mode '{}'. Use: truecolor, 256, basic", val);
+                std::process::exit(1);
+            }
+        },
+    };
+    let positional_dir = cli.dir.clone();
+    let do_cleanup = cli.command == CliCommand::Cleanup;
+    let do_cleanup_all = cli.command == CliCommand::CleanupAll;
 
     // Handle --cleanup / --cleanup-all: kill clawtree tmux sessions and exit
     if do_cleanup || do_cleanup_all {
@@ -197,8 +210,8 @@ fn main() -> Result<()> {
 
             session::pty::list_tmux_sessions()
                 .into_iter()
-                .filter(|(_name, wt_path)| wt_path.starts_with(&project_root))
-                .map(|(name, _)| name)
+                .filter(|(_name, wt_path, _)| wt_path.starts_with(&project_root))
+                .map(|(name, _, _)| name)
                 .collect()
         };
 
@@ -215,6 +228,11 @@ fn main() -> Result<()> {
                 let ok = session::pty::kill_tmux_session(name);
                 let status = if ok { "killed" } else { "failed" };
                 println!("  {} ... {}", name, status);
+            }
+            // Killed on purpose: don't offer them for restore later.
+            let names: std::collections::HashSet<String> = session_names.iter().cloned().collect();
+            for path in session::layout::all_manifest_paths() {
+                session::layout::forget_in(&path, &names);
             }
         }
         alive.store(false, Ordering::Relaxed);
@@ -265,6 +283,16 @@ fn main() -> Result<()> {
         repo_detected
     );
 
+    // `clawtree restore --list` / `--no-tui` work without the TUI.
+    if let CliCommand::Restore { list, no_tui } = cli.command {
+        if list || no_tui {
+            let code = restore_headless(&bare_repo_path, list);
+            alive.store(false, Ordering::Relaxed);
+            std::process::exit(code);
+        }
+    }
+    let auto_restore = matches!(cli.command, CliCommand::Restore { .. });
+
     // Build tokio runtime manually so we control shutdown
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -286,6 +314,11 @@ fn main() -> Result<()> {
             .unwrap_or(false);
     tracing::info!("wt.exe available: {}", wt_available);
 
+    // Learn once, off the startup path, whether `claude --session-id` exists.
+    if tmux_available {
+        std::thread::spawn(session::layout::probe_claude_capabilities);
+    }
+
     let result = rt.block_on(async_main(
         target_dir,
         bare_repo_path,
@@ -293,6 +326,7 @@ fn main() -> Result<()> {
         regular_repo_path,
         tmux_available,
         wt_available,
+        auto_restore,
     ));
 
     // Clean exit — tell watchdog to stop, restore terminal
@@ -364,6 +398,7 @@ async fn async_main(
     regular_repo_path: Option<std::path::PathBuf>,
     tmux_available: bool,
     wt_available: bool,
+    auto_restore: bool,
 ) -> Result<bool> {
     // Initialize terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
@@ -402,6 +437,7 @@ async fn async_main(
         wt_available,
     );
     app.regular_repo_path = regular_repo_path;
+    app.layout_enabled = tmux_available && !session::layout::layout_disabled();
 
     // Load skipped update version preference
     app.load_skipped_update_version();
@@ -541,6 +577,12 @@ async fn async_main(
                 app.load_prompt_queues();
             }
 
+            // Compare the saved layout with what survived in tmux, and offer
+            // to bring back what didn't (crash, reboot, killed tmux server).
+            if app.layout_enabled {
+                start_layout_recovery(&mut app, auto_restore);
+            }
+
             // Load saved prompt templates
             app.load_saved_prompts();
 
@@ -566,6 +608,10 @@ async fn async_main(
             std::sync::Arc::clone(&tmux_session_info),
         );
         session::spawn_claude_usage_poller(
+            event_tx.clone(),
+            std::sync::Arc::clone(&tmux_session_info),
+        );
+        session::spawn_claude_session_id_poller(
             event_tx.clone(),
             std::sync::Arc::clone(&tmux_session_info),
         );
@@ -638,6 +684,9 @@ async fn async_main(
         if app.should_quit {
             break;
         }
+
+        // Debounced layout manifest write (no-op unless the layout changed).
+        app.flush_layout_if_due(Instant::now());
 
         // A queued pending action blocks the loop while it runs, and relies on
         // this draw painting its loading overlay first — so it must bypass the
@@ -1316,11 +1365,47 @@ async fn async_main(
                     }
                     needs_redraw = true;
                 }
-                AppEvent::TerminalNamesUpdated { updates } => {
+                AppEvent::TerminalNamesUpdated { updates, cwds } => {
                     for (session_id, name) in updates {
                         app.terminal_names.insert(session_id, name);
                     }
+                    for (session_id, cwd) in cwds {
+                        if app.terminal_cwds.get(&session_id) != Some(&cwd) {
+                            app.terminal_cwds.insert(session_id, cwd);
+                            app.mark_layout_dirty();
+                        }
+                    }
                     needs_redraw = true;
+                }
+                AppEvent::ClaudeSessionIds { updates } => {
+                    let mut changed = false;
+                    for (session_id, id) in updates {
+                        if let Some(s) = app.sessions.get_mut(&session_id) {
+                            if s.claude_session_id.as_deref() != Some(id.as_str()) {
+                                tracing::info!(
+                                    "Session {} conversation id is now {}",
+                                    session_id,
+                                    id
+                                );
+                                // Keep tmux's copy current so a plain reconnect knows it too.
+                                if let Some(ref name) = s.tmux_session_name {
+                                    session::tmux::set_env(
+                                        name,
+                                        session::tmux::CLAUDE_SESSION_ENV,
+                                        &id,
+                                    );
+                                }
+                                s.claude_session_id = Some(id);
+                                changed = true;
+                            }
+                        }
+                    }
+                    if changed {
+                        app.mark_layout_dirty();
+                        if let Ok(mut info) = tmux_session_info.lock() {
+                            *info = session::collect_tmux_session_info(&app);
+                        }
+                    }
                 }
                 AppEvent::ClaudeUsageUpdated { updates } => {
                     for (session_id, usage) in updates {
@@ -1690,7 +1775,7 @@ async fn async_main(
                                             let tmux = tmux.clone();
                                             let prompt_clone = prompt.clone();
                                             tokio::spawn(async move {
-                                                let _ = std::process::Command::new("tmux")
+                                                let _ = crate::session::tmux::tmux_cmd()
                                                     .args([
                                                         "send-keys",
                                                         "-t",
@@ -1701,7 +1786,7 @@ async fn async_main(
                                                     .output();
                                                 tokio::time::sleep(Duration::from_millis(100))
                                                     .await;
-                                                let _ = std::process::Command::new("tmux")
+                                                let _ = crate::session::tmux::tmux_cmd()
                                                     .args(["send-keys", "-t", &tmux, "Enter"])
                                                     .output();
                                             });
@@ -1733,6 +1818,9 @@ async fn async_main(
         }
     }
 
+    // Record the final layout before detaching.
+    app.flush_layout_now();
+
     // Clean shutdown: explicitly detach our tmux clients before PTY handles
     // are dropped. Without this, dropping the PTY master sends SIGHUP to the
     // `tmux attach-session` process, which can cause tmux to briefly resize
@@ -1741,7 +1829,7 @@ async fn async_main(
     for session in app.sessions.values() {
         if let Some(ref tmux_name) = session.tmux_session_name {
             if !session.exited.load(std::sync::atomic::Ordering::SeqCst) {
-                let _ = std::process::Command::new("tmux")
+                let _ = crate::session::tmux::tmux_cmd()
                     .args(["detach-client", "-s", tmux_name])
                     .output();
             }
@@ -1753,9 +1841,240 @@ async fn async_main(
     Ok(app.restart_requested)
 }
 
+/// After startup reconnect: load the manifest, fill in what tmux didn't
+/// keep, and either open the restore dialog or (for `clawtree restore`)
+/// queue every restorable session.
+fn start_layout_recovery(app: &mut App, auto_restore: bool) {
+    let Some(m) = session::layout::load(&app.bare_repo_path) else {
+        if auto_restore {
+            app.set_status("No saved session layout for this project");
+        }
+        return;
+    };
+    session::recovery::apply_manifest(app, &m);
+    let plan = session::recovery::plan_restore(app, &m);
+    tracing::info!(
+        "Layout manifest: {} entries, {} restorable, {} stale",
+        m.entries.len(),
+        plan.rows.len(),
+        plan.stale.len()
+    );
+    if auto_restore {
+        if plan.rows.is_empty() {
+            app.set_status("Nothing to restore: every saved session is still running");
+        } else {
+            let total = plan.rows.len();
+            app.queue_action(
+                format!("Restoring 1/{}…", total),
+                PendingAction::RestoreLayout {
+                    queue: plan.rows,
+                    done: 0,
+                    total,
+                    failed: Vec::new(),
+                    focus: plan.active_tmux_name,
+                },
+            );
+        }
+        if !plan.stale.is_empty() {
+            tracing::info!(
+                "{} saved sessions belong to folders that no longer exist",
+                plan.stale.len()
+            );
+        }
+    } else if !plan.rows.is_empty() || !plan.stale.is_empty() {
+        app.open_dialog(Dialog::RestoreLayout {
+            rows: plan.rows,
+            stale: plan.stale,
+            selected: 0,
+            active_tmux_name: plan.active_tmux_name,
+        });
+    }
+}
+
+/// `clawtree restore --list` (print the diff) or `--no-tui` (recreate the
+/// missing tmux sessions and exit). Returns the process exit code.
+fn restore_headless(bare_repo_path: &std::path::Path, list_only: bool) -> i32 {
+    use session::layout;
+    let path = layout::manifest_path(bare_repo_path);
+    let m = match layout::load_from(&path) {
+        layout::LoadOutcome::Loaded(m) => m,
+        layout::LoadOutcome::Missing => {
+            println!("No saved session layout for {}", bare_repo_path.display());
+            return 0;
+        }
+        layout::LoadOutcome::Corrupt(dest) => {
+            eprintln!(
+                "The layout manifest was unreadable; moved it to {}",
+                dest.display()
+            );
+            return 1;
+        }
+        layout::LoadOutcome::UnsupportedVersion(v) => {
+            eprintln!(
+                "The layout manifest is version {} (from a newer clawtree); not touching it.",
+                v
+            );
+            return 1;
+        }
+    };
+    if !session::pty::tmux_available() {
+        eprintln!("tmux is not available");
+        return 1;
+    }
+    let worktrees: Vec<std::path::PathBuf> = worktree::git::list_worktrees(bare_repo_path)
+        .map(|v| {
+            v.into_iter()
+                .filter(|w| !w.is_bare)
+                .map(|w| w.path)
+                .collect()
+        })
+        .unwrap_or_default();
+    let locations: Vec<std::path::PathBuf> = App::read_saved_locations()
+        .into_iter()
+        .map(|l| l.path)
+        .collect();
+    let live: std::collections::HashSet<String> = session::pty::list_tmux_session_names()
+        .into_iter()
+        .collect();
+    let d = layout::diff(&m, &live, bare_repo_path.is_dir(), |e| {
+        e.path.is_dir()
+            && match e.scope {
+                layout::EntryScope::Worktree => worktrees.contains(&e.path),
+                layout::EntryScope::Root => e.path == bare_repo_path,
+                layout::EntryScope::Location => locations.contains(&e.path),
+            }
+    });
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let rows = layout::plan_rows(&home, &d.restorable, &m.entries);
+
+    if list_only {
+        println!("Saved layout: {}", path.display());
+        println!("\nRestorable ({}):", rows.len());
+        for r in &rows {
+            println!(
+                "  {:<9} {}  [{}]",
+                format!("{:?}", r.entry.kind).to_lowercase(),
+                layout::entry_label(&r.entry),
+                r.summary()
+            );
+        }
+        println!("\nStale — folder gone ({}):", d.stale.len());
+        for e in &d.stale {
+            println!("  {}", session::recovery::describe_stale(e));
+        }
+        println!("\nLive in tmux ({}):", d.live.len());
+        for e in &d.live {
+            println!("  {}", layout::entry_label(e));
+        }
+        return 0;
+    }
+
+    layout::probe_claude_capabilities();
+    let (cols, rows_px) = crossterm::terminal::size().unwrap_or((200, 50));
+    let (pane_rows, pane_cols) = (
+        rows_px.saturating_sub(3).max(10),
+        cols.saturating_sub(2).max(40),
+    );
+    let mut failed = 0;
+    for r in &rows {
+        let launch = r.claude_launch(layout::assign_session_id());
+        match layout::create_tmux_for_entry(
+            &r.entry,
+            &r.entry.tmux_name,
+            &launch,
+            r.skip_permissions(),
+            pane_rows,
+            pane_cols,
+            session::pty::claude_renderer_env(),
+        ) {
+            Ok(()) => println!(
+                "restored  {}  [{}]",
+                layout::entry_label(&r.entry),
+                r.summary()
+            ),
+            Err(e) => {
+                failed += 1;
+                eprintln!("FAILED    {}: {}", layout::entry_label(&r.entry), e);
+            }
+        }
+    }
+    if !d.stale.is_empty() {
+        println!(
+            "\n{} saved session(s) belong to folders that no longer exist:",
+            d.stale.len()
+        );
+        for e in &d.stale {
+            println!("  {}", session::recovery::describe_stale(e));
+        }
+    }
+    println!(
+        "\nRestored {} of {} session(s). Open clawtree to attach to them.",
+        rows.len() - failed,
+        rows.len()
+    );
+    if failed > 0 {
+        1
+    } else {
+        0
+    }
+}
+
 /// Execute a queued blocking action. Called after the loading overlay is drawn.
 fn execute_pending_action(app: &mut App, action: PendingAction) {
     match action {
+        PendingAction::RestoreLayout {
+            mut queue,
+            done,
+            total,
+            mut failed,
+            focus,
+        } => {
+            if !queue.is_empty() {
+                let row = queue.remove(0);
+                let size = app.last_terminal_size;
+                if let Err(e) = session::recovery::restore_row(app, &row, size) {
+                    tracing::warn!("Restore of '{}' failed: {}", row.entry.tmux_name, e);
+                    failed.push(format!(
+                        "{}: {}",
+                        session::layout::entry_label(&row.entry),
+                        e
+                    ));
+                }
+            }
+            let done = done + 1;
+            if !queue.is_empty() {
+                app.queue_action(
+                    format!("Restoring {}/{}…", done + 1, total),
+                    PendingAction::RestoreLayout {
+                        queue,
+                        done,
+                        total,
+                        failed,
+                        focus,
+                    },
+                );
+            } else {
+                session::recovery::finish_restore(app, focus.as_deref());
+                let (w, h) = app.last_terminal_size;
+                session::resize_all(app, h, w);
+                if failed.is_empty() {
+                    app.set_status_with(
+                        StatusSeverity::Success,
+                        format!("Restored {} session(s)", total),
+                    );
+                } else {
+                    app.set_status_with(
+                        StatusSeverity::Error,
+                        format!(
+                            "Restored {} of {}; failed: {}",
+                            total - failed.len(),
+                            total,
+                            failed.join("; ")
+                        ),
+                    );
+                }
+            }
+        }
         PendingAction::StageFile { worktree_idx, file } => {
             if let Err(e) = worktree::stage_file(app, worktree_idx, &file) {
                 app.set_status(format!("Failed to stage: {}", e));
@@ -2235,4 +2554,153 @@ fn refresh_git_commit_dialog(app: &mut App) {
         commit_message,
         cursor_pos,
     });
+}
+
+const USAGE: &str = "\
+clawtree — run Claude Code sessions across git worktrees
+
+Usage:
+  clawtree [options] [dir]          Open the project at <dir> (default: current folder)
+  clawtree restore [dir]            Bring back sessions lost with the tmux server, then open
+  clawtree restore --list [dir]     Show saved sessions (restorable, stale, live) and exit
+  clawtree restore --no-tui [dir]   Bring back lost sessions and exit
+
+Options:
+  --color-mode <truecolor|256|basic>  Force a color mode
+  --cleanup                           Kill this project's clawtree tmux sessions and exit
+  --cleanup-all                       Kill every clawtree tmux session and exit
+  -V, --version                       Print the version and exit
+  -h, --help                          Print this help and exit";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum CliCommand {
+    #[default]
+    Run,
+    Cleanup,
+    CleanupAll,
+    Version,
+    Help,
+    Restore {
+        list: bool,
+        no_tui: bool,
+    },
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CliArgs {
+    command: CliCommand,
+    color_mode: Option<String>,
+    dir: Option<String>,
+}
+
+/// Parse command-line arguments (without argv[0]). Anything starting with
+/// `-` is an option and never becomes the project directory.
+fn parse_args(args: impl IntoIterator<Item = String>) -> std::result::Result<CliArgs, String> {
+    let mut out = CliArgs::default();
+    let mut restore = false;
+    let mut list = false;
+    let mut no_tui = false;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--version" | "-V" => {
+                out.command = CliCommand::Version;
+                return Ok(out);
+            }
+            "--help" | "-h" => {
+                out.command = CliCommand::Help;
+                return Ok(out);
+            }
+            "--color-mode" => match args.next() {
+                Some(v) => out.color_mode = Some(v),
+                None => return Err("--color-mode needs a value".into()),
+            },
+            "--cleanup" => out.command = CliCommand::Cleanup,
+            "--cleanup-all" => out.command = CliCommand::CleanupAll,
+            "--list" => list = true,
+            "--no-tui" => no_tui = true,
+            a if a.starts_with('-') => return Err(format!("unknown option '{}'", a)),
+            "restore" if !restore && out.dir.is_none() => restore = true,
+            _ if out.dir.is_none() => out.dir = Some(arg),
+            _ => return Err(format!("unexpected argument '{}'", arg)),
+        }
+    }
+    if restore {
+        if out.command != CliCommand::Run {
+            return Err("restore can't be combined with --cleanup".into());
+        }
+        out.command = CliCommand::Restore { list, no_tui };
+    } else if list || no_tui {
+        return Err("--list and --no-tui only work with `clawtree restore`".into());
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    fn parse(v: &[&str]) -> std::result::Result<CliArgs, String> {
+        parse_args(v.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn version_and_help_never_become_the_directory() {
+        for flag in ["--version", "-V"] {
+            let a = parse(&[flag]).unwrap();
+            assert_eq!(a.command, CliCommand::Version);
+            assert_eq!(a.dir, None);
+        }
+        for flag in ["--help", "-h"] {
+            let a = parse(&["/some/dir", flag]).unwrap();
+            assert_eq!(a.command, CliCommand::Help);
+        }
+    }
+
+    #[test]
+    fn unknown_flags_are_errors() {
+        assert!(parse(&["--bogus"]).is_err());
+        assert!(parse(&["-x", "dir"]).is_err());
+        assert!(parse(&["--list"]).is_err());
+        assert!(parse(&["--color-mode"]).is_err());
+    }
+
+    #[test]
+    fn parses_run_cleanup_and_restore() {
+        let a = parse(&["--color-mode", "256", "proj"]).unwrap();
+        assert_eq!(a.command, CliCommand::Run);
+        assert_eq!(a.color_mode.as_deref(), Some("256"));
+        assert_eq!(a.dir.as_deref(), Some("proj"));
+
+        assert_eq!(parse(&["--cleanup"]).unwrap().command, CliCommand::Cleanup);
+        assert_eq!(
+            parse(&["--cleanup-all"]).unwrap().command,
+            CliCommand::CleanupAll
+        );
+
+        let a = parse(&["restore", "--list", "/p"]).unwrap();
+        assert_eq!(
+            a.command,
+            CliCommand::Restore {
+                list: true,
+                no_tui: false
+            }
+        );
+        assert_eq!(a.dir.as_deref(), Some("/p"));
+        let a = parse(&["restore", "--no-tui"]).unwrap();
+        assert_eq!(
+            a.command,
+            CliCommand::Restore {
+                list: false,
+                no_tui: true
+            }
+        );
+        assert_eq!(a.dir, None);
+        // A directory literally called "restore" after another positional is an error,
+        // and `./restore` is a way to name such a folder.
+        assert_eq!(
+            parse(&["./restore"]).unwrap().dir.as_deref(),
+            Some("./restore")
+        );
+    }
 }

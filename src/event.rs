@@ -46,7 +46,13 @@ pub enum AppEvent {
     TmuxTitlesChanged { updates: Vec<(u64, String)> },
     /// Resolved display names for plain terminal sessions (running command / cwd),
     /// computed off the render path by the terminal-name poller.
-    TerminalNamesUpdated { updates: Vec<(u64, String)> },
+    /// Also carries each terminal's current pane cwd (for the layout manifest).
+    TerminalNamesUpdated {
+        updates: Vec<(u64, String)>,
+        cwds: Vec<(u64, PathBuf)>,
+    },
+    /// The session-id poller found a (new) Claude conversation id per session.
+    ClaudeSessionIds { updates: Vec<(u64, String)> },
     /// Background git status fetch completed for a worktree.
     WorktreeStatusReady {
         worktree_path: PathBuf,

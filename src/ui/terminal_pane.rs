@@ -629,7 +629,7 @@ pub fn scrollback_plain_text(snap: &ScrollbackSnapshot) -> String {
 
 /// Capture tmux pane content for a range of lines (with ANSI escapes). Returns None on failure.
 fn capture_tmux_pane(tmux_name: &str, start: i64, end: i64) -> Option<String> {
-    let output = std::process::Command::new("tmux")
+    let output = crate::session::tmux::tmux_cmd()
         .args([
             "capture-pane",
             "-t",
@@ -664,7 +664,7 @@ pub struct TmuxScrollInfo {
 
 /// Query history size and alternate-screen state in a single tmux call.
 pub fn tmux_scroll_info(tmux_name: &str) -> TmuxScrollInfo {
-    let out = std::process::Command::new("tmux")
+    let out = crate::session::tmux::tmux_cmd()
         .args([
             "display-message",
             "-t",
@@ -693,7 +693,7 @@ pub fn tmux_scroll_info(tmux_name: &str) -> TmuxScrollInfo {
 
 /// Query the number of lines in the tmux pane's scrollback history.
 pub fn tmux_history_size(tmux_name: &str) -> usize {
-    std::process::Command::new("tmux")
+    crate::session::tmux::tmux_cmd()
         .args(["display-message", "-t", tmux_name, "-p", "#{history_size}"])
         .output()
         .ok()

@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -527,6 +527,16 @@ pub enum Dialog {
         /// Inline validation error shown inside the dialog (e.g. missing dir).
         error: Option<String>,
     },
+    /// Sessions from the layout manifest whose tmux sessions are gone
+    /// (e.g. after a crash): offer to bring them back.
+    RestoreLayout {
+        rows: Vec<crate::session::layout::RestoreRow>,
+        /// Entries whose worktree/location no longer exists (information only).
+        stale: Vec<crate::session::layout::LayoutEntry>,
+        selected: usize,
+        /// Session to focus once restored.
+        active_tmux_name: Option<String>,
+    },
     /// Interactive staging and commit UI.
     GitCommit {
         worktree_idx: usize,
@@ -622,6 +632,15 @@ pub enum PendingAction {
     MergeExecute {
         source_worktree_idx: usize,
         target_branch: String,
+    },
+    /// Restore sessions from the layout manifest, one per step so the
+    /// loading overlay can show progress.
+    RestoreLayout {
+        queue: Vec<crate::session::layout::RestoreRow>,
+        done: usize,
+        total: usize,
+        failed: Vec<String>,
+        focus: Option<String>,
     },
 }
 
@@ -800,6 +819,24 @@ pub struct App {
     pub git_lock: std::sync::Arc<std::sync::Mutex<()>>,
     /// Extra (non-worktree) directories where the user wants to launch Claude sessions.
     pub locations: Vec<ExtraLocation>,
+    // ── Layout manifest (see `session::recovery`) ──
+    /// Whether this instance records its layout (tmux available, not disabled).
+    pub layout_enabled: bool,
+    /// The layout changed since the last manifest write.
+    pub layout_dirty: bool,
+    /// When the manifest was last written (debounce).
+    pub layout_last_write: Option<Instant>,
+    /// The focused tmux session recorded by the last write.
+    pub layout_saved_active: Option<String>,
+    /// tmux names the user explicitly closed this run; dropped from the manifest.
+    pub closed_tmux_names: HashSet<String>,
+    /// tmux names the manifest holds; new sessions never reuse one, so a
+    /// session waiting to be restored can't have its record overwritten.
+    pub layout_reserved_names: HashSet<String>,
+    /// Sidebar order from the manifest loaded at startup, by tmux name.
+    pub layout_initial_order: HashMap<String, usize>,
+    /// Last known pane cwd of each terminal session.
+    pub terminal_cwds: HashMap<u64, PathBuf>,
 }
 
 impl App {
@@ -888,6 +925,14 @@ impl App {
             restart_requested: false,
             git_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
             locations: Vec::new(),
+            layout_enabled: false,
+            layout_dirty: false,
+            layout_last_write: None,
+            layout_saved_active: None,
+            closed_tmux_names: HashSet::new(),
+            layout_reserved_names: HashSet::new(),
+            layout_initial_order: HashMap::new(),
+            terminal_cwds: HashMap::new(),
         }
     }
 
@@ -962,6 +1007,9 @@ impl App {
             self.sidebar_scroll = max_scroll;
         }
         self.rebuild_terminal_panel_items();
+        // Every layout change (spawn, close, exit, reconnect, worktree
+        // refresh/rehome) ends here. Flag only — the main loop does the I/O.
+        self.mark_layout_dirty();
     }
 
     /// Rebuild the terminal panel items list from terminal_ids.
@@ -1549,6 +1597,14 @@ impl App {
             Err(e) => tracing::warn!("Failed to parse locations: {}", e),
         }
         self.rebuild_sidebar_items();
+    }
+
+    /// The saved extra locations, without an `App` (for `clawtree restore`).
+    pub fn read_saved_locations() -> Vec<ExtraLocation> {
+        std::fs::read_to_string(Self::locations_path())
+            .ok()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
     }
 
     /// Save extra locations to disk.
