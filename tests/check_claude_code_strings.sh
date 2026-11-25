@@ -35,6 +35,23 @@ check_string() {
     fi
 }
 
+# Like check_string, but a miss is only noted: for patterns whose absence is
+# harmless (clawtree has another way to detect the same thing).
+NOTES=""
+check_info() {
+    local description="$1"
+    local literal="$2"
+    local file="$3"
+
+    if grep -qaF "$literal" "$file"; then
+        echo "  PASS: $description"
+        PASS=$((PASS + 1))
+    else
+        echo "  NOTE: $description — not found (informational)"
+        NOTES="${NOTES}\n  - ${description}"
+    fi
+}
+
 check_regex() {
     local description="$1"
     local pattern="$2"
@@ -118,7 +135,9 @@ check_regex \
 # clawtree therefore also detects work from the on-screen activity line. If this
 # gate disappears the title spinner may be back under tmux — harmless, but worth
 # knowing.
-check_string \
+# Gone as of Claude Code 2.1.332; informational because the activity-line
+# check below covers working detection either way.
+check_info \
     "Static-title-under-mux gate (title spinner suppressed in tmux)" \
     "tengu_static_title_under_mux" \
     "$CLI_SOURCE"
@@ -211,4 +230,9 @@ if [ "$FAIL" -gt 0 ]; then
     exit 1
 fi
 
+if [ -n "$NOTES" ]; then
+    echo ""
+    echo "Note: these informational patterns were not found (not a failure):"
+    echo -e "$NOTES"
+fi
 echo "All patterns verified successfully."
