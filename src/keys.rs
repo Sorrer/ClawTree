@@ -3034,6 +3034,7 @@ fn handle_restore_layout_key(app: &mut App, key: KeyEvent) {
                         done: 0,
                         total,
                         failed: Vec::new(),
+                        already_open: 0,
                         focus: active_tmux_name,
                     },
                 );

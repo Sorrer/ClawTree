@@ -173,7 +173,7 @@ Sessions live in tmux, so they survive closing clawtree, and the next launch rea
   clawtree restore --no-tui [dir]   # restore and exit (scripts)
   ```
 
-A session still running in tmux (including one attached by another clawtree) is never offered, so nothing is restored twice. `--cleanup` / `--cleanup-all` also remove the sessions they kill from the manifest. Set `CLAWTREE_SKIP_LAYOUT=1` to turn the manifest off, and `CLAWTREE_TMUX_SOCKET=<name>` to run all of clawtree's tmux sessions on a private server (`tmux -L <name>`). That's handy for testing recovery: `tmux -L <name> kill-server` simulates a crash.
+A session still running in tmux (including one attached by another clawtree) is never offered, and neither is a conversation that's already open under another name or in a `claude` you started yourself, so no conversation is ever run twice. That is checked again right before each restore, in case another clawtree restored it a moment earlier. Diagnostics go to `~/.clawtree/logs/clawtree.log`, which is appended to across launches and rolls over to `clawtree.log.1` at 10 MB. `--cleanup` / `--cleanup-all` also remove the sessions they kill from the manifest. Set `CLAWTREE_SKIP_LAYOUT=1` to turn the manifest off, and `CLAWTREE_TMUX_SOCKET=<name>` to run all of clawtree's tmux sessions on a private server (`tmux -L <name>`). That's handy for testing recovery: `tmux -L <name> kill-server` simulates a crash.
 
 ### Platform
 - Linux (x86_64, aarch64) and macOS (Intel, Apple Silicon)

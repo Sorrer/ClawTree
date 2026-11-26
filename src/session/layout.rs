@@ -6,7 +6,7 @@
 // data + file I/O (no `App`), so `lib.rs` can include it for integration
 // tests; the App-facing glue lives in `session/recovery.rs`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -283,7 +283,7 @@ pub fn try_lock(manifest: &Path) -> std::io::Result<Option<ManifestLock>> {
 /// holds (`prev`):
 ///
 /// > entries = live ∪ (prev entries not in `closed`, not superseded by a live
-/// > entry, and not exited)
+/// > entry — same tmux name or same conversation — and not exited)
 ///
 /// so a second instance, or a launch where reconnect skipped some sessions,
 /// can never erase another session's record. Only an explicit close does.
@@ -307,13 +307,24 @@ pub fn merge(
                 }
             }
         }
+        // A conversation restored under a new tmux name leaves its old
+        // entry behind; keep one entry per conversation so the old one
+        // isn't offered (and started a second time) after the next crash.
+        let mut ids: HashSet<String> = live
+            .iter()
+            .filter_map(|e| e.claude_session_id.clone())
+            .collect();
         for old in &prev.entries {
-            if !live_names.contains(&old.tmux_name)
-                && !closed.contains(&old.tmux_name)
-                && !old.exited
+            if live_names.contains(&old.tmux_name) || closed.contains(&old.tmux_name) || old.exited
             {
-                live.push(old.clone());
+                continue;
             }
+            if let Some(id) = &old.claude_session_id {
+                if !ids.insert(id.clone()) {
+                    continue;
+                }
+            }
+            live.push(old.clone());
         }
     }
     let mut m = LayoutManifest::new(bare_repo_path);
@@ -478,6 +489,11 @@ pub struct LayoutDiff {
     pub stale: Vec<LayoutEntry>,
     /// A tmux session with this name exists (attached here or elsewhere).
     pub live: Vec<LayoutEntry>,
+    /// Their conversation is already open (under another tmux name, or in
+    /// a Claude started outside clawtree), or an earlier entry for the same
+    /// conversation was already counted. Restoring one would run a second
+    /// claude on the same transcript.
+    pub duplicates: Vec<LayoutEntry>,
 }
 
 /// Sort a manifest's entries against the tmux sessions that exist now.
@@ -485,19 +501,36 @@ pub struct LayoutDiff {
 /// `root_available` is false when the project folder itself is missing (an
 /// unmounted drive): then nothing is restorable *or* stale, it's "not now".
 /// `can_restore` decides whether an entry's parent still exists.
+/// `open_conversations` are conversation ids running right now (see
+/// [`open_conversations`]); entries for those are duplicates, not restorable.
 pub fn diff(
     m: &LayoutManifest,
     live_tmux_names: &HashSet<String>,
+    open_conversations: &HashSet<String>,
     root_available: bool,
     can_restore: impl Fn(&LayoutEntry) -> bool,
 ) -> LayoutDiff {
     let mut d = LayoutDiff::default();
+    let mut taken: HashSet<&str> = open_conversations.iter().map(|s| s.as_str()).collect();
+    for e in &m.entries {
+        if !e.exited && live_tmux_names.contains(&e.tmux_name) {
+            if let Some(id) = &e.claude_session_id {
+                taken.insert(id);
+            }
+        }
+    }
     for e in &m.entries {
         if e.exited {
             continue;
         }
         if live_tmux_names.contains(&e.tmux_name) {
             d.live.push(e.clone());
+        } else if e
+            .claude_session_id
+            .as_deref()
+            .is_some_and(|id| !taken.insert(id))
+        {
+            d.duplicates.push(e.clone());
         } else if !root_available {
             continue;
         } else if can_restore(e) {
@@ -753,6 +786,17 @@ impl RestoreRow {
             .and_then(|p| last_permission_mode(&p));
     }
 
+    /// Where this row's conversation is already open, if it is: either the
+    /// one it would resume or the one its entry recorded (a row planned as a
+    /// fresh start still stands for that recorded session).
+    pub fn open_elsewhere(&self, home: &Path) -> Option<String> {
+        let mut open = open_conversations(home);
+        [self.source.resumed_id(), self.entry.claude_session_id.as_deref()]
+            .into_iter()
+            .flatten()
+            .find_map(|id| open.remove(id))
+    }
+
     /// Bypass mode comes back as clawtree's YOLO flag: either the session was
     /// started that way, or its conversation was last in bypassPermissions
     /// (sessions started before clawtree recorded the flag).
@@ -931,6 +975,50 @@ pub fn claude_session_id_for_pid(home: &Path, pid: u32) -> Option<String> {
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
+}
+
+/// Every conversation open right now, with where it's open: the id recorded
+/// on each tmux session (set the moment clawtree creates one, so this sees a
+/// restore by another instance that just happened), and each running Claude
+/// process Claude Code knows about — including ones started outside clawtree.
+pub fn open_conversations(home: &Path) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for name in tmux::list_session_names() {
+        if let Some(id) = tmux::show_env(&name, tmux::CLAUDE_SESSION_ENV) {
+            if !id.is_empty() {
+                out.entry(id)
+                    .or_insert_with(|| format!("tmux session {}", name));
+            }
+        }
+    }
+    let dir = home.join(".claude").join("sessions");
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for f in rd.flatten() {
+        let name = f.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_suffix(".json"))
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        // Most files belong to processes long gone; skip those cheaply.
+        if !Path::new(&format!("/proc/{}", pid)).exists() {
+            continue;
+        }
+        if let Some(id) = claude_session_id_for_pid(home, pid) {
+            out.entry(id)
+                .or_insert_with(|| format!("claude process {}", pid));
+        }
+    }
+    out
+}
+
+/// [`open_conversations`] without the locations.
+pub fn open_conversation_ids(home: &Path) -> HashSet<String> {
+    open_conversations(home).into_keys().collect()
 }
 
 // ── Recreating sessions without the TUI ──────────────────────────────────
@@ -1125,6 +1213,76 @@ mod tests {
         assert_eq!(m.entries[0].claude_session_id.as_deref(), Some("old-id"));
     }
 
+    fn convo(name: &str, id: &str) -> LayoutEntry {
+        LayoutEntry {
+            claude_session_id: Some(id.into()),
+            ..entry(name, EntryKind::Claude, "/p/main")
+        }
+    }
+
+    #[test]
+    fn merge_drops_an_entry_restored_under_a_new_name() {
+        // The crash-restore came back as "new-19" because "old-1" was taken;
+        // the old entry must not survive to be offered again.
+        let prev = manifest(vec![convo("old-1", "conv-a"), convo("other", "conv-b")]);
+        let m = merge(
+            Some(&prev),
+            Path::new("/p"),
+            vec![convo("new-19", "conv-a")],
+            &HashSet::new(),
+            None,
+        );
+        let names: Vec<&str> = m.entries.iter().map(|e| e.tmux_name.as_str()).collect();
+        assert_eq!(names, vec!["new-19", "other"]);
+    }
+
+    #[test]
+    fn merge_keeps_one_entry_per_dead_conversation() {
+        let prev = manifest(vec![
+            convo("a-1", "conv-a"),
+            convo("a-2", "conv-a"),
+            entry("term-1", EntryKind::Terminal, "/p/main"),
+            entry("term-2", EntryKind::Terminal, "/p/main"),
+        ]);
+        let m = merge(Some(&prev), Path::new("/p"), vec![], &HashSet::new(), None);
+        let names: Vec<&str> = m.entries.iter().map(|e| e.tmux_name.as_str()).collect();
+        // Terminals have no conversation and are never collapsed.
+        assert_eq!(names, vec!["a-1", "term-1", "term-2"]);
+    }
+
+    #[test]
+    fn merge_keeps_two_live_sessions_on_one_conversation() {
+        // Both are running; recording both is the truth, not a duplicate.
+        let m = merge(
+            None,
+            Path::new("/p"),
+            vec![convo("x", "conv-a"), convo("y", "conv-a")],
+            &HashSet::new(),
+            None,
+        );
+        assert_eq!(m.entries.len(), 2);
+    }
+
+    #[test]
+    fn diff_never_offers_a_conversation_that_is_already_open() {
+        let m = manifest(vec![
+            convo("old-1", "conv-a"), // conv-a is live as new-19
+            convo("new-19", "conv-a"),
+            convo("solo", "conv-b"),   // open in a claude outside clawtree
+            convo("twin-1", "conv-c"), // two dead entries, one conversation
+            convo("twin-2", "conv-c"),
+            entry("term", EntryKind::Terminal, "/p/main"),
+        ]);
+        let live: HashSet<String> = ["new-19".to_string()].into();
+        let open: HashSet<String> = ["conv-b".to_string()].into();
+        let d = diff(&m, &live, &open, true, |_| true);
+        let names =
+            |v: &Vec<LayoutEntry>| v.iter().map(|e| e.tmux_name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&d.live), vec!["new-19"]);
+        assert_eq!(names(&d.restorable), vec!["twin-1", "term"]);
+        assert_eq!(names(&d.duplicates), vec!["old-1", "solo", "twin-2"]);
+    }
+
     #[test]
     fn diff_partitions_entries() {
         let m = manifest(vec![
@@ -1137,7 +1295,9 @@ mod tests {
             },
         ]);
         let live: HashSet<String> = ["alive".to_string()].into();
-        let d = diff(&m, &live, true, |e| e.path == Path::new("/p/main"));
+        let d = diff(&m, &live, &HashSet::new(), true, |e| {
+            e.path == Path::new("/p/main")
+        });
         let names =
             |v: &Vec<LayoutEntry>| v.iter().map(|e| e.tmux_name.clone()).collect::<Vec<_>>();
         assert_eq!(names(&d.live), vec!["alive"]);
@@ -1145,7 +1305,7 @@ mod tests {
         assert_eq!(names(&d.stale), vec!["gone"]);
 
         // Unmounted project root: nothing is restorable or stale.
-        let d = diff(&m, &live, false, |_| true);
+        let d = diff(&m, &live, &HashSet::new(), false, |_| true);
         assert!(d.restorable.is_empty() && d.stale.is_empty());
         assert_eq!(names(&d.live), vec!["alive"]);
     }

@@ -111,9 +111,13 @@ fn terminal_session_survives_a_killed_tmux_server() {
     let LoadOutcome::Loaded(m) = layout::load_from(&manifest) else {
         panic!("manifest should load");
     };
-    let d = layout::diff(&m, &session_names(&socket), project.is_dir(), |e| {
-        e.path.is_dir()
-    });
+    let d = layout::diff(
+        &m,
+        &session_names(&socket),
+        &HashSet::new(),
+        project.is_dir(),
+        |e| e.path.is_dir(),
+    );
     assert_eq!(d.restorable.len(), 1);
     assert!(d.stale.is_empty() && d.live.is_empty());
 
@@ -140,9 +144,21 @@ fn terminal_session_survives_a_killed_tmux_server() {
     );
 
     // 5. Now that it's live again, a second diff offers nothing.
-    let d = layout::diff(&m, &session_names(&socket), true, |e| e.path.is_dir());
+    let d = layout::diff(&m, &session_names(&socket), &HashSet::new(), true, |e| {
+        e.path.is_dir()
+    });
     assert!(d.restorable.is_empty());
     assert_eq!(d.live.len(), 1);
+
+    // 6. A conversation id recorded on a live tmux session counts as open,
+    // whatever the session is called (this is how a restore by another
+    // clawtree instance is seen before claude itself has started).
+    tmux::set_env(&name, tmux::CLAUDE_SESSION_ENV, "conv-under-test");
+    let open = layout::open_conversations(tmp.path());
+    assert_eq!(
+        open.get("conv-under-test").map(String::as_str),
+        Some(format!("tmux session {}", name).as_str())
+    );
 }
 
 fn clawtree(home: &Path, socket: &str, args: &[&str]) -> std::process::Output {
@@ -190,6 +206,11 @@ fn restore_cli_lists_and_recreates_sessions() {
         created_at: 1,
         exited: false,
     };
+    let convo = |name: &str, path: &Path, id: &str| LayoutEntry {
+        kind: EntryKind::Claude,
+        claude_session_id: Some(id.into()),
+        ..term(name, path)
+    };
     let manifest = layout::manifest_path_in(&home.join(".clawtree").join("state"), &bare);
     let out = layout::write_merged_to(
         &manifest,
@@ -197,6 +218,11 @@ fn restore_cli_lists_and_recreates_sessions() {
         vec![
             term("clawtree-term-main-1", &wt),
             term("clawtree-term-gone-2", &bare.join("gone")),
+            // The same conversation recorded twice (restored under a new
+            // name once): only one is ever listed. (In a deleted folder so
+            // --no-tui below doesn't start a real claude.)
+            convo("clawtree-main-1", &bare.join("gone"), "dup-conv"),
+            convo("clawtree-main-19", &bare.join("gone"), "dup-conv"),
         ],
         &HashSet::new(),
         None,
@@ -224,7 +250,12 @@ fn restore_cli_lists_and_recreates_sessions() {
         String::from_utf8_lossy(&list.stderr)
     );
     assert!(text.contains("Restorable (1)"), "{}", text);
-    assert!(text.contains("Stale — folder gone (1)"), "{}", text);
+    assert!(
+        text.contains("Already open under another name (1)"),
+        "{}",
+        text
+    );
+    assert!(text.contains("Stale — folder gone (2)"), "{}", text);
     assert!(
         session_names(&socket).is_empty(),
         "--list must not create sessions"
