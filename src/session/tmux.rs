@@ -76,6 +76,20 @@ pub fn ensure_truecolor() {
     DONE.store(true, Ordering::Relaxed);
 }
 
+/// Names of every session on clawtree's tmux server (any prefix).
+pub fn list_session_names() -> Vec<String> {
+    match tmux_cmd()
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|s| s.to_string())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Whether a tmux session with this exact name exists.
 pub fn session_exists(name: &str) -> bool {
     // `=name` forces an exact match; plain `-t name` also matches prefixes.

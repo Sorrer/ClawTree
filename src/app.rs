@@ -640,6 +640,8 @@ pub enum PendingAction {
         done: usize,
         total: usize,
         failed: Vec<String>,
+        /// Rows skipped because their conversation was already open.
+        already_open: usize,
         focus: Option<String>,
     },
 }

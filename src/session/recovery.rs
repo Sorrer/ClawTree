@@ -251,6 +251,8 @@ pub fn sort_by_manifest_order(app: &mut App) {
 pub struct RestorePlan {
     pub rows: Vec<RestoreRow>,
     pub stale: Vec<LayoutEntry>,
+    /// Entries whose conversation is already open; not offered.
+    pub duplicates: Vec<LayoutEntry>,
     pub active_tmux_name: Option<String>,
 }
 
@@ -258,26 +260,51 @@ pub struct RestorePlan {
 /// instance — a session attached elsewhere is not missing).
 pub fn plan_restore(app: &App, m: &LayoutManifest) -> RestorePlan {
     let live: HashSet<String> = pty::list_tmux_session_names().into_iter().collect();
-    let d = layout::diff(m, &live, app.bare_repo_path.is_dir(), |e| {
+    let open = layout::open_conversation_ids(&home());
+    let d = layout::diff(m, &live, &open, app.bare_repo_path.is_dir(), |e| {
         e.path.is_dir() && parent_for_entry(app, e).is_some()
     });
     RestorePlan {
         rows: layout::plan_rows(&home(), &d.restorable, &m.entries),
         stale: d.stale,
+        duplicates: d.duplicates,
         active_tmux_name: m.active_tmux_name.clone(),
     }
 }
 
-/// Recreate one session from a restore row. Returns its new session id.
+/// What restoring one row did.
+pub enum Restored {
+    /// A new session was started.
+    Spawned,
+    /// Its conversation turned out to be open already (e.g. another
+    /// clawtree restored it a moment ago); nothing was started.
+    AlreadyOpen,
+}
+
+/// Recreate one session from a restore row.
 pub fn restore_row(
     app: &mut App,
     row: &RestoreRow,
     terminal_size: (u16, u16),
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<Restored> {
     let e = &row.entry;
     let parent = parent_for_entry(app, e)
         .ok_or_else(|| anyhow::anyhow!("its folder is no longer in the sidebar"))?;
     let is_terminal = e.kind == EntryKind::Terminal;
+    // Checked again here, not only when the dialog was built: another
+    // instance may have restored the same conversation in the meantime, and
+    // two claudes on one conversation interleave its transcript.
+    if !is_terminal {
+        if let Some(place) = row.open_elsewhere(&home()) {
+            tracing::info!(
+                "Not restoring '{}': its conversation is already open in {}",
+                e.tmux_name,
+                place
+            );
+            discard(app, [e.tmux_name.clone()]);
+            return Ok(Restored::AlreadyOpen);
+        }
+    }
     let launch = (!is_terminal).then(|| row.claude_launch(layout::assign_session_id()));
     let opts = SpawnOpts {
         preferred_tmux_name: Some(e.tmux_name.clone()),
@@ -295,6 +322,7 @@ pub fn restore_row(
         None,
         opts,
     )
+    .map(|_| Restored::Spawned)
 }
 
 /// Mark entries as explicitly closed so the next write drops them. Never

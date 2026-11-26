@@ -59,6 +59,9 @@ fn restore_terminal() {
     );
 }
 
+/// Log size at which clawtree.log is rolled over to clawtree.log.1 on launch.
+const LOG_ROLL_BYTES: u64 = 10 * 1024 * 1024;
+
 extern "C" fn signal_handler(_sig: libc::c_int) {
     if SIGNAL_RECEIVED.swap(true, Ordering::SeqCst) {
         // Second signal — hard exit immediately, no questions asked.
@@ -128,7 +131,16 @@ fn main() -> Result<()> {
         .join(".clawtree")
         .join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
-    let log_file = std::fs::File::create(log_dir.join("clawtree.log"))
+    // Append, so a crash or a restore can still be traced after the next
+    // launch; roll over to clawtree.log.1 once it gets large.
+    let log_path = log_dir.join("clawtree.log");
+    if std::fs::metadata(&log_path).is_ok_and(|m| m.len() > LOG_ROLL_BYTES) {
+        let _ = std::fs::rename(&log_path, log_dir.join("clawtree.log.1"));
+    }
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
         .or_else(|_| std::fs::File::create("/dev/null"))
         .or_else(|_| std::fs::File::open("/dev/null"))
         .expect("Cannot open any log target");
@@ -137,6 +149,11 @@ fn main() -> Result<()> {
         .with_writer(std::sync::Mutex::new(log_file))
         .with_ansi(false)
         .init();
+    tracing::info!(
+        "──── clawtree {} starting (pid {}) ────",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id()
+    );
 
     // Set up panic hook to restore terminal
     let original_hook = std::panic::take_hook();
@@ -621,9 +638,8 @@ async fn async_main(
     // Shared activity timestamp (ms since epoch) the poller reads to decide its
     // cadence. Bumped on every keystroke and PTY output below. Seeded to "now"
     // so the poller treats startup as active and refreshes promptly.
-    let last_activity = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
-        session::now_millis(),
-    ));
+    let last_activity =
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(session::now_millis()));
     session::spawn_global_usage_poller(event_tx.clone(), std::sync::Arc::clone(&last_activity));
 
     // ── Update checker — one-shot background thread ──────────
@@ -673,7 +689,9 @@ async fn async_main(
     // Logs redraws/sec, PtyOutput events/sec, and mean draw + URL-scan time
     // to ~/.clawtree/logs/clawtree.log every ~2s. Off by default; zero cost
     // when disabled beyond a couple of branch checks.
-    let profile = std::env::var("CLAWTREE_PROFILE").map(|v| v != "0").unwrap_or(false);
+    let profile = std::env::var("CLAWTREE_PROFILE")
+        .map(|v| v != "0")
+        .unwrap_or(false);
     let mut pty_output_events: u64 = 0;
     let mut prof_draws: u64 = 0;
     let mut prof_draw_time = Duration::ZERO;
@@ -805,7 +823,8 @@ async fn async_main(
                     if key.kind == crossterm::event::KeyEventKind::Release => {}
                 AppEvent::Input(CrosstermEvent::Key(key)) => {
                     app.last_key_at = Some(Instant::now());
-                    last_activity.store(session::now_millis(), std::sync::atomic::Ordering::Relaxed);
+                    last_activity
+                        .store(session::now_millis(), std::sync::atomic::Ordering::Relaxed);
                     let worktree_count_before = app.worktrees.len();
                     let scroll_before = app.terminal_scroll;
                     let size = terminal.size()?;
@@ -1088,8 +1107,8 @@ async fn async_main(
                                 let tp_inner = app.areas.sidebar_terminal_panel_inner.get();
 
                                 if mouse::point_in_rect(mouse.column, mouse.row, sidebar_inner) {
-                                    let item_row = (mouse.row - sidebar_inner.y) as usize
-                                        + app.sidebar_scroll;
+                                    let item_row =
+                                        (mouse.row - sidebar_inner.y) as usize + app.sidebar_scroll;
                                     app.sidebar_hovered = if item_row < app.sidebar_items.len() {
                                         Some(item_row)
                                     } else {
@@ -1157,7 +1176,8 @@ async fn async_main(
                 }
                 AppEvent::Input(_) => {}
                 AppEvent::PtyOutput { session_id } => {
-                    last_activity.store(session::now_millis(), std::sync::atomic::Ordering::Relaxed);
+                    last_activity
+                        .store(session::now_millis(), std::sync::atomic::Ordering::Relaxed);
                     pty_output_events = pty_output_events.wrapping_add(1);
                     // The session's vt100 parser was already updated by its reader
                     // thread, independent of any redraw. We only repaint when the
@@ -1854,11 +1874,24 @@ fn start_layout_recovery(app: &mut App, auto_restore: bool) {
     session::recovery::apply_manifest(app, &m);
     let plan = session::recovery::plan_restore(app, &m);
     tracing::info!(
-        "Layout manifest: {} entries, {} restorable, {} stale",
+        "Layout manifest: {} entries, {} restorable, {} stale, {} already open elsewhere",
         m.entries.len(),
         plan.rows.len(),
-        plan.stale.len()
+        plan.stale.len(),
+        plan.duplicates.len()
     );
+    if !plan.duplicates.is_empty() {
+        // Leftovers of a conversation restored under another name (or open
+        // outside clawtree): drop them so they're never offered.
+        for e in &plan.duplicates {
+            tracing::info!(
+                "Dropping saved entry '{}': conversation {} is already open",
+                e.tmux_name,
+                e.claude_session_id.as_deref().unwrap_or("?")
+            );
+        }
+        session::recovery::discard(app, plan.duplicates.iter().map(|e| e.tmux_name.clone()));
+    }
     if auto_restore {
         if plan.rows.is_empty() {
             app.set_status("Nothing to restore: every saved session is still running");
@@ -1871,6 +1904,7 @@ fn start_layout_recovery(app: &mut App, auto_restore: bool) {
                     done: 0,
                     total,
                     failed: Vec::new(),
+                    already_open: 0,
                     focus: plan.active_tmux_name,
                 },
             );
@@ -1936,7 +1970,9 @@ fn restore_headless(bare_repo_path: &std::path::Path, list_only: bool) -> i32 {
     let live: std::collections::HashSet<String> = session::pty::list_tmux_session_names()
         .into_iter()
         .collect();
-    let d = layout::diff(&m, &live, bare_repo_path.is_dir(), |e| {
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let open = layout::open_conversation_ids(&home);
+    let d = layout::diff(&m, &live, &open, bare_repo_path.is_dir(), |e| {
         e.path.is_dir()
             && match e.scope {
                 layout::EntryScope::Worktree => worktrees.contains(&e.path),
@@ -1944,7 +1980,6 @@ fn restore_headless(bare_repo_path: &std::path::Path, list_only: bool) -> i32 {
                 layout::EntryScope::Location => locations.contains(&e.path),
             }
     });
-    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
     let rows = layout::plan_rows(&home, &d.restorable, &m.entries);
 
     if list_only {
@@ -1966,6 +2001,15 @@ fn restore_headless(bare_repo_path: &std::path::Path, list_only: bool) -> i32 {
         for e in &d.live {
             println!("  {}", layout::entry_label(e));
         }
+        if !d.duplicates.is_empty() {
+            println!(
+                "\nAlready open under another name ({}) — not restored:",
+                d.duplicates.len()
+            );
+            for e in &d.duplicates {
+                println!("  {}", layout::entry_label(e));
+            }
+        }
         return 0;
     }
 
@@ -1976,7 +2020,19 @@ fn restore_headless(bare_repo_path: &std::path::Path, list_only: bool) -> i32 {
         cols.saturating_sub(2).max(40),
     );
     let mut failed = 0;
+    let mut already_open = 0;
     for r in &rows {
+        if r.entry.kind == layout::EntryKind::Claude {
+            if let Some(place) = r.open_elsewhere(&home) {
+                already_open += 1;
+                println!(
+                    "skipped   {}  [already open in {}]",
+                    layout::entry_label(&r.entry),
+                    place
+                );
+                continue;
+            }
+        }
         let launch = r.claude_launch(layout::assign_session_id());
         match layout::create_tmux_for_entry(
             &r.entry,
@@ -2009,7 +2065,7 @@ fn restore_headless(bare_repo_path: &std::path::Path, list_only: bool) -> i32 {
     }
     println!(
         "\nRestored {} of {} session(s). Open clawtree to attach to them.",
-        rows.len() - failed,
+        rows.len() - failed - already_open,
         rows.len()
     );
     if failed > 0 {
@@ -2027,18 +2083,23 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
             done,
             total,
             mut failed,
+            mut already_open,
             focus,
         } => {
             if !queue.is_empty() {
                 let row = queue.remove(0);
                 let size = app.last_terminal_size;
-                if let Err(e) = session::recovery::restore_row(app, &row, size) {
-                    tracing::warn!("Restore of '{}' failed: {}", row.entry.tmux_name, e);
-                    failed.push(format!(
-                        "{}: {}",
-                        session::layout::entry_label(&row.entry),
-                        e
-                    ));
+                match session::recovery::restore_row(app, &row, size) {
+                    Ok(session::recovery::Restored::Spawned) => {}
+                    Ok(session::recovery::Restored::AlreadyOpen) => already_open += 1,
+                    Err(e) => {
+                        tracing::warn!("Restore of '{}' failed: {}", row.entry.tmux_name, e);
+                        failed.push(format!(
+                            "{}: {}",
+                            session::layout::entry_label(&row.entry),
+                            e
+                        ));
+                    }
                 }
             }
             let done = done + 1;
@@ -2050,6 +2111,7 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                         done,
                         total,
                         failed,
+                        already_open,
                         focus,
                     },
                 );
@@ -2057,18 +2119,28 @@ fn execute_pending_action(app: &mut App, action: PendingAction) {
                 session::recovery::finish_restore(app, focus.as_deref());
                 let (w, h) = app.last_terminal_size;
                 session::resize_all(app, h, w);
+                let restored = total - failed.len() - already_open;
+                let open_note = if already_open > 0 {
+                    format!(
+                        " ({} already open elsewhere, not started again)",
+                        already_open
+                    )
+                } else {
+                    String::new()
+                };
                 if failed.is_empty() {
                     app.set_status_with(
                         StatusSeverity::Success,
-                        format!("Restored {} session(s)", total),
+                        format!("Restored {} session(s){}", restored, open_note),
                     );
                 } else {
                     app.set_status_with(
                         StatusSeverity::Error,
                         format!(
-                            "Restored {} of {}; failed: {}",
-                            total - failed.len(),
+                            "Restored {} of {}{}; failed: {}",
+                            restored,
                             total,
+                            open_note,
                             failed.join("; ")
                         ),
                     );
