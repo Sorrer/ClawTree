@@ -93,6 +93,9 @@ fn main() -> Result<()> {
         let _ = std::io::stdin().read_to_string(&mut input);
         let status = serde_json::from_str(&input).unwrap_or(serde_json::Value::Null);
         println!("{}", session::tmux::agy_title(&status));
+        // agy's quota rides along; keep the latest for the Usage panel.
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+        session::agy::save_usage(&home, &status, session::layout::now_secs());
         return Ok(());
     }
 
@@ -667,6 +670,7 @@ async fn async_main(
     let last_activity =
         std::sync::Arc::new(std::sync::atomic::AtomicU64::new(session::now_millis()));
     session::spawn_global_usage_poller(event_tx.clone(), std::sync::Arc::clone(&last_activity));
+    session::spawn_agy_usage_poller(event_tx.clone());
 
     // ── Update checker — one-shot background thread ──────────
     update::spawn_update_checker(event_tx.clone());
@@ -1461,6 +1465,10 @@ async fn async_main(
                 }
                 AppEvent::GlobalUsageUpdated { usage } => {
                     app.global_usage = Some(usage);
+                    needs_redraw = true;
+                }
+                AppEvent::AgyUsageUpdated { usage } => {
+                    app.agy_usage = usage;
                     needs_redraw = true;
                 }
                 AppEvent::SummaryReady {

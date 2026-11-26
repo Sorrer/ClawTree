@@ -2187,8 +2187,8 @@ fn find_task_uuid_in_proc(pid: u32, home: &str) -> Option<String> {
     None
 }
 
-/// Global account-level usage data from the Anthropic API.
-#[derive(Debug, Clone, Default)]
+/// Account-level usage windows: Claude's from the Anthropic API, or agy's quota.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GlobalUsage {
     /// One entry per usage window the account currently has, in API order.
     /// Which windows exist varies by plan and over time (the 5-hour window can
@@ -2205,6 +2205,41 @@ pub struct UsageWindow {
     pub pct: f64,
     /// ISO 8601 reset time, when the API gives one.
     pub reset: Option<String>,
+}
+
+/// Spawn a background thread that turns the quota clawtree's agy title hook
+/// saves (`~/.clawtree/agy-usage.json`) into Usage panel windows. Pure file
+/// I/O every 15s; an event only goes out when the windows change.
+pub fn spawn_agy_usage_poller(event_tx: tokio::sync::mpsc::UnboundedSender<crate::event::AppEvent>) {
+    std::thread::Builder::new()
+        .name("agy-usage-poller".into())
+        .spawn(move || {
+            let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+            let path = agy::usage_path(&home);
+            let mut last: Option<GlobalUsage> = None;
+            loop {
+                let windows: Vec<UsageWindow> = std::fs::read(&path)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                    .map(|saved| agy::usage_windows(&saved, layout::now_secs()))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(label, pct, reset)| UsageWindow { label, pct, reset })
+                    .collect();
+                let usage = (!windows.is_empty()).then_some(GlobalUsage { windows });
+                if usage != last {
+                    last = usage.clone();
+                    if event_tx
+                        .send(crate::event::AppEvent::AgyUsageUpdated { usage })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(15));
+            }
+        })
+        .ok();
 }
 
 /// Current time in milliseconds since the UNIX epoch. Used as a cheap,

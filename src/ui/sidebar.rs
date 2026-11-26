@@ -837,10 +837,10 @@ pub fn draw_terminal_panel(f: &mut Frame, app: &App, area: Rect) {
 pub fn draw_global_usage(f: &mut Frame, app: &App, area: Rect) {
     use ratatui::widgets::Paragraph;
 
-    let usage = match &app.global_usage {
-        Some(u) => u,
-        None => return,
-    };
+    let windows = app.usage_windows();
+    if windows.is_empty() {
+        return;
+    }
 
     let block = Block::default()
         .title(" Usage ")
@@ -857,10 +857,9 @@ pub fn draw_global_usage(f: &mut Frame, app: &App, area: Rect) {
     let bar_width: usize = 6;
     let inner_w = inner.width as usize;
     // Pad labels to a common width so the percentages and bars line up.
-    let label_w = usage.windows.iter().map(|w| w.label.chars().count()).max().unwrap_or(0) + 1;
+    let label_w = windows.iter().map(|w| w.label.chars().count()).max().unwrap_or(0) + 1;
 
-    let lines: Vec<Line> = usage
-        .windows
+    let lines: Vec<Line> = windows
         .iter()
         .take(inner.height as usize)
         .map(|w| {
