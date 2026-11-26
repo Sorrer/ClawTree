@@ -15,6 +15,9 @@ use crate::app::{App, FocusTarget, InputMode, SidebarItem};
 
 /// Minimum gap between manifest writes; bursts collapse into one write.
 const WRITE_DEBOUNCE: Duration = Duration::from_millis(500);
+/// How often agy sessions' footers are read for their agent mode (Shift+Tab
+/// changes it without anything else in the layout changing).
+const AGENT_MODE_CHECK: Duration = Duration::from_secs(3);
 
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
@@ -42,6 +45,15 @@ impl App {
         if active != self.layout_saved_active {
             // Focus changes are worth recording, but let the debounce absorb them.
             self.layout_dirty = true;
+        }
+        if self
+            .layout_mode_check
+            .is_none_or(|t| now.duration_since(t) >= AGENT_MODE_CHECK)
+        {
+            self.layout_mode_check = Some(now);
+            if self.refresh_agent_modes() {
+                self.layout_dirty = true;
+            }
         }
         if !self.layout_dirty {
             return;
@@ -71,6 +83,23 @@ impl App {
         let active = self.active_tmux_name();
         let entries = snapshot(self);
         self.write_layout(entries, active, Instant::now());
+    }
+
+    /// Re-read agy sessions' modes from their footers. True if any changed.
+    fn refresh_agent_modes(&mut self) -> bool {
+        let mut changed = false;
+        for s in self.sessions.values_mut() {
+            if s.is_terminal || s.agent.is_claude() || s.exited.load(Ordering::Relaxed) {
+                continue;
+            }
+            if let Some(mode) = s.agy_footer_mode() {
+                if s.agent_mode.as_deref() != Some(mode.as_str()) {
+                    s.agent_mode = Some(mode);
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
 
     fn write_layout(&mut self, entries: Vec<LayoutEntry>, active: Option<String>, now: Instant) {
@@ -130,7 +159,17 @@ pub fn snapshot(app: &App) -> Vec<LayoutEntry> {
                 },
                 branch,
                 nickname: s.nickname.clone(),
+                agent: if s.is_terminal {
+                    Default::default()
+                } else {
+                    s.agent
+                },
                 claude_session_id: s.claude_session_id.clone(),
+                agent_mode: if s.is_terminal || s.agent.is_claude() {
+                    None
+                } else {
+                    s.agent_mode.clone()
+                },
                 skip_permissions: s.skip_permissions,
                 order,
                 created_at: s.created_at,
@@ -211,6 +250,9 @@ pub fn apply_manifest(app: &mut App, m: &LayoutManifest) {
         if !s.is_terminal && e.skip_permissions {
             s.skip_permissions = true;
         }
+        if s.agent_mode.is_none() && !s.is_terminal && e.agent == s.agent {
+            s.agent_mode = e.agent_mode.clone();
+        }
         if e.created_at > 0 && (s.created_at == 0 || e.created_at < s.created_at) {
             s.created_at = e.created_at;
         }
@@ -285,6 +327,7 @@ pub fn restore_row(
         nickname: e.nickname.clone(),
         start_dir: e.cwd.clone(),
         created_at: (e.created_at > 0).then_some(e.created_at),
+        agent: e.agent,
     };
     spawn_in(
         app,

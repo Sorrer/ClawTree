@@ -16,7 +16,14 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 "Worktrees"
             }
         }
-        InputMode::Terminal => "Claude Code",
+        InputMode::Terminal => match app
+            .active_session_id
+            .and_then(|sid| app.sessions.get(&sid))
+        {
+            Some(s) if s.is_terminal => "Terminal",
+            Some(s) if s.agent == crate::session::tmux::Agent::Antigravity => "Antigravity",
+            _ => "Claude Code",
+        },
         InputMode::Dialog => "DIALOG",
     };
 

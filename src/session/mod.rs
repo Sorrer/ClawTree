@@ -1,4 +1,6 @@
+pub mod agy;
 pub mod layout;
+pub mod mcp;
 pub mod pty;
 pub mod recovery;
 pub mod tmux;
@@ -51,8 +53,13 @@ pub struct Session {
     /// true through the streaming phase, where Claude Code shows no activity
     /// line at all and only the flow of output reveals the turn is still going.
     pub working_latch: AtomicBool,
-    /// True if this is a plain terminal session (not Claude Code).
+    /// True if this is a plain terminal session (not an agent).
     pub is_terminal: bool,
+    /// The coding agent the session runs (ignored for terminals).
+    pub agent: tmux::Agent,
+    /// agy only: the agent mode last read from its footer (`auto`,
+    /// `accept-edits`, `plan`, `default`), recorded for restore.
+    pub agent_mode: Option<String>,
     /// True when the session has produced output the user hasn't viewed yet.
     /// Set when a non-active session emits PTY output; cleared when the user
     /// switches to (views) the session. Drives the unread highlight in the sidebar.
@@ -135,9 +142,47 @@ impl Session {
         // server thread. Our parser already mirrors exactly what tmux pushed to the
         // attached client, so its contents equal a `capture-pane -p`.
         match self.parser.try_read() {
-            Ok(guard) => Self::content_has_input_prompt(&guard.screen().contents()),
+            Ok(guard) => {
+                let content = guard.screen().contents();
+                match self.agent {
+                    tmux::Agent::Antigravity => {
+                        agy::screen_state(&content) == agy::ScreenState::Idle
+                    }
+                    tmux::Agent::Claude => Self::content_has_input_prompt(&content),
+                }
+            }
             Err(_) => false,
         }
+    }
+
+    /// [`Self::agent_status`] for agy. The title (set by clawtree's
+    /// `__agy-title` hook from agy's own state) says when a turn runs; the
+    /// screen tells an idle input box from a question waiting on the user.
+    fn agy_status(&self) -> AgentStatus {
+        let Ok(guard) = self.parser.try_read() else {
+            return AgentStatus::Idle;
+        };
+        let title_busy = title_is_working(&guard.callbacks().title);
+        let content = guard.screen().contents();
+        match agy::screen_state(&content) {
+            agy::ScreenState::NeedsInput => AgentStatus::NeedsInput,
+            agy::ScreenState::Working => AgentStatus::Working,
+            _ if title_busy => AgentStatus::Working,
+            // agy's own turn is over but the sub-agents it started aren't.
+            _ if agy::running_subagents(&content) > 0 => AgentStatus::AwaitingAgents,
+            agy::ScreenState::Idle => AgentStatus::Idle,
+            // Starting up / signing in: nothing to flag yet.
+            agy::ScreenState::Unknown => AgentStatus::Idle,
+        }
+    }
+
+    /// agy only: the agent mode its footer shows right now.
+    pub fn agy_footer_mode(&self) -> Option<String> {
+        if self.agent != tmux::Agent::Antigravity || self.is_terminal {
+            return None;
+        }
+        let guard = self.parser.try_read().ok()?;
+        agy::footer_mode(&guard.screen().contents())
     }
 
     /// Check if terminal content contains Claude Code's idle input prompt.
@@ -278,6 +323,9 @@ impl Session {
         if self.is_terminal {
             return AgentStatus::Idle;
         }
+        if self.agent == tmux::Agent::Antigravity {
+            return self.agy_status();
+        }
         // A transient server-side rate limit leaves Claude Code stuck retrying
         // while still showing its "working" title spinner, so this must take
         // precedence over the Working check. It clears on its own: once the
@@ -294,6 +342,11 @@ impl Session {
             return AgentStatus::Working;
         }
         if self.is_at_input_prompt() {
+            // Claude's turn is over but background agents it started are
+            // still running (since 2.1.33x it no longer waits for them).
+            if self.has_running_subagents() {
+                return AgentStatus::AwaitingAgents;
+            }
             return AgentStatus::Idle;
         }
         AgentStatus::NeedsInput
@@ -303,7 +356,8 @@ impl Session {
     /// error ("Server is temporarily limiting requests … Rate limited"). This is
     /// the server-side throttle, distinct from the user's own usage limit.
     pub fn is_rate_limited(&self) -> bool {
-        if self.exited.load(Ordering::Relaxed) || self.is_terminal {
+        // Claude Code's screen markers; other agents don't draw them.
+        if self.exited.load(Ordering::Relaxed) || self.is_terminal || !self.agent.is_claude() {
             return false;
         }
         // Scan the in-memory VT100 screen — never shell out here. Like the other
@@ -408,6 +462,9 @@ impl Session {
     pub fn is_active(&self) -> bool {
         if self.exited.load(Ordering::Relaxed) || self.is_terminal {
             return false;
+        }
+        if self.agent == tmux::Agent::Antigravity {
+            return self.agy_status() == AgentStatus::Working;
         }
         let state = match self.parser.try_read() {
             Ok(guard) => {
@@ -611,6 +668,9 @@ impl Session {
         if self.exited.load(Ordering::Relaxed) || self.is_terminal {
             return false;
         }
+        if self.agent == tmux::Agent::Antigravity {
+            return self.agy_footer_mode().as_deref() == Some("plan");
+        }
 
         // Scan the in-memory VT100 screen — never shell out to `tmux capture-pane`
         // here. Called per-session from the sidebar render path; a blocking
@@ -653,7 +713,8 @@ impl Session {
     /// runs Claude Code has spawned and not yet collected. The session is still
     /// Working, but the work is happening in the sub-agents rather than here.
     pub fn has_running_subagents(&self) -> bool {
-        if self.exited.load(Ordering::Relaxed) || self.is_terminal {
+        // Claude Code's screen markers; other agents don't draw them.
+        if self.exited.load(Ordering::Relaxed) || self.is_terminal || !self.agent.is_claude() {
             return false;
         }
         // Scan the in-memory VT100 screen — never shell out here. Like the
@@ -664,8 +725,12 @@ impl Session {
         }
     }
 
-    /// Two independent signals that sub-agents are still in flight:
+    /// Independent signals that sub-agents are still in flight:
     ///
+    /// - since Claude Code 2.1.33x, one `◯ general-purpose  Sleep 50s probe
+    ///   agent · since 1:12 AM` row per running agent in the panel under the
+    ///   bottom bar (`● main` heads it; a finished agent's row goes away, while
+    ///   the bar's `← 2 agents` stays, so that count is not used);
     /// - the bottom bar's transient `· /tasks to see subagents` hint, shown
     ///   only while agents are running (the `/tasks` panel listing them may sit
     ///   below the bar and push it up, so scan the whole bottom block);
@@ -687,7 +752,10 @@ impl Session {
                 let t = l.trim();
                 !Self::is_horizontal_rule(t) && !Self::starts_with_prompt(t)
             })
-            .any(|line| line.to_lowercase().contains("to see subagents"));
+            .any(|line| {
+                let t = line.trim_start();
+                t.starts_with('\u{25ef}') || t.to_lowercase().contains("to see subagents")
+            });
         if bar_hint {
             return true;
         }
@@ -773,6 +841,45 @@ pub const WORKING_OUTPUT_SETTLE: Duration = Duration::from_secs(3);
 /// plus `↓ N more`), the status line and background-shell notices can push
 /// them well above that.
 const BOTTOM_SCAN_LINES: usize = 24;
+
+/// An agent's status from one look at its pane — its title and visible
+/// screen — for callers without a live [`Session`] (the MCP server reads
+/// panes with `tmux capture-pane`). Unlike [`Session::agent_status`] it can't
+/// follow output over time, so a reply that is streaming with no activity
+/// line may read as needing input.
+pub fn screen_status(agent: tmux::Agent, title: &str, content: &str) -> AgentStatus {
+    match agent {
+        tmux::Agent::Antigravity => {
+            let state = agy::screen_state(content);
+            match state {
+                agy::ScreenState::NeedsInput => AgentStatus::NeedsInput,
+                agy::ScreenState::Working => AgentStatus::Working,
+                _ if title_is_working(title) => AgentStatus::Working,
+                _ if agy::running_subagents(content) > 0 => AgentStatus::AwaitingAgents,
+                _ => AgentStatus::Idle,
+            }
+        }
+        tmux::Agent::Claude => {
+            if Session::content_has_rate_limit(content) {
+                return AgentStatus::RateLimited;
+            }
+            let agents = Session::content_has_running_subagents(content);
+            let working = title_is_working(title)
+                || Session::turn_state_from_screen(content) == TurnState::Working;
+            if working || Session::content_has_input_prompt(content) {
+                if agents {
+                    AgentStatus::AwaitingAgents
+                } else if working {
+                    AgentStatus::Working
+                } else {
+                    AgentStatus::Idle
+                }
+            } else {
+                AgentStatus::NeedsInput
+            }
+        }
+    }
+}
 
 /// Returns true if a terminal title starts with one of Claude Code's
 /// "working" spinner glyphs.
@@ -981,14 +1088,16 @@ pub struct SpawnOpts {
     pub preferred_tmux_name: Option<String>,
     /// How to start claude (e.g. `--resume <id>`). Default: a new
     /// conversation with an assigned id where supported.
-    pub launch: Option<tmux::ClaudeLaunch>,
+    pub launch: Option<tmux::AgentLaunch>,
     pub nickname: Option<String>,
     /// Terminals: start the shell here instead of the parent folder.
     pub start_dir: Option<PathBuf>,
     pub created_at: Option<u64>,
+    /// The agent to run (agent sessions only). Default: Claude Code.
+    pub agent: tmux::Agent,
 }
 
-/// Spawn a Claude session or terminal under `parent`. Every spawn path goes
+/// Spawn an agent session or terminal under `parent`. Every spawn path goes
 /// through here.
 pub fn spawn_in(
     app: &mut App,
@@ -1045,13 +1154,22 @@ pub fn spawn_in(
         }
     };
 
+    let agent = opts.agent;
     // Only a Claude session in a worktree has a non-tmux fallback.
-    let needs_tmux = is_terminal || !matches!(parent, SpawnParent::Worktree(_));
+    let needs_tmux =
+        is_terminal || !agent.is_claude() || !matches!(parent, SpawnParent::Worktree(_));
     if needs_tmux && !app.tmux_available {
         anyhow::bail!(if is_terminal {
             "tmux is required for terminal sessions"
         } else {
             "tmux is required for this session"
+        });
+    }
+    if !is_terminal && !agent.is_claude() && !tmux::program_on_path(agent.binary()) {
+        anyhow::bail!(match agent {
+            tmux::Agent::Antigravity =>
+                "agy (Antigravity CLI) isn't installed: curl -fsSL https://antigravity.google/cli/install.sh | bash",
+            tmux::Agent::Claude => "claude isn't installed",
         });
     }
 
@@ -1060,8 +1178,12 @@ pub fn spawn_in(
 
     let (rows, cols) = calculate_pane_size(app, terminal_size.1, terminal_size.0);
 
-    let launch = opts.launch.unwrap_or_else(|| tmux::ClaudeLaunch::New {
-        session_id: layout::assign_session_id(),
+    let launch = opts.launch.unwrap_or_else(|| tmux::AgentLaunch::New {
+        session_id: if agent.assigns_conversation_id() {
+            layout::assign_session_id()
+        } else {
+            None
+        },
         initial_prompt: initial_prompt.map(|p| p.to_string()),
     });
     // The non-tmux fallback doesn't take a launch spec, so it has no known id.
@@ -1098,6 +1220,7 @@ pub fn spawn_in(
                 cols,
                 skip_permissions,
                 &tmux_name,
+                agent,
                 &launch,
             )?
         }
@@ -1128,6 +1251,8 @@ pub fn spawn_in(
         working_latch: AtomicBool::new(false),
         unread: false,
         is_terminal,
+        agent,
+        agent_mode: None,
         skip_permissions: skip_permissions && !is_terminal,
         claude_session_id,
         created_at: opts.created_at.unwrap_or_else(layout::now_secs),
@@ -1195,23 +1320,6 @@ pub fn spawn_terminal_session(
     )
 }
 
-/// Spawn a Claude session at the bare repo root (for the Project overview).
-pub fn spawn_root_session(
-    app: &mut App,
-    terminal_size: (u16, u16),
-    skip_permissions: bool,
-) -> anyhow::Result<u64> {
-    spawn_in(
-        app,
-        SpawnParent::Root,
-        false,
-        terminal_size,
-        skip_permissions,
-        None,
-        SpawnOpts::default(),
-    )
-}
-
 /// Spawn a plain terminal at the bare repo root (for the Project overview).
 pub fn spawn_root_terminal_session(
     app: &mut App,
@@ -1223,24 +1331,6 @@ pub fn spawn_root_terminal_session(
         true,
         terminal_size,
         false,
-        None,
-        SpawnOpts::default(),
-    )
-}
-
-/// Spawn a Claude session in an extra location directory.
-pub fn spawn_location_session(
-    app: &mut App,
-    location_idx: usize,
-    terminal_size: (u16, u16),
-    skip_permissions: bool,
-) -> anyhow::Result<u64> {
-    spawn_in(
-        app,
-        SpawnParent::Location(location_idx),
-        false,
-        terminal_size,
-        skip_permissions,
         None,
         SpawnOpts::default(),
     )
@@ -1315,6 +1405,13 @@ pub fn mark_exited(app: &mut App, session_id: u64) {
     app.rebuild_sidebar_items();
 }
 
+/// A running process's program (argv[0], from /proc/<pid>/cmdline).
+fn process_program(pid: u32) -> Option<String> {
+    let b = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
+    let arg0 = b.split(|&c| c == 0).next()?;
+    (!arg0.is_empty()).then(|| String::from_utf8_lossy(arg0).to_string())
+}
+
 /// Whether a running process was started with `arg` (from /proc/<pid>/cmdline).
 fn process_has_arg(pid: u32, arg: &str) -> bool {
     std::fs::read(format!("/proc/{}/cmdline", pid))
@@ -1347,6 +1444,7 @@ pub struct TmuxSessionInfo {
     pub current_title: String,
     pub exited: bool,
     pub is_terminal: bool,
+    pub agent: tmux::Agent,
     pub claude_session_id: Option<String>,
 }
 
@@ -1366,6 +1464,7 @@ pub fn collect_tmux_session_info(app: &App) -> Vec<TmuxSessionInfo> {
                     .unwrap_or_default(),
                 exited: s.exited.load(Ordering::SeqCst),
                 is_terminal: s.is_terminal,
+                agent: s.agent,
                 claude_session_id: s.claude_session_id.clone(),
             })
         })
@@ -1451,11 +1550,12 @@ pub fn spawn_terminal_name_poller(
         .ok();
 }
 
-/// Spawn a background thread that keeps each Claude session's conversation
+/// Spawn a background thread that keeps each agent session's conversation
 /// id current. Claude Code records the live id of every running process in
-/// `~/.claude/sessions/<pid>.json`; the id changes on `/clear`, `/resume` and
-/// some compactions, so this re-reads it every few seconds (one tmux call for
-/// all panes plus a small file read per session) and reports changes.
+/// `~/.claude/sessions/<pid>.json`; agy keeps the conversation's database
+/// open (see [`agy::conversation_id_for_pid`]). The id changes on `/clear`,
+/// `/resume` and some compactions, so this re-reads it every few seconds (one
+/// tmux call for all panes plus a small read per session) and reports changes.
 pub fn spawn_claude_session_id_poller(
     event_tx: tokio::sync::mpsc::UnboundedSender<crate::event::AppEvent>,
     session_info: std::sync::Arc<std::sync::Mutex<Vec<TmuxSessionInfo>>>,
@@ -1481,7 +1581,15 @@ pub fn spawn_claude_session_id_poller(
                         let Some(&pid) = pids.get(&info.tmux_name) else {
                             continue;
                         };
-                        if let Some(id) = layout::claude_session_id_for_pid(&home, pid) {
+                        let found = match info.agent {
+                            tmux::Agent::Claude => layout::claude_session_id_for_pid(&home, pid),
+                            tmux::Agent::Antigravity => agy::conversation_id_for_pid(
+                                &home,
+                                pid,
+                                info.claude_session_id.as_deref(),
+                            ),
+                        };
+                        if let Some(id) = found {
                             if info.claude_session_id.as_deref() != Some(id.as_str()) {
                                 updates.push((info.session_id, id));
                             }
@@ -1759,6 +1867,21 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
 
         // Detect whether this is a terminal session by checking for the -term- infix
         let is_terminal = tmux_name.contains("-term-");
+        // Which agent: recorded in tmux, else read from the running process
+        // (sessions from before clawtree knew other agents are Claude).
+        let agent = if is_terminal {
+            tmux::Agent::Claude
+        } else {
+            tmux::show_env(&tmux_name, tmux::AGENT_ENV)
+                .and_then(|a| tmux::Agent::from_id(&a))
+                .or_else(|| {
+                    pane_pids
+                        .get(&tmux_name)
+                        .and_then(|&pid| process_program(pid))
+                        .and_then(|p| tmux::Agent::from_program(&p))
+                })
+                .unwrap_or_default()
+        };
 
         let session = Session {
             id: session_id,
@@ -1775,6 +1898,8 @@ pub fn reconnect_tmux_sessions(app: &mut App, terminal_size: (u16, u16)) -> usiz
         working_latch: AtomicBool::new(false),
             unread: false,
             is_terminal,
+            agent,
+            agent_mode: None,
             // Sessions started before clawtree set the env var: ask the process.
             skip_permissions: !is_terminal
                 && (tmux::show_env(&tmux_name, tmux::SKIP_PERMISSIONS_ENV).as_deref() == Some("1")
@@ -2598,6 +2723,38 @@ mod tests {
 "
         );
         assert!(Session::content_has_running_subagents(&content));
+    }
+
+    #[test]
+    fn test_running_subagents_from_agent_panel() {
+        // Claude Code 2.1.332, captured live: background agents get a panel
+        // row each and no `/tasks` hint or `Running…` entry.
+        let sep = "─".repeat(80);
+        let content = format!(
+            "● 2 background agents launched (↓ to manage)
+                ├ Sleep 50s probe agent
+                └ Sleep 50s probe agent 2
+             {sep}
+             ❯ 
+             {sep}
+               📂 clawtree/main ⎇ feat/antigravity-agent ║ ⬡ Opus 5.5
+               ⏵⏵ bypass permissions on · 2 shells · esc to interrupt · ← 2 agents · ↓ to manage
+               ● main
+               ◯ general-purpose  waiting on 1 shell · Sleep 50s probe agent · since 1:12 AM
+               ◯ general-purpose  waiting on 1 shell · Sleep 50s probe agent 2 · since 1:12 AM
+"
+        );
+        assert!(Session::content_has_running_subagents(&content));
+        // Once they finish the rows go, though `← 2 agents` stays.
+        let done = format!(
+            "● 2 background agents launched (↓ to manage)
+             {sep}
+             ❯ 
+             {sep}
+               ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← 2 agents
+"
+        );
+        assert!(!Session::content_has_running_subagents(&done));
     }
 
     #[test]

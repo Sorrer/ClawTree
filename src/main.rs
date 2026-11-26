@@ -69,6 +69,30 @@ extern "C" fn signal_handler(_sig: libc::c_int) {
 }
 
 fn main() -> Result<()> {
+    // `clawtree mcp`: the MCP server agent sessions launch (see session::mcp).
+    // Exactly one argument, so a project folder named `mcp` still opens with `./mcp`.
+    {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.len() == 1 && args[0] == session::mcp::SUBCOMMAND {
+            return session::mcp::run();
+        }
+        // `clawtree send <to> <message…>` (at least both arguments).
+        if args.len() >= 3 && args[0] == "send" {
+            std::process::exit(session::mcp::send_cli(&args[1..]));
+        }
+    }
+
+    // agy's title hook (see `tmux::agy_title`): answer and leave before any
+    // setup — agy runs it on every state change.
+    if std::env::args().nth(1).as_deref() == Some(session::tmux::AGY_TITLE_SUBCOMMAND) {
+        use std::io::Read;
+        let mut input = String::new();
+        let _ = std::io::stdin().read_to_string(&mut input);
+        let status = serde_json::from_str(&input).unwrap_or(serde_json::Value::Null);
+        println!("{}", session::tmux::agy_title(&status));
+        return Ok(());
+    }
+
     // Capture the executable path up front. An in-app update replaces the binary
     // at this path and deletes the old inode, after which `current_exe()` would
     // resolve to a now-deleted path — so we must remember it now to restart into
@@ -615,6 +639,8 @@ async fn async_main(
             event_tx.clone(),
             std::sync::Arc::clone(&tmux_session_info),
         );
+        // Messages for sessions without their own `clawtree mcp`.
+        session::mcp::spawn_window_courier();
     }
 
     // ── Global usage poller — background thread ────────────────
@@ -1953,7 +1979,7 @@ fn restore_headless(bare_repo_path: &std::path::Path, list_only: bool) -> i32 {
         for r in &rows {
             println!(
                 "  {:<9} {}  [{}]",
-                format!("{:?}", r.entry.kind).to_lowercase(),
+                layout::kind_label(&r.entry),
                 layout::entry_label(&r.entry),
                 r.summary()
             );
@@ -1985,7 +2011,7 @@ fn restore_headless(bare_repo_path: &std::path::Path, list_only: bool) -> i32 {
             r.skip_permissions(),
             pane_rows,
             pane_cols,
-            session::pty::claude_renderer_env(),
+            session::pty::claude_renderer_env().filter(|_| r.entry.agent.is_claude()),
         ) {
             Ok(()) => println!(
                 "restored  {}  [{}]",
@@ -2564,6 +2590,8 @@ Usage:
   clawtree restore [dir]            Bring back sessions lost with the tmux server, then open
   clawtree restore --list [dir]     Show saved sessions (restorable, stale, live) and exit
   clawtree restore --no-tui [dir]   Bring back lost sessions and exit
+  clawtree mcp                      MCP server for agent sessions (list_sessions, send_message)
+  clawtree send <session> <message>  Message another agent session (as send_message does)
 
 Options:
   --color-mode <truecolor|256|basic>  Force a color mode

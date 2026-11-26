@@ -7,3 +7,6 @@ pub mod tmux {
 pub mod layout {
     include!("session/layout.rs");
 }
+pub mod agy {
+    include!("session/agy.rs");
+}

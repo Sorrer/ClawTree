@@ -253,6 +253,8 @@ pub struct ContextAction {
 pub enum ContextActionKind {
     NewClaude,
     NewClaudeYolo,
+    NewAgy,
+    NewAgyYolo,
     NewTerminal,
     StageCommit,
     StageAllClaudeCommit,
@@ -282,6 +284,11 @@ pub fn context_actions_for_item(item: &SidebarItem, wt_available: bool) -> Vec<C
                     kind: ContextActionKind::NewClaude,
                 },
                 ContextAction {
+                    label: "New agy".into(),
+                    hotkey: "a".into(),
+                    kind: ContextActionKind::NewAgy,
+                },
+                ContextAction {
                     label: "New Terminal".into(),
                     hotkey: "t".into(),
                     kind: ContextActionKind::NewTerminal,
@@ -304,6 +311,16 @@ pub fn context_actions_for_item(item: &SidebarItem, wt_available: bool) -> Vec<C
                     label: "New Claude (YOLO)".into(),
                     hotkey: "C".into(),
                     kind: ContextActionKind::NewClaudeYolo,
+                },
+                ContextAction {
+                    label: "New agy".into(),
+                    hotkey: "a".into(),
+                    kind: ContextActionKind::NewAgy,
+                },
+                ContextAction {
+                    label: "New agy (YOLO)".into(),
+                    hotkey: "A".into(),
+                    kind: ContextActionKind::NewAgyYolo,
                 },
                 ContextAction {
                     label: "New Terminal".into(),
@@ -419,6 +436,16 @@ pub fn context_actions_for_item(item: &SidebarItem, wt_available: bool) -> Vec<C
                     label: "New Claude (YOLO)".into(),
                     hotkey: "C".into(),
                     kind: ContextActionKind::NewClaudeYolo,
+                },
+                ContextAction {
+                    label: "New agy".into(),
+                    hotkey: "a".into(),
+                    kind: ContextActionKind::NewAgy,
+                },
+                ContextAction {
+                    label: "New agy (YOLO)".into(),
+                    hotkey: "A".into(),
+                    kind: ContextActionKind::NewAgyYolo,
                 },
                 ContextAction {
                     label: "Remove Location".into(),
@@ -826,6 +853,8 @@ pub struct App {
     pub layout_dirty: bool,
     /// When the manifest was last written (debounce).
     pub layout_last_write: Option<Instant>,
+    /// When agy sessions' footers were last read for their agent mode.
+    pub layout_mode_check: Option<Instant>,
     /// The focused tmux session recorded by the last write.
     pub layout_saved_active: Option<String>,
     /// tmux names the user explicitly closed this run; dropped from the manifest.
@@ -928,6 +957,7 @@ impl App {
             layout_enabled: false,
             layout_dirty: false,
             layout_last_write: None,
+            layout_mode_check: None,
             layout_saved_active: None,
             closed_tmux_names: HashSet::new(),
             layout_reserved_names: HashSet::new(),

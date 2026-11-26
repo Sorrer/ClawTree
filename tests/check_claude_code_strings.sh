@@ -195,6 +195,16 @@ check_string \
     "/tasks to see subagents" \
     "$CLI_SOURCE"
 
+# Agent panel row ◯ (U+25EF) — since 2.1.33x each running background agent
+# gets a `◯ general-purpose  <task> · since …` row under the bottom bar, and the
+# row goes away when the agent finishes. clawtree's main signal for agents
+# running after Claude's own turn has ended.
+check_string \
+    "Agent panel row ◯ (U+25EF)" \
+    "◯" \
+    "$CLI_SOURCE" \
+    '◯'
+
 # Tool-result corner ⎿ (U+23BF) — prefixes the "Running…"/"Done (…)" line under
 # an Agent(…)/Task(…) entry, clawtree's fallback signal when the hint is absent.
 check_string \

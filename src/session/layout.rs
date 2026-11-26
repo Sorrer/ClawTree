@@ -13,7 +13,8 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use super::tmux::{self, ClaudeLaunch};
+use super::agy;
+use super::tmux::{self, Agent, AgentLaunch};
 
 /// Current manifest schema version. Files with a newer version are left alone.
 pub const MANIFEST_VERSION: u32 = 1;
@@ -53,9 +54,18 @@ pub struct LayoutEntry {
     pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nickname: Option<String>,
-    /// The Claude conversation id (Claude sessions only).
+    /// Which agent an agent (`kind: claude`) entry runs. Absent = Claude
+    /// Code, so manifests written before other agents still read the same.
+    #[serde(default, skip_serializing_if = "Agent::is_claude")]
+    pub agent: Agent,
+    /// The agent's conversation id (agent sessions only; the name predates
+    /// other agents).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_session_id: Option<String>,
+    /// agy only: its agent mode at the last save (`auto`, `accept-edits`,
+    /// `plan`, `default`). Claude's mode is read from its transcript instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_mode: Option<String>,
     #[serde(default)]
     pub skip_permissions: bool,
     /// Position within its parent in the sidebar.
@@ -695,17 +705,17 @@ impl ResumeSource {
 
     /// How to launch claude for this source. `new_id` is used for `Fresh`;
     /// `permission_mode` is passed along when resuming a known conversation.
-    pub fn launch(&self, new_id: Option<String>, permission_mode: Option<String>) -> ClaudeLaunch {
+    pub fn launch(&self, new_id: Option<String>, permission_mode: Option<String>) -> AgentLaunch {
         match self {
             ResumeSource::SessionId(_) | ResumeSource::Guessed { .. } => match self.resumed_id() {
-                Some(id) => ClaudeLaunch::Resume {
+                Some(id) => AgentLaunch::Resume {
                     id: id.to_string(),
                     permission_mode,
                 },
-                None => ClaudeLaunch::Continue,
+                None => AgentLaunch::Continue,
             },
-            ResumeSource::Continue => ClaudeLaunch::Continue,
-            ResumeSource::Terminal | ResumeSource::Fresh => ClaudeLaunch::New {
+            ResumeSource::Continue => AgentLaunch::Continue,
+            ResumeSource::Terminal | ResumeSource::Fresh => AgentLaunch::New {
                 session_id: new_id,
                 initial_prompt: None,
             },
@@ -746,11 +756,14 @@ impl RestoreRow {
     }
 
     fn refresh_permission_mode(&mut self, home: &Path) {
-        self.permission_mode = self
-            .source
-            .resumed_id()
-            .and_then(|id| transcript_path(home, &self.entry.path, id))
-            .and_then(|p| last_permission_mode(&p));
+        self.permission_mode = match self.entry.agent {
+            Agent::Claude => self
+                .source
+                .resumed_id()
+                .and_then(|id| transcript_path(home, &self.entry.path, id))
+                .and_then(|p| last_permission_mode(&p)),
+            Agent::Antigravity => self.source.resumed_id().and(self.entry.agent_mode.clone()),
+        };
     }
 
     /// Bypass mode comes back as clawtree's YOLO flag: either the session was
@@ -762,9 +775,12 @@ impl RestoreRow {
                 || self.permission_mode.as_deref() == Some("bypassPermissions"))
     }
 
-    /// How to start claude for this row. Bypass is carried by
-    /// `skip_permissions()`; any other mode is passed as `--permission-mode`.
-    pub fn claude_launch(&self, new_id: Option<String>) -> ClaudeLaunch {
+    /// How to start the agent for this row. Bypass is carried by
+    /// `skip_permissions()`; any other mode is passed along (`--permission-mode`
+    /// for Claude, `--mode` for agy). `new_id` is ignored for agents that pick
+    /// their own conversation id.
+    pub fn claude_launch(&self, new_id: Option<String>) -> AgentLaunch {
+        let new_id = new_id.filter(|_| self.entry.agent.assigns_conversation_id());
         let mode = self
             .permission_mode
             .clone()
@@ -811,6 +827,14 @@ pub fn short_id(id: &str) -> &str {
 pub fn resolve_resume(home: &Path, e: &LayoutEntry, claimed: &HashSet<String>) -> ResumeSource {
     if e.kind == EntryKind::Terminal {
         return ResumeSource::Terminal;
+    }
+    if e.agent == Agent::Antigravity {
+        // agy conversations are found from the live process, so an entry
+        // without an id never started one.
+        return match &e.claude_session_id {
+            Some(id) if agy::conversation_exists(home, id) => ResumeSource::SessionId(id.clone()),
+            _ => ResumeSource::Fresh,
+        };
     }
     if let Some(id) = &e.claude_session_id {
         return if transcript_exists(home, &e.path, id) {
@@ -939,14 +963,15 @@ pub fn claude_session_id_for_pid(home: &Path, pid: u32) -> Option<String> {
 pub fn create_tmux_for_entry(
     e: &LayoutEntry,
     tmux_name: &str,
-    launch: &ClaudeLaunch,
+    launch: &AgentLaunch,
     skip_permissions: bool,
     rows: u16,
     cols: u16,
     claude_env: Option<(&str, &str)>,
 ) -> anyhow::Result<()> {
     match e.kind {
-        EntryKind::Claude => tmux::create_claude_session(
+        EntryKind::Claude => tmux::create_agent_session(
+            e.agent,
             &e.path,
             rows,
             cols,
@@ -978,6 +1003,14 @@ pub fn entry_label(e: &LayoutEntry) -> String {
     }
 }
 
+/// What an entry runs, for lists: `claude`, `agy` or `terminal`.
+pub fn kind_label(e: &LayoutEntry) -> &'static str {
+    match e.kind {
+        EntryKind::Claude => e.agent.name(),
+        EntryKind::Terminal => "terminal",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -991,7 +1024,9 @@ mod tests {
             cwd: None,
             branch: Some("main".into()),
             nickname: None,
+            agent: Agent::Claude,
             claude_session_id: None,
+            agent_mode: None,
             skip_permissions: false,
             order: 0,
             created_at: 100,
@@ -1267,5 +1302,72 @@ mod tests {
         assert!(try_lock(&path).unwrap().is_none());
         drop(held);
         assert!(try_lock(&path).unwrap().is_some());
+    }
+
+    #[test]
+    fn manifests_without_agent_read_as_claude() {
+        let json = r#"{"tmux_name":"a","kind":"claude","scope":"worktree","path":"/p/main"}"#;
+        let e: LayoutEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(e.agent, Agent::Claude);
+        // ... and Claude entries are written without the field.
+        assert!(!serde_json::to_string(&e).unwrap().contains("agent"));
+        let mut g = e.clone();
+        g.agent = Agent::Antigravity;
+        g.agent_mode = Some("plan".into());
+        let text = serde_json::to_string(&g).unwrap();
+        assert!(text.contains(r#""agent":"antigravity""#), "{}", text);
+        assert_eq!(serde_json::from_str::<LayoutEntry>(&text).unwrap(), g);
+        assert_eq!(kind_label(&g), "agy");
+        assert_eq!(kind_label(&e), "claude");
+    }
+
+    #[test]
+    fn agy_entries_resume_their_conversation_in_its_mode() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = agy::data_dir(home.path()).join("conversations");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("conv-1.db"), b"").unwrap();
+        let mut e = entry("g", EntryKind::Claude, "/p/main");
+        e.agent = Agent::Antigravity;
+        e.agent_mode = Some("accept-edits".into());
+        e.skip_permissions = true;
+
+        e.claude_session_id = Some("conv-1".into());
+        let row = RestoreRow::new(
+            home.path(),
+            e.clone(),
+            resolve_resume(home.path(), &e, &HashSet::new()),
+        );
+        assert_eq!(row.source, ResumeSource::SessionId("conv-1".into()));
+        assert!(row.skip_permissions());
+        assert_eq!(
+            row.claude_launch(Some("new".into())),
+            AgentLaunch::Resume {
+                id: "conv-1".into(),
+                permission_mode: Some("accept-edits".into())
+            }
+        );
+
+        // No recorded id (or a missing file): a fresh conversation, with no
+        // Claude-style assigned id.
+        e.claude_session_id = Some("gone".into());
+        assert_eq!(
+            resolve_resume(home.path(), &e, &HashSet::new()),
+            ResumeSource::Fresh
+        );
+        e.claude_session_id = None;
+        let row = RestoreRow::new(
+            home.path(),
+            e.clone(),
+            resolve_resume(home.path(), &e, &HashSet::new()),
+        );
+        assert_eq!(row.source, ResumeSource::Fresh);
+        assert_eq!(
+            row.claude_launch(Some("new".into())),
+            AgentLaunch::New {
+                session_id: None,
+                initial_prompt: None
+            }
+        );
     }
 }
