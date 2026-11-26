@@ -91,10 +91,29 @@ fn main() -> Result<()> {
         use std::io::Read;
         let mut input = String::new();
         let _ = std::io::stdin().read_to_string(&mut input);
-        let status = serde_json::from_str(&input).unwrap_or(serde_json::Value::Null);
+        let mut status = serde_json::from_str(&input).unwrap_or(serde_json::Value::Null);
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+        // agy only sends the conversation's name for resumed conversations;
+        // otherwise read the one it saved.
+        let named = status
+            .get("conversation_title")
+            .and_then(|t| t.as_str())
+            .is_some_and(|t| !t.trim().is_empty());
+        if !named {
+            let id = status
+                .get("conversation_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if let (Some(title), Some(obj)) = (
+                session::agy::conversation_title(&home, &id),
+                status.as_object_mut(),
+            ) {
+                obj.insert("conversation_title".into(), title.into());
+            }
+        }
         println!("{}", session::tmux::agy_title(&status));
         // agy's quota rides along; keep the latest for the Usage panel.
-        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
         session::agy::save_usage(&home, &status, session::layout::now_secs());
         return Ok(());
     }
