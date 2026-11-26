@@ -127,6 +127,8 @@ const SIDEBAR_KEYS: &[KeyEntry] = &[
     section("Sessions & Agents"),
     ("c", "claude"),
     ("Shift + c", "claude (YOLO)"),
+    ("a", "agy (Antigravity CLI)"),
+    ("Shift + a", "agy (YOLO)"),
     ("t", "New terminal session"),
     ("r", "Rename/nickname session"),
     section("Worktree Management"),
@@ -189,6 +191,8 @@ pub const QUICK_START_KEYS: &[KeyEntry] = &[
     section("Create Sessions"),
     ("c", "New Claude session"),
     ("Shift + C", "New Claude session (YOLO mode)"),
+    ("a", "New agy (Antigravity CLI) session"),
+    ("Shift + A", "New agy session (YOLO mode)"),
     ("t", "New terminal session"),
     section("Worktree Management"),
     ("n", "Create a new worktree"),
@@ -370,6 +374,8 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         match key.code {
             KeyCode::Char('c') => spawn_claude_for_selected(app, terminal_size, false),
             KeyCode::Char('C') => spawn_claude_for_selected(app, terminal_size, true),
+            KeyCode::Char('a') => spawn_agy_for_selected(app, terminal_size, false),
+            KeyCode::Char('A') => spawn_agy_for_selected(app, terminal_size, true),
             KeyCode::Char('t') => spawn_terminal_for_selected(app, terminal_size),
             KeyCode::Char('n') => {
                 app.open_dialog(Dialog::CreateWorktree {
@@ -452,6 +458,13 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, terminal_size: (u16, u16)) {
         // C — new Claude session with --dangerously-skip-permissions
         (KeyModifiers::SHIFT, KeyCode::Char('C')) => {
             spawn_claude_for_selected(app, terminal_size, true);
+        }
+        // a / A — new Antigravity (agy) session, A with --dangerously-skip-permissions
+        (_, KeyCode::Char('a')) => {
+            spawn_agy_for_selected(app, terminal_size, false);
+        }
+        (KeyModifiers::SHIFT, KeyCode::Char('A')) => {
+            spawn_agy_for_selected(app, terminal_size, true);
         }
 
         // t — new terminal session
@@ -739,56 +752,53 @@ fn open_wsl_window(app: &mut App, with_claude: bool) {
 }
 
 fn spawn_claude_for_selected(app: &mut App, terminal_size: (u16, u16), skip_permissions: bool) {
-    // When Project is selected, spawn at the repo root
-    if matches!(app.selected_sidebar_item(), Some(SidebarItem::Project)) {
-        match session::spawn_root_session(app, terminal_size, skip_permissions) {
-            Ok(sid) => {
-                app.active_session_id = Some(sid);
-                app.project_overview_active = false;
-                app.focus = FocusTarget::TerminalPane;
-                app.input_mode = InputMode::Terminal;
-                app.rebuild_sidebar_items();
-            }
-            Err(e) => {
-                app.set_status(format!("Failed to spawn session: {}", e));
-            }
-        }
-        return;
-    }
+    spawn_agent_for_selected(app, terminal_size, skip_permissions, session::tmux::Agent::Claude);
+}
 
-    // When a Location or LocationSession is selected, spawn in that location
-    let loc_idx = match app.selected_sidebar_item() {
-        Some(SidebarItem::Location(li)) => Some(li),
-        Some(SidebarItem::LocationSession(li, _)) => Some(li),
-        _ => None,
+fn spawn_agy_for_selected(app: &mut App, terminal_size: (u16, u16), skip_permissions: bool) {
+    spawn_agent_for_selected(
+        app,
+        terminal_size,
+        skip_permissions,
+        session::tmux::Agent::Antigravity,
+    );
+}
+
+/// Start `agent` under the selected sidebar item: the project root, a
+/// location, or the selected worktree.
+fn spawn_agent_for_selected(
+    app: &mut App,
+    terminal_size: (u16, u16),
+    skip_permissions: bool,
+    agent: session::tmux::Agent,
+) {
+    use session::SpawnParent;
+    let parent = match app.selected_sidebar_item() {
+        Some(SidebarItem::Project) => SpawnParent::Root,
+        Some(SidebarItem::Location(li)) | Some(SidebarItem::LocationSession(li, _)) => {
+            SpawnParent::Location(li)
+        }
+        _ => match selected_worktree_idx(app) {
+            Some(wi) => SpawnParent::Worktree(wi),
+            None => return,
+        },
     };
-    if let Some(li) = loc_idx {
-        match session::spawn_location_session(app, li, terminal_size, skip_permissions) {
-            Ok(sid) => {
-                app.active_session_id = Some(sid);
+    let opts = session::SpawnOpts {
+        agent,
+        ..Default::default()
+    };
+    match session::spawn_in(app, parent, false, terminal_size, skip_permissions, None, opts) {
+        Ok(sid) => {
+            app.active_session_id = Some(sid);
+            if !matches!(parent, SpawnParent::Worktree(_)) {
                 app.project_overview_active = false;
-                app.focus = FocusTarget::TerminalPane;
-                app.input_mode = InputMode::Terminal;
-                app.rebuild_sidebar_items();
             }
-            Err(e) => {
-                app.set_status(format!("Failed to spawn session: {}", e));
-            }
+            app.focus = FocusTarget::TerminalPane;
+            app.input_mode = InputMode::Terminal;
+            app.rebuild_sidebar_items();
         }
-        return;
-    }
-
-    if let Some(wi) = selected_worktree_idx(app) {
-        match session::spawn_session(app, wi, terminal_size, skip_permissions, None) {
-            Ok(sid) => {
-                app.active_session_id = Some(sid);
-                app.focus = FocusTarget::TerminalPane;
-                app.input_mode = InputMode::Terminal;
-                app.rebuild_sidebar_items();
-            }
-            Err(e) => {
-                app.set_status(format!("Failed to spawn session: {}", e));
-            }
+        Err(e) => {
+            app.set_status(format!("Failed to spawn session: {}", e));
         }
     }
 }
@@ -1559,6 +1569,8 @@ pub fn execute_context_action(
     match kind {
         ContextActionKind::NewClaude => spawn_claude_for_selected(app, terminal_size, false),
         ContextActionKind::NewClaudeYolo => spawn_claude_for_selected(app, terminal_size, true),
+        ContextActionKind::NewAgy => spawn_agy_for_selected(app, terminal_size, false),
+        ContextActionKind::NewAgyYolo => spawn_agy_for_selected(app, terminal_size, true),
         ContextActionKind::NewTerminal => spawn_terminal_for_selected(app, terminal_size),
         ContextActionKind::StageCommit => handle_stage_commit(app),
         ContextActionKind::StageAllClaudeCommit => handle_stage_all_commit_claude(app),

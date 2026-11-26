@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tokio::sync::mpsc;
 
-use super::tmux::{self as tm, tmux_cmd, ClaudeLaunch};
+use super::tmux::{self as tm, tmux_cmd, AgentLaunch};
 use crate::event::AppEvent;
 
 /// Callbacks that capture the window title set by Claude Code.
@@ -312,16 +312,18 @@ pub fn spawn_claude_pty_tmux(
     cols: u16,
     skip_permissions: bool,
     tmux_name: &str,
-    launch: &ClaudeLaunch,
+    agent: tm::Agent,
+    launch: &AgentLaunch,
 ) -> Result<PtyHandle> {
-    tm::create_claude_session(
+    tm::create_agent_session(
+        agent,
         working_dir,
         rows,
         cols,
         skip_permissions,
         tmux_name,
         launch,
-        claude_renderer_env(),
+        if agent.is_claude() { claude_renderer_env() } else { None },
     )?;
     attach_tmux_session(tmux_name, session_id, event_tx, rows, cols)
 }

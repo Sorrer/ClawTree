@@ -205,7 +205,7 @@ fn draw_restore_layout(
     } else {
         format!(
             "{} session(s) from your last run are gone from tmux (crash or reboot?). \
-             Claude sessions resume their own conversations.",
+             Agent sessions (claude, agy) resume their own conversations.",
             rows.len()
         )
     };
@@ -237,7 +237,12 @@ fn draw_restore_layout(
             Span::styled(format!("{} {} ", check, icon), base),
             Span::styled(entry_label(&r.entry), base),
             Span::styled(
-                format!("  {}", r.summary()),
+                match (r.entry.kind, r.entry.agent.is_claude()) {
+                    (EntryKind::Claude, false) => {
+                        format!("  {} · {}", r.entry.agent.name(), r.summary())
+                    }
+                    _ => format!("  {}", r.summary()),
+                },
                 Style::default().fg(Color::DarkGray),
             ),
         ]));

@@ -282,7 +282,8 @@ fn render_project_session(
     let usage_suffix = app
         .claude_usage
         .get(&sid)
-        .map(|u| (format!(" {}%", u.usage_pct()), Color::DarkGray));
+        .map(|u| (format!(" {}%", u.usage_pct()), Color::DarkGray))
+        .or_else(|| agent_tag(session));
 
     let prefix = format!("  {} ", status_icon);
     let suffix_len = usage_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
@@ -583,7 +584,8 @@ fn render_session(
     let usage_suffix = app
         .claude_usage
         .get(&sid)
-        .map(|u| (format!(" {}%", u.usage_pct()), Color::DarkGray));
+        .map(|u| (format!(" {}%", u.usage_pct()), Color::DarkGray))
+        .or_else(|| agent_tag(session));
 
     // Truncate to fit sidebar width (account for usage suffix)
     let prefix = format!("  {} ", status_icon);
@@ -1109,7 +1111,8 @@ fn render_location_session(
     let usage_suffix = app
         .claude_usage
         .get(&sid)
-        .map(|u| (format!(" {}%", u.usage_pct()), Color::DarkGray));
+        .map(|u| (format!(" {}%", u.usage_pct()), Color::DarkGray))
+        .or_else(|| agent_tag(session));
 
     let prefix = format!("  {} ", status_icon);
     let suffix_len = usage_suffix.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
@@ -1168,4 +1171,25 @@ fn render_location_session(
     }
 
     ListItem::new(Line::from(spans))
+}
+
+/// A dim tag naming the agent for sessions that don't run Claude Code, so
+/// they can be told apart in the list.
+fn agent_tag(session: Option<&crate::session::Session>) -> Option<(String, Color)> {
+    let s = session?;
+    if s.is_terminal || s.agent.is_claude() {
+        return None;
+    }
+    // Before agy titles the conversation the row already reads "agy".
+    let untitled = s.nickname.is_none()
+        && s.terminal_title()
+            .is_none_or(|t| crate::session::strip_title_status_glyph(&t) == s.agent.name());
+    // agy's own footer doesn't show --dangerously-skip-permissions, so say it here.
+    let tag = match (untitled, s.skip_permissions) {
+        (true, false) => return None,
+        (true, true) => " yolo".to_string(),
+        (false, false) => format!(" {}", s.agent.name()),
+        (false, true) => format!(" {} yolo", s.agent.name()),
+    };
+    Some((tag, if s.skip_permissions { theme::AGENT_RATE_LIMITED } else { Color::DarkGray }))
 }

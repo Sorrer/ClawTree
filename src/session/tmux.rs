@@ -14,7 +14,8 @@ pub const TMUX_PREFIX: &str = "clawtree";
 pub const WORKTREE_ENV: &str = "CLAWTREE_WORKTREE";
 /// tmux session env var set to `1` when Claude runs with `--dangerously-skip-permissions`.
 pub const SKIP_PERMISSIONS_ENV: &str = "CLAWTREE_SKIP_PERMISSIONS";
-/// tmux session env var holding the Claude conversation id the session was started with.
+/// tmux session env var holding the agent conversation id the session was started with
+/// (the name predates other agents).
 pub const CLAUDE_SESSION_ENV: &str = "CLAWTREE_CLAUDE_SESSION_ID";
 /// Process env var: run every tmux command against `tmux -L <name>` instead of
 /// the default server. Used by tests and manual crash simulations.
@@ -123,39 +124,109 @@ pub fn set_env(name: &str, var: &str, value: &str) {
         .output();
 }
 
-/// How to start `claude` in a new session.
+/// tmux session env var naming the coding agent a session runs (see
+/// [`Agent::id`]). Unset means Claude Code (sessions from before agents).
+pub const AGENT_ENV: &str = "CLAWTREE_AGENT";
+
+/// Hidden `clawtree` subcommand agy runs as its title command: reads agy's
+/// status JSON on stdin and prints the pane title (see [`agy_title`]).
+pub const AGY_TITLE_SUBCOMMAND: &str = "__agy-title";
+
+/// The coding agent a session runs.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Agent {
+    /// Claude Code (`claude`).
+    #[default]
+    Claude,
+    /// Google's Antigravity CLI (`agy`), the successor of Gemini CLI.
+    Antigravity,
+}
+
+impl Agent {
+    pub const ALL: &'static [Agent] = &[Agent::Claude, Agent::Antigravity];
+
+    /// The executable to run.
+    pub fn binary(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Antigravity => "agy",
+        }
+    }
+
+    /// Stable id stored in tmux ([`AGENT_ENV`]) and the layout manifest.
+    pub fn id(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Antigravity => "antigravity",
+        }
+    }
+
+    pub fn from_id(s: &str) -> Option<Agent> {
+        Agent::ALL.iter().copied().find(|a| a.id() == s)
+    }
+
+    /// Short name for the UI.
+    pub fn name(self) -> &'static str {
+        self.binary()
+    }
+
+    pub fn is_claude(&self) -> bool {
+        *self == Agent::Claude
+    }
+
+    /// Whether clawtree can choose the conversation id at launch
+    /// (`claude --session-id`). agy picks its own; the poller finds it.
+    pub fn assigns_conversation_id(self) -> bool {
+        self == Agent::Claude
+    }
+
+    /// The agent whose binary `arg0` (a path or bare name) is, if any.
+    pub fn from_program(arg0: &str) -> Option<Agent> {
+        let base = arg0.rsplit('/').next().unwrap_or(arg0);
+        Agent::ALL.iter().copied().find(|a| a.binary() == base)
+    }
+}
+
+/// Modes `agy --mode` accepts. agy's fourth mode, "default" (everything asks),
+/// has no flag value; clawtree passes it as a session-only setting.
+pub const AGY_MODES: &[&str] = &["accept-edits", "auto", "plan"];
+
+/// How to start an agent in a new session.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ClaudeLaunch {
-    /// A new conversation, optionally with a pre-assigned id (`--session-id`)
-    /// and a first prompt.
+pub enum AgentLaunch {
+    /// A new conversation, optionally with a pre-assigned id (`--session-id`,
+    /// Claude only) and a first prompt.
     New {
         session_id: Option<String>,
         initial_prompt: Option<String>,
     },
-    /// `--resume <id>`: reopen a known conversation, optionally in the
-    /// permission mode it was last using (`--permission-mode`).
+    /// Reopen a known conversation, optionally in the permission mode it was
+    /// last using.
     Resume {
         id: String,
         permission_mode: Option<String>,
     },
-    /// `--continue`: the most recent conversation in the directory.
+    /// The most recent conversation in the directory.
     Continue,
 }
 
-impl ClaudeLaunch {
+impl AgentLaunch {
     /// The conversation id this launch is known to use, if any.
     pub fn known_session_id(&self) -> Option<&str> {
         match self {
-            ClaudeLaunch::New { session_id, .. } => session_id.as_deref(),
-            ClaudeLaunch::Resume { id, .. } => Some(id),
-            ClaudeLaunch::Continue => None,
+            AgentLaunch::New { session_id, .. } => session_id.as_deref(),
+            AgentLaunch::Resume { id, .. } => Some(id),
+            AgentLaunch::Continue => None,
         }
     }
 
     /// Arguments passed to `claude` after any permission flag.
     pub fn claude_args(&self) -> Vec<String> {
         match self {
-            ClaudeLaunch::New {
+            AgentLaunch::New {
                 session_id,
                 initial_prompt,
             } => {
@@ -169,7 +240,7 @@ impl ClaudeLaunch {
                 }
                 v
             }
-            ClaudeLaunch::Resume {
+            AgentLaunch::Resume {
                 id,
                 permission_mode,
             } => {
@@ -180,9 +251,194 @@ impl ClaudeLaunch {
                 }
                 v
             }
-            ClaudeLaunch::Continue => vec!["--continue".to_string()],
+            AgentLaunch::Continue => vec!["--continue".to_string()],
         }
     }
+
+    /// Arguments passed to `agy` after any permission flag. `title_command`
+    /// is installed as agy's title command for this session only
+    /// (`--settings` is never saved), so the pane title carries agy's state.
+    /// With `allow_mcp`, the clawtree MCP tools run without an approval prompt.
+    pub fn agy_args(&self, title_command: Option<&str>, allow_mcp: bool) -> Vec<String> {
+        let mut v = Vec::new();
+        let mut settings = serde_json::Map::new();
+        if let Some(cmd) = title_command {
+            settings.insert(
+                "title".into(),
+                serde_json::json!({ "type": "command", "command": cmd }),
+            );
+        }
+        if allow_mcp {
+            settings.insert(
+                "permissions".into(),
+                serde_json::json!({
+                    "allow": MCP_TOOLS
+                        .iter()
+                        .map(|t| format!("mcp({}/{})", MCP_SERVER_NAME, t))
+                        .collect::<Vec<_>>()
+                }),
+            );
+        }
+        match self {
+            AgentLaunch::New { initial_prompt, .. } => {
+                if let Some(p) = initial_prompt {
+                    v.push("-i".to_string());
+                    v.push(p.clone());
+                }
+            }
+            AgentLaunch::Resume {
+                id,
+                permission_mode,
+            } => {
+                v.push("--conversation".to_string());
+                v.push(id.clone());
+                match permission_mode.as_deref() {
+                    Some(m) if AGY_MODES.contains(&m) => {
+                        v.push("--mode".to_string());
+                        v.push(m.to_string());
+                    }
+                    Some("default") => {
+                        settings.insert("agentMode".into(), serde_json::json!(""));
+                    }
+                    _ => {}
+                }
+            }
+            AgentLaunch::Continue => v.push("--continue".to_string()),
+        }
+        if !settings.is_empty() {
+            v.push("--settings".to_string());
+            v.push(serde_json::Value::Object(settings).to_string());
+        }
+        v
+    }
+
+    /// Arguments for `agent` after any permission flag.
+    pub fn args(&self, agent: Agent, title_command: Option<&str>) -> Vec<String> {
+        match agent {
+            Agent::Claude => self.claude_args(),
+            Agent::Antigravity => self.agy_args(title_command, mcp_enabled()),
+        }
+    }
+}
+
+/// The running clawtree executable, for commands agents call back into.
+/// After an in-place update the old inode is gone and Linux reports
+/// `<path> (deleted)`; the path itself then holds the new binary.
+pub fn clawtree_exe() -> Option<std::path::PathBuf> {
+    let p = std::env::current_exe().ok()?;
+    let s = p.to_string_lossy();
+    Some(match s.strip_suffix(" (deleted)") {
+        Some(stripped) => std::path::PathBuf::from(stripped),
+        None => p,
+    })
+}
+
+/// The name of clawtree's MCP server (`clawtree mcp`) in agents' configs.
+pub const MCP_SERVER_NAME: &str = "clawtree";
+/// The tools `clawtree mcp` offers (agy's allow rules name each one).
+pub const MCP_TOOLS: &[&str] = &["list_sessions", "send_message"];
+/// Process env var: set to `1` to start agents without the clawtree MCP server.
+pub const NO_MCP_ENV: &str = "CLAWTREE_NO_MCP";
+
+pub fn mcp_enabled() -> bool {
+    std::env::var(NO_MCP_ENV).map_or(true, |v| v.is_empty() || v == "0")
+}
+
+/// Claude Code flags that load the clawtree MCP server for this session only
+/// and let its tools run without a prompt. `--mcp-config` takes several
+/// values, so it is followed by another flag (`--settings`) to end the list.
+pub fn claude_mcp_args() -> Vec<String> {
+    let Some(exe) = clawtree_exe().filter(|_| mcp_enabled()) else {
+        return Vec::new();
+    };
+    let config = serde_json::json!({
+        "mcpServers": { MCP_SERVER_NAME: { "command": exe, "args": ["mcp"] } }
+    });
+    let settings = serde_json::json!({
+        "permissions": { "allow": [format!("mcp__{}", MCP_SERVER_NAME)] }
+    });
+    vec![
+        "--mcp-config".to_string(),
+        config.to_string(),
+        "--settings".to_string(),
+        settings.to_string(),
+    ]
+}
+
+/// agy has no per-session MCP setting, so register `clawtree mcp` in its
+/// config (`agy mcp add`, which also updates a moved binary) when it isn't
+/// there yet. Runs in the background; a failure just leaves agy without it.
+pub fn ensure_agy_mcp_registered(home: &Path) {
+    let Some(exe) = clawtree_exe().filter(|_| mcp_enabled()) else {
+        return;
+    };
+    let exe = exe.to_string_lossy().to_string();
+    let config = home.join(".gemini").join("config").join("mcp_config.json");
+    let registered = std::fs::read(&config)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v.get("mcpServers")?.get(MCP_SERVER_NAME).cloned())
+        .is_some_and(|s| {
+            s.get("command").and_then(|c| c.as_str()) == Some(exe.as_str())
+                && s.get("args") == Some(&serde_json::json!(["mcp"]))
+        });
+    if registered {
+        return;
+    }
+    std::thread::spawn(move || {
+        let _ = Command::new(Agent::Antigravity.binary())
+            .args(["mcp", "add", MCP_SERVER_NAME, &exe, "mcp"])
+            .stdin(std::process::Stdio::null())
+            .output();
+    });
+}
+
+/// The shell command agy runs to title the pane: `'<clawtree>' __agy-title`.
+pub fn agy_title_command() -> Option<String> {
+    let exe = clawtree_exe()?;
+    let quoted = exe.to_string_lossy().replace('\'', "'\\''");
+    Some(format!("'{}' {}", quoted, AGY_TITLE_SUBCOMMAND))
+}
+
+/// agy `agent_state` values that mean a turn is in progress.
+const AGY_BUSY_STATES: &[&str] = &["working", "tool_use", "reviewing", "initializing"];
+
+/// The pane title for agy's status JSON (its title/statusline payload):
+/// `"<glyph> <conversation title>"`, using Claude Code's title glyphs — a
+/// spinner while working, `✳` otherwise — so the sidebar's title handling
+/// works unchanged. A pending tool approval is not "working": the screen
+/// check then reports that it needs input.
+pub fn agy_title(status: &serde_json::Value) -> String {
+    let state = status
+        .get("agent_state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let confirm = status
+        .get("tool_confirmation_pending")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let busy = AGY_BUSY_STATES.contains(&state) && !confirm;
+    let glyph = if busy { '\u{25D0}' } else { '\u{2733}' };
+    let title = status
+        .get("conversation_title")
+        .and_then(|v| v.as_str())
+        .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "agy".to_string());
+    format!("{} {}", glyph, title)
+}
+
+/// Whether `program` resolves to an executable on `PATH`.
+pub fn program_on_path(program: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        std::fs::metadata(dir.join(program))
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    })
 }
 
 fn run_new_session(
@@ -243,30 +499,45 @@ fn configure_session(tmux_name: &str, worktree: &Path) {
         .output();
 }
 
-/// Create a detached tmux session running `claude` in `working_dir`.
+/// Create a detached tmux session running `agent` in `working_dir`.
 #[allow(clippy::too_many_arguments)]
-pub fn create_claude_session(
+pub fn create_agent_session(
+    agent: Agent,
     working_dir: &Path,
     rows: u16,
     cols: u16,
     skip_permissions: bool,
     tmux_name: &str,
-    launch: &ClaudeLaunch,
+    launch: &AgentLaunch,
     extra_env: Option<(&str, &str)>,
 ) -> anyhow::Result<()> {
-    // Run claude with COLORTERM=truecolor so it emits 24-bit RGB colors
+    // Run the agent with COLORTERM=truecolor so it emits 24-bit RGB colors
     let mut cmd = vec!["env".to_string(), "COLORTERM=truecolor".to_string()];
     if let Some((k, v)) = extra_env {
         cmd.push(format!("{}={}", k, v));
     }
-    cmd.push("claude".to_string());
+    cmd.push(agent.binary().to_string());
+    match agent {
+        Agent::Claude => cmd.extend(claude_mcp_args()),
+        Agent::Antigravity => {
+            ensure_agy_mcp_registered(Path::new(&std::env::var("HOME").unwrap_or_default()))
+        }
+    }
     if skip_permissions {
+        // Both agents use the same flag name.
         cmd.push("--dangerously-skip-permissions".to_string());
     }
-    cmd.extend(launch.claude_args());
+    let title_command = match agent {
+        Agent::Antigravity => agy_title_command(),
+        Agent::Claude => None,
+    };
+    cmd.extend(launch.args(agent, title_command.as_deref()));
 
     run_new_session(tmux_name, working_dir, rows, cols, &cmd)?;
     configure_session(tmux_name, working_dir);
+    if !agent.is_claude() {
+        set_env(tmux_name, AGENT_ENV, agent.id());
+    }
     if skip_permissions {
         set_env(tmux_name, SKIP_PERMISSIONS_ENV, "1");
     }
@@ -288,4 +559,99 @@ pub fn create_terminal_session(
     run_new_session(tmux_name, start_dir, rows, cols, &[])?;
     configure_session(tmux_name, worktree);
     Ok(())
+}
+
+#[cfg(test)]
+mod agent_tests {
+    use super::*;
+
+    #[test]
+    fn agent_ids_round_trip() {
+        for &a in Agent::ALL {
+            assert_eq!(Agent::from_id(a.id()), Some(a));
+        }
+        assert_eq!(
+            Agent::from_program("/home/u/.local/bin/agy"),
+            Some(Agent::Antigravity)
+        );
+        assert_eq!(Agent::from_program("claude"), Some(Agent::Claude));
+        assert_eq!(Agent::from_program("bash"), None);
+        assert!(Agent::Claude.assigns_conversation_id());
+        assert!(!Agent::Antigravity.assigns_conversation_id());
+    }
+
+    #[test]
+    fn agy_launch_args() {
+        let title = Some("'/x/clawtree' __agy-title");
+        let settings_title =
+            r#"{"title":{"command":"'/x/clawtree' __agy-title","type":"command"}}"#;
+        let new = AgentLaunch::New {
+            session_id: Some("ignored".into()),
+            initial_prompt: Some("fix the bug".into()),
+        };
+        assert_eq!(
+            new.agy_args(title, false),
+            vec!["-i", "fix the bug", "--settings", settings_title]
+        );
+        let resume = |mode: Option<&str>| AgentLaunch::Resume {
+            id: "abc".into(),
+            permission_mode: mode.map(|m| m.to_string()),
+        };
+        assert_eq!(
+            resume(Some("plan")).agy_args(None, false),
+            vec!["--conversation", "abc", "--mode", "plan"]
+        );
+        assert_eq!(
+            resume(Some("default")).agy_args(None, false),
+            vec!["--conversation", "abc", "--settings", r#"{"agentMode":""}"#]
+        );
+        // Claude's mode names mean nothing to agy.
+        assert_eq!(
+            resume(Some("bypassPermissions")).agy_args(None, false),
+            vec!["--conversation", "abc"]
+        );
+        assert_eq!(AgentLaunch::Continue.agy_args(None, false), vec!["--continue"]);
+        assert_eq!(
+            AgentLaunch::Continue.agy_args(None, true),
+            vec![
+                "--continue",
+                "--settings",
+                r#"{"permissions":{"allow":["mcp(clawtree/list_sessions)","mcp(clawtree/send_message)"]}}"#
+            ]
+        );
+        // Claude's arguments are unchanged.
+        assert_eq!(
+            resume(Some("plan")).args(Agent::Claude, title),
+            vec!["--resume", "abc", "--permission-mode", "plan"]
+        );
+    }
+
+    #[test]
+    fn agy_title_uses_claude_glyphs() {
+        let v = |j: &str| serde_json::from_str::<serde_json::Value>(j).unwrap();
+        assert_eq!(
+            agy_title(&v(
+                r#"{"agent_state":"working","conversation_title":"Fix  login\nbug"}"#
+            )),
+            "\u{25D0} Fix login bug"
+        );
+        assert_eq!(agy_title(&v(r#"{"agent_state":"idle"}"#)), "\u{2733} agy");
+        assert_eq!(
+            agy_title(&v(
+                r#"{"agent_state":"tool_use","tool_confirmation_pending":true}"#
+            )),
+            "\u{2733} agy"
+        );
+        assert_eq!(agy_title(&serde_json::Value::Null), "\u{2733} agy");
+    }
+
+    #[test]
+    fn title_command_quotes_the_path() {
+        let cmd = agy_title_command().unwrap();
+        assert!(
+            cmd.starts_with('\'') && cmd.ends_with(AGY_TITLE_SUBCOMMAND),
+            "{}",
+            cmd
+        );
+    }
 }

@@ -37,6 +37,8 @@ A terminal UI for empowering your parallized usage of claude and git worktrees.
   - [Prompt Queue](#prompt-queue)
   - [Mini Mode](#mini-mode)
   - [Terminal & UI](#terminal--ui)
+  - [Antigravity CLI (agy)](#antigravity-cli-agy)
+  - [Messaging between sessions (MCP)](#messaging-between-sessions-mcp)
   - [Recovering after a crash](#recovering-after-a-crash)
 - [Requirements](#requirements)
 - [Future Goals](#future-goals)
@@ -95,7 +97,7 @@ From here you can:
 - Press **`i`** to **initialize** a new bare repo workflow — creates the `.bare/` directory structure and your first worktree
 - Press **`c`** to **convert** an existing regular git repo into the bare worktree layout (only shown when a `.git` directory is detected)
 
-Once initialized, clawtree opens the main interface where you can browse your worktrees in the sidebar. Press **`n`** to create additional worktrees for new branches. To start a Claude Code session, press **`c`** for regular mode or **`C`** (Shift+C) for yolo mode (`--dangerously-skip-permissions`).
+Once initialized, clawtree opens the main interface where you can browse your worktrees in the sidebar. Press **`n`** to create additional worktrees for new branches. To start a Claude Code session, press **`c`** for regular mode or **`C`** (Shift+C) for yolo mode (`--dangerously-skip-permissions`). Press **`a`** / **`A`** for the same with [Antigravity CLI](#antigravity-cli-agy) (`agy`).
 
 <p align="center">
   <img src="docs/screenshots/main.png" alt="Main interface" width="800">
@@ -115,6 +117,7 @@ Once initialized, clawtree opens the main interface where you can browse your wo
 - Live git status updates per worktree
 - Context-aware status indicators — know at a glance when Claude is waiting for input
 - Run multiple concurrent Claude Code sessions per worktree, all from a single terminal
+- Antigravity CLI (`agy`) sessions alongside them: see [below](#antigravity-cli-agy)
 
 ### Git Operations
 - Stage, unstage, and commit with AI-generated commit messages
@@ -148,6 +151,33 @@ Queue up one-shot tasks for Claude to handle sequentially while you focus on oth
 <p align="center">
   <img src="docs/screenshots/help-overlay.png" alt="Help overlay" width="800">
 </p>
+
+### Antigravity CLI (`agy`)
+
+[Antigravity CLI](https://antigravity.google/docs/cli/overview) is Google's terminal agent, the successor of Gemini CLI. Install it with `curl -fsSL https://antigravity.google/cli/install.sh | bash` and sign in once by running `agy`.
+
+- **`a`** starts `agy` under the selected worktree, project root or location, and **`A`** starts it with `--dangerously-skip-permissions`. Both are also in the right-click menu.
+- **Status works the same as for Claude.** The sidebar shows working (spinner), idle (○) and needs input (●: a tool approval or the folder-trust question), and plan mode is highlighted. clawtree passes agy a title command for that session only (`--settings`, never saved to your settings). The pane title then carries agy's state and the conversation's title, and sidebar rows read e.g. `Fix login bug agy`.
+- **Crash recovery covers agy too.** clawtree reads the conversation id from the running process (agy holds `~/.gemini/antigravity-cli/presence/<id>.lock`) and the mode from agy's footer. A restored session comes back with `agy --conversation <id> --mode <mode>`, and YOLO sessions keep the flag.
+- Context-usage percentages, the rate-limit marker and sub-agent tracking are Claude Code only.
+
+### Messaging between sessions (MCP)
+
+Agent sessions can talk to each other, across agents (Claude Code ↔ agy) and across projects. clawtree ships an MCP server, `clawtree mcp`, with two tools:
+
+| Tool | What it does |
+|------|--------------|
+| `list_sessions` | Every clawtree agent session on this machine: name, nickname, agent, folder, project and status (`idle`, `working`, `needs_input`, `waiting_on_subagents`). The caller is marked `you`. |
+| `send_message(to, message)` | Queue a message for a session (by name or nickname). It is typed into that session's prompt once the session is idle, as `[clawtree message from <name> (<agent> · <folder>) — reply with … to: "<name>"] <message>`, so the receiver can answer the same way. |
+
+Just ask in plain words, e.g. *"ask the agy session in feature-x to review my last commit and send you its findings"*.
+
+- **Wiring:**
+  - Claude sessions clawtree starts get the server through `--mcp-config`, for that session only.
+  - agy has no per-session option, so clawtree registers it once with `agy mcp add clawtree <clawtree> mcp`. Undo it with `agy mcp remove clawtree`.
+  - Both get a session-only rule that lets the two tools run without an approval prompt.
+  - Set `CLAWTREE_NO_MCP=1` to turn the server off.
+- **Delivery:** messages wait in `~/.clawtree/mailbox/<session>/`. Each session's own server types its mail in once the session is idle and its screen has settled, never mid-turn and never into a dialog. Sessions started before messaging existed can still *receive*, because the sender's server delivers for them. They can only *send* after they are restarted from clawtree.
 
 ### Recovering after a crash
 
@@ -186,6 +216,7 @@ A session still running in tmux (including one attached by another clawtree) is 
 |---|---|---|
 | **git** | Yes | Worktree management, staging, commits, merges |
 | **claude** (Claude Code CLI) | Yes | AI assistant sessions spawned per worktree |
+| **agy** (Antigravity CLI) | Optional | Antigravity sessions (`a` / `A`) |
 | **tmux** | Yes | Session persistence and reconnection across restarts |
 | **wt.exe** | Optional | Windows Terminal tab integration (WSL only) |
 
