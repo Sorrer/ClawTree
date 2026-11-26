@@ -66,6 +66,8 @@ pub enum AppEvent {
     ClaudeUsageUpdated { updates: Vec<(u64, ClaudeUsage)> },
     /// Global account-level usage data updated from the Anthropic API.
     GlobalUsageUpdated { usage: GlobalUsage },
+    /// agy's quota windows (None once there's nothing recent to show).
+    AgyUsageUpdated { usage: Option<GlobalUsage> },
     /// A one-shot Claude summary completed for a session.
     SummaryReady { session_id: u64, summary: String },
     /// Claude-generated commit message is ready.

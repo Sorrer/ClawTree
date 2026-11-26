@@ -125,6 +125,11 @@ pub fn screen_state(content: &str) -> ScreenState {
     if busy {
         return ScreenState::Working;
     }
+    if lines.iter().any(|l| l.contains("↑/↓ Scroll")) {
+        // A read-only view the user opened (quota, help, a transcript):
+        // nothing is waiting on them.
+        return ScreenState::Unknown;
+    }
     if footer_status(footer).is_some() {
         // agy's footer without its input box: some other view or question.
         return ScreenState::NeedsInput;
@@ -149,7 +154,9 @@ pub fn footer_mode(content: &str) -> Option<String> {
     )
 }
 
-/// How many sub-agents the footer says are running (`… · 3 subagent(s)`).
+/// How much background work the footer says is running: sub-agents
+/// (`… · 3 subagent(s)`) plus background tasks (`… · 1 task(s) · /tasks`,
+/// e.g. a long shell command agy is waiting on).
 pub fn running_subagents(content: &str) -> usize {
     let lines = bottom_lines(content);
     let Some(status) = lines.first().and_then(|f| footer_status(f)) else {
@@ -157,11 +164,13 @@ pub fn running_subagents(content: &str) -> usize {
     };
     status
         .split(" · ")
-        .find_map(|seg| {
+        .filter_map(|seg| {
             let (n, rest) = seg.trim().split_once(' ')?;
-            rest.starts_with("subagent").then(|| n.parse().ok()).flatten()
+            (rest.starts_with("subagent") || rest.starts_with("task"))
+                .then(|| n.parse::<usize>().ok())
+                .flatten()
         })
-        .unwrap_or(0)
+        .sum()
 }
 
 /// agy's data folder: `~/.gemini/antigravity-cli`.
@@ -216,6 +225,101 @@ pub fn conversation_id_for_pid(home: &Path, pid: u32, current: Option<&str>) -> 
     }
     open.sort();
     open.into_iter().next().map(|(_, id)| id)
+}
+
+// ── Usage (quota) ────────────────────────────────────────────────────────
+//
+// agy hands its quota to the title command (clawtree's `__agy-title`) on every
+// state change, per bucket: `gemini-5h`, `gemini-weekly`, and `3p-5h` /
+// `3p-weekly` for third-party models. Each has `remaining_fraction` and
+// `reset_in_seconds` (0, with a 1970 `reset_time`, when the bucket is unused).
+// The hook saves the latest copy for the clawtree window's Usage panel.
+
+/// Where the hook saves agy's latest quota: `~/.clawtree/agy-usage.json`.
+pub fn usage_path(home: &Path) -> PathBuf {
+    home.join(".clawtree").join("agy-usage.json")
+}
+
+/// Save the quota from an agy status payload (atomically), if it has one.
+pub fn save_usage(home: &Path, status: &serde_json::Value, now: u64) {
+    let Some(quota) = status
+        .get("quota")
+        .and_then(|q| q.as_object())
+        .filter(|q| !q.is_empty())
+    else {
+        return;
+    };
+    let saved = serde_json::json!({
+        "updated_at": now,
+        "plan_tier": status.get("plan_tier"),
+        "quota": quota,
+    });
+    let path = usage_path(home);
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if std::fs::write(&tmp, saved.to_string()).is_ok() && std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// Saved usage older than this isn't shown.
+const USAGE_MAX_AGE_SECS: u64 = 7 * 24 * 3600;
+
+/// Usage windows from saved quota as `(label, percent used, reset ISO time)`:
+/// `agy 5h` / `agy 7d` always, third-party (`agy 3p …`) ones once used.
+/// A window whose reset time has passed reads 0% until agy reports again.
+pub fn usage_windows(saved: &serde_json::Value, now: u64) -> Vec<(String, f64, Option<String>)> {
+    let updated = saved.get("updated_at").and_then(|v| v.as_u64()).unwrap_or(0);
+    if now.saturating_sub(updated) > USAGE_MAX_AGE_SECS {
+        return Vec::new();
+    }
+    let Some(quota) = saved.get("quota").and_then(|q| q.as_object()) else {
+        return Vec::new();
+    };
+    let known = [
+        ("gemini-5h", "agy 5h", true),
+        ("gemini-weekly", "agy 7d", true),
+        ("3p-5h", "agy 3p 5h", false),
+        ("3p-weekly", "agy 3p 7d", false),
+    ];
+    let mut out = Vec::new();
+    let mut push = |bucket: &serde_json::Value, label: String, always: bool| {
+        let remaining = bucket
+            .get("remaining_fraction")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0);
+        let reset_in = bucket.get("reset_in_seconds").and_then(|v| v.as_u64()).unwrap_or(0);
+        let used = ((1.0 - remaining) * 100.0).clamp(0.0, 100.0);
+        if !always && used <= 0.0 {
+            return;
+        }
+        if reset_in > 0 && now >= updated + reset_in {
+            out.push((label, 0.0, None)); // the window has rolled over since
+            return;
+        }
+        let reset = bucket
+            .get("reset_time")
+            .and_then(|v| v.as_str())
+            .filter(|t| reset_in > 0 && !t.starts_with("1970"))
+            .map(|t| t.to_string());
+        out.push((label, used, reset));
+    };
+    for (key, label, always) in known {
+        if let Some(b) = quota.get(key) {
+            push(b, label.to_string(), always);
+        }
+    }
+    let mut others: Vec<&String> = quota
+        .keys()
+        .filter(|k| !known.iter().any(|(key, _, _)| key == k))
+        .collect();
+    others.sort();
+    for k in others {
+        push(&quota[k.as_str()], format!("agy {}", k), false);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -410,5 +514,72 @@ mod tests {
             "? for shortcuts                                                auto · Gemini 4 Neon · high",
         ]);
         assert_eq!(screen_state(&s), ScreenState::Idle);
+    }
+
+    #[test]
+    fn usage_from_a_real_quota_payload() {
+        // From agy 1.5.17's title payload.
+        let status: serde_json::Value = serde_json::from_str(
+            r#"{"plan_tier":"Google AI Ultra","quota":{
+                "3p-5h":{"remaining_fraction":1,"reset_time":"1970-01-01T00:00:00Z","reset_in_seconds":0},
+                "3p-weekly":{"remaining_fraction":1,"reset_time":"1970-01-01T00:00:00Z","reset_in_seconds":0},
+                "gemini-5h":{"remaining_fraction":0.96220595,"reset_time":"2026-11-26T12:02:15Z","reset_in_seconds":15421},
+                "gemini-weekly":{"remaining_fraction":0.9855365,"reset_time":"2026-12-03T07:02:15Z","reset_in_seconds":602221}}}"#,
+        )
+        .unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let now = 1_795_660_000;
+        save_usage(home.path(), &status, now);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(usage_path(home.path())).unwrap()).unwrap();
+        let w = usage_windows(&saved, now + 60);
+        let labels: Vec<&str> = w.iter().map(|x| x.0.as_str()).collect();
+        // Unused third-party buckets stay hidden.
+        assert_eq!(labels, vec!["agy 5h", "agy 7d"]);
+        assert!((w[0].1 - 3.78).abs() < 0.01, "{}", w[0].1);
+        assert_eq!(w[0].2.as_deref(), Some("2026-11-26T12:02:15Z"));
+        // After the 5h window resets it reads 0% until agy reports again.
+        let later = usage_windows(&saved, now + 15_421 + 5);
+        assert_eq!(later[0], ("agy 5h".to_string(), 0.0, None));
+        assert!(later[1].1 > 1.0);
+        // Week-old data isn't shown at all.
+        assert!(usage_windows(&saved, now + 8 * 24 * 3600).is_empty());
+        // A payload without quota leaves the saved copy alone.
+        save_usage(home.path(), &serde_json::json!({"agent_state": "idle"}), now + 99);
+        assert!(std::fs::read_to_string(usage_path(home.path())).unwrap().contains("gemini-5h"));
+    }
+
+    #[test]
+    fn background_tasks_count_as_sub_work() {
+        // Seen live: idle, with a shell task listed under the input box.
+        let s = screen(&[
+            "  rojo build and the lint all passed; waiting for the remaining stages to finish.",
+            RULE,
+            ">",
+            RULE,
+            "  ● [02:36:52] cd /work && bash scripts/check.sh --quick running",
+            RULE,
+            "? for shortcuts                          auto · Gemini 4 Neon · high · 1 task(s) · /tasks",
+        ]);
+        assert_eq!(screen_state(&s), ScreenState::Idle);
+        assert_eq!(running_subagents(&s), 1);
+        let both = screen(&[
+            RULE,
+            ">",
+            RULE,
+            "? for shortcuts            auto · Gemini 4 Neon · high · 2 subagent(s) · 1 task(s) · /tasks",
+        ]);
+        assert_eq!(running_subagents(&both), 3);
+    }
+
+    #[test]
+    fn a_scroll_view_is_not_a_question() {
+        let s = screen(&[
+            "    Quota available",
+            "  │Within each group, models share a weekly limit and a 5-hour limit.",
+            "  ↑/↓ Scroll · pgup/pgdown Page · ctrl+end Bottom · ctrl+home Top · esc Close",
+            "                                                            auto · Gemini 4 Neon · high",
+        ]);
+        assert_eq!(screen_state(&s), ScreenState::Unknown);
     }
 }

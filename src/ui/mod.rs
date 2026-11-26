@@ -55,9 +55,9 @@ fn draw_normal(f: &mut Frame, app: &App) {
             // One line per usage window (which windows exist varies by
             // account and over time), plus borders; capped so a long list
             // can't crowd out the worktree list.
-            let usage_windows = app.global_usage.as_ref().map_or(0, |u| u.windows.len());
+            let usage_windows = app.usage_windows().len();
             let has_usage = usage_windows > 0;
-            let usage_panel_height = (usage_windows as u16).min(6) + 2;
+            let usage_panel_height = (usage_windows as u16).min(8) + 2;
             let terminal_panel_height = if has_terminals {
                 (app.terminal_ids.len() as u16 + 2).min(8)
             } else {

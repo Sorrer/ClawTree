@@ -159,7 +159,9 @@ Queue up one-shot tasks for Claude to handle sequentially while you focus on oth
 - **`a`** starts `agy` under the selected worktree, project root or location, and **`A`** starts it with `--dangerously-skip-permissions`. Both are also in the right-click menu.
 - **Status works the same as for Claude.** The sidebar shows working (spinner), idle (○) and needs input (●: a tool approval or the folder-trust question), and plan mode is highlighted. clawtree passes agy a title command for that session only (`--settings`, never saved to your settings). The pane title then carries agy's state and the conversation's title, and sidebar rows read e.g. `Fix login bug agy`.
 - **Crash recovery covers agy too.** clawtree reads the conversation id from the running process (agy holds `~/.gemini/antigravity-cli/presence/<id>.lock`) and the mode from agy's footer. A restored session comes back with `agy --conversation <id> --mode <mode>`, and YOLO sessions keep the flag.
-- Context-usage percentages, the rate-limit marker and sub-agent tracking are Claude Code only.
+- **Usage:** the Usage panel shows agy's quota (`agy 5h`, `agy 7d`, plus `agy 3p …` for third-party models once used) under Claude's windows. agy hands its quota to clawtree's title hook on every state change. The hook keeps the latest copy in `~/.clawtree/agy-usage.json`, so nothing extra is fetched.
+- **Background work:** agy sub-agents and background tasks (`N subagent(s)` / `N task(s)` in its footer) show as *awaiting agents*.
+- Per-session context-usage percentages and the rate-limit marker are Claude Code only.
 
 ### Messaging between sessions (MCP)
 

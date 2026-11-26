@@ -818,6 +818,8 @@ pub struct App {
     pub claude_usage: HashMap<u64, ClaudeUsage>,
     /// Global account-level usage from the Anthropic API.
     pub global_usage: Option<GlobalUsage>,
+    /// agy's quota windows, from what clawtree's agy title hook saved.
+    pub agy_usage: Option<GlobalUsage>,
     /// Session IDs for terminal sessions (separate from worktree session_ids).
     pub terminal_ids: Vec<u64>,
     /// Selected index within the terminal panel.
@@ -871,6 +873,15 @@ pub struct App {
 }
 
 impl App {
+    /// Every usage window for the Usage panel: Claude's, then agy's.
+    pub fn usage_windows(&self) -> Vec<crate::session::UsageWindow> {
+        self.global_usage
+            .iter()
+            .chain(self.agy_usage.iter())
+            .flat_map(|u| u.windows.iter().cloned())
+            .collect()
+    }
+
     pub fn new(
         bare_repo_path: PathBuf,
         event_tx: mpsc::UnboundedSender<AppEvent>,
@@ -943,6 +954,7 @@ impl App {
             claude_usage: HashMap::new(),
             terminal_names: HashMap::new(),
             global_usage: None,
+            agy_usage: None,
             terminal_ids: Vec::new(),
             terminal_panel_selected: 0,
             sidebar_panel: SidebarPanel::Worktrees,
