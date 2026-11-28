@@ -2301,7 +2301,11 @@ pub fn spawn_global_usage_poller(
                 let in_backoff = backoff_until.map(|t| now < t).unwrap_or(false);
 
                 if due && !in_backoff {
-                    match poll_global_usage() {
+                    // Another clawtree window may have just fetched it.
+                    let fetched = read_shared_usage(SHARED_USAGE_FRESH_SECS)
+                        .ok_or(())
+                        .or_else(|_| poll_global_usage());
+                    match fetched {
                         Ok(usage) => {
                             backoff_secs = CHECK_INTERVAL_SECS;
                             backoff_until = None;
@@ -2395,7 +2399,54 @@ fn poll_global_usage() -> Result<GlobalUsage, ()> {
         return Err(());
     }
 
-    Ok(parse_global_usage(&json))
+    // A throttled request still gets 200, with every window null. Treat it as
+    // a failure, so the last good numbers stay up and the poller backs off.
+    let usage = parse_global_usage(&json);
+    if usage.windows.is_empty() {
+        tracing::warn!("Usage: API returned no usage windows (throttled?)");
+        return Err(());
+    }
+    write_shared_usage(&json);
+    Ok(usage)
+}
+
+/// Windows share the last good usage response through this file, so several
+/// open clawtree windows make about one request a minute between them.
+const SHARED_USAGE_FRESH_SECS: u64 = 60;
+
+fn shared_usage_path() -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok().filter(|h| !h.is_empty())?;
+    Some(PathBuf::from(home).join(".clawtree").join("claude-usage.json"))
+}
+
+fn write_shared_usage(response: &serde_json::Value) {
+    let Some(path) = shared_usage_path() else {
+        return;
+    };
+    let saved = serde_json::json!({ "fetched_at": layout::now_secs(), "response": response });
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if std::fs::write(&tmp, saved.to_string()).is_ok() && std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// The shared response, if one was fetched within `max_age_secs`.
+fn read_shared_usage(max_age_secs: u64) -> Option<GlobalUsage> {
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(shared_usage_path()?).ok()?).ok()?;
+    shared_usage_from(&saved, layout::now_secs(), max_age_secs)
+}
+
+fn shared_usage_from(saved: &serde_json::Value, now: u64, max_age_secs: u64) -> Option<GlobalUsage> {
+    let fetched = saved.get("fetched_at")?.as_u64()?;
+    if now.saturating_sub(fetched) > max_age_secs {
+        return None;
+    }
+    let usage = parse_global_usage(saved.get("response")?);
+    (!usage.windows.is_empty()).then_some(usage)
 }
 
 /// Extract the usage windows from an `/api/oauth/usage` response.
@@ -3264,5 +3315,25 @@ mod tests {
     fn test_usage_no_windows() {
         assert!(parse_global_usage(&serde_json::json!({ "limits": [] })).windows.is_empty());
         assert!(parse_global_usage(&serde_json::json!({})).windows.is_empty());
+        // A throttled response: 200, every window null.
+        let throttled = serde_json::json!({
+            "limits": null, "five_hour": null, "seven_day": null, "seven_day_opus": null
+        });
+        assert!(parse_global_usage(&throttled).windows.is_empty());
+    }
+
+    #[test]
+    fn shared_usage_is_used_only_while_fresh() {
+        let response = serde_json::json!({ "limits": [
+            { "kind": "weekly_all", "group": "weekly", "percent": 64.0, "is_active": true }
+        ]});
+        let saved = serde_json::json!({ "fetched_at": 1000, "response": response });
+        let fresh = shared_usage_from(&saved, 1030, 60).expect("fresh copy");
+        assert_eq!(fresh.windows.len(), 1);
+        assert_eq!(fresh.windows[0].pct, 64.0);
+        assert!(shared_usage_from(&saved, 1100, 60).is_none());
+        // An empty (throttled) copy is never used.
+        let empty = serde_json::json!({ "fetched_at": 1000, "response": { "limits": null } });
+        assert!(shared_usage_from(&empty, 1001, 60).is_none());
     }
 }

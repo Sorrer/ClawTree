@@ -143,7 +143,7 @@ Queue up one-shot tasks for Claude to handle sequentially while you focus on oth
 
 ### Terminal & UI
 - Keyboard-driven with vim-style navigation (`j`/`k`, `?` for help)
-- Click-and-drag text selection with clipboard support
+- Click-and-drag text selection with clipboard support. Drag above or below the terminal pane and it scrolls, faster the further out you hold the mouse. The mouse wheel also scrolls while the button is held, so a selection can cover more than one screen. Releasing copies all of it
 - URL detection — click to open, `u` to copy
 - Scrollback browsing with scrollbar. Works with both Claude Code renderers: with the classic renderer the history comes from tmux scrollback; with the fullscreen (alternate-screen) renderer the wheel, PgUp/PgDn and mouse clicks are forwarded to Claude Code, which scrolls and selects in its own buffer. Set `CLAWTREE_CLASSIC_RENDERER=1` to force the classic renderer for new sessions
 - Auto update notifications
@@ -173,6 +173,8 @@ Agent sessions can talk to each other, across agents (Claude Code ↔ agy) and a
 | `send_message(to, message)` | Queue a message for a session (by name or nickname). It is typed into that session's prompt once the session is idle, as `[clawtree message from <name> (<agent> · <folder>) — reply with … to: "<name>"] <message>`, so the receiver can answer the same way. |
 
 Just ask in plain words, e.g. *"ask the agy session in feature-x to review my last commit and send you its findings"*.
+
+To point one agent at another, right-click the other session in the sidebar and choose **Link to Active Session**. A reference to it is typed into the prompt of the session you have open, for example `clawtree session clawtree-main-4 (claude, "Mega titan revamp", main; reach it with …)`. It isn't sent, so you can add *"…work with it via clawtree to finish the boss fight"* and press Enter.
 
 - **Wiring:**
   - Claude sessions clawtree starts get the server through `--mcp-config`, for that session only.

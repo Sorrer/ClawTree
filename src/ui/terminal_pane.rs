@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use super::theme;
-use crate::app::{App, FocusTarget, TextSelection};
+use crate::app::{App, FocusTarget};
 use crate::url;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
@@ -91,8 +91,15 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                             f.render_widget(para, inner_area);
 
                             // Selection overlay for scrolled content
-                            if let Some(sel) = app.text_selection.as_ref() {
-                                let ((sr, sc), (er, ec)) = sel.ordered();
+                            if let Some(((sr, sc), (er, ec))) =
+                                app.text_selection.as_ref().and_then(|sel| {
+                                    sel.in_view(
+                                        effective_scroll,
+                                        inner_area.height,
+                                        inner_area.width,
+                                    )
+                                })
+                            {
                                 let buf = f.buffer_mut();
                                 for row in sr..=er {
                                     if row >= inner_area.height {
@@ -154,7 +161,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                         block,
                         area,
                         &app.url_cache,
-                        app.text_selection.as_ref(),
+                        app.text_selection.as_ref().and_then(|sel| {
+                            let inner = app.areas.terminal_pane_inner.get();
+                            sel.in_view(0, inner.height, inner.width)
+                        }),
                         is_focused,
                     );
                     return;
@@ -611,20 +621,26 @@ pub fn scrollback_snapshot(
     Some(snap)
 }
 
-/// Plain text of a scrollback snapshot (ANSI styling stripped), line-aligned
-/// with what was rendered.
-pub fn scrollback_plain_text(snap: &ScrollbackSnapshot) -> String {
-    let text = snap.content.as_bytes().into_text().unwrap_or_default();
-    text.lines
-        .iter()
-        .map(|l| {
-            l.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+/// Plain text of lines `start..=end` of a tmux pane (0 = top of the live
+/// screen, negative = scrollback), for copying a selection.
+pub fn capture_plain_lines(tmux_name: &str, start: i64, end: i64) -> Option<String> {
+    let output = crate::session::tmux::tmux_cmd()
+        .args([
+            "capture-pane",
+            "-t",
+            tmux_name,
+            "-p",
+            "-S",
+            &start.to_string(),
+            "-E",
+            &end.to_string(),
+        ])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 /// Capture tmux pane content for a range of lines (with ANSI escapes). Returns None on failure.
@@ -769,7 +785,7 @@ fn render_vt100_screen(
     block: Block,
     area: Rect,
     url_cache: &url::UrlCache,
-    selection: Option<&TextSelection>,
+    selection: Option<((u16, u16), (u16, u16))>,
     is_focused: bool,
 ) {
     let inner = block.inner(area);
@@ -854,8 +870,7 @@ fn render_vt100_screen(
     }
 
     // Overlay selection highlighting (inverse video)
-    if let Some(sel) = selection {
-        let ((sr, sc), (er, ec)) = sel.ordered();
+    if let Some(((sr, sc), (er, ec))) = selection {
         for row in sr..=er {
             if row >= inner.height.min(screen_rows) {
                 break;

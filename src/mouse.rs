@@ -39,6 +39,132 @@ pub fn screen_to_vt100_clamped(app: &App, col: u16, row: u16) -> Option<(u16, u1
     Some((clamped_row, clamped_col))
 }
 
+/// The selection position — `(tmux line, col)`, where line 0 is the top of
+/// the live screen and scrollback is negative — under a terminal-pane cell.
+pub fn screen_to_line(app: &App, col: u16, row: u16) -> Option<(i64, u16)> {
+    let (r, c) = screen_to_vt100(app, col, row)?;
+    Some((r as i64 - app.terminal_scroll as i64, c))
+}
+
+/// [`screen_to_line`], clamped to the pane's edges (for drags that leave it).
+pub fn screen_to_line_clamped(app: &App, col: u16, row: u16) -> Option<(i64, u16)> {
+    let (r, c) = screen_to_vt100_clamped(app, col, row)?;
+    Some((r as i64 - app.terminal_scroll as i64, c))
+}
+
+/// How often a selection held past the pane's edge scrolls another step.
+const AUTOSCROLL_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// A drag to `(col, row)`: move the selection's end there, and start or stop
+/// auto-scrolling depending on whether the mouse is above or below the pane.
+pub fn drag_selection(app: &mut App, col: u16, row: u16) -> bool {
+    let inner = app.areas.terminal_pane_inner.get();
+    let pos = screen_to_line_clamped(app, col, row);
+    let Some(sel) = app.text_selection.as_mut() else {
+        return false;
+    };
+    sel.last_mouse = (col, row);
+    sel.autoscroll = if row < inner.y {
+        -1
+    } else if row >= inner.y + inner.height {
+        1
+    } else {
+        0
+    };
+    if let Some(pos) = pos {
+        sel.endpoint = pos;
+    }
+    if sel.autoscroll != 0 {
+        autoscroll_selection(app);
+    }
+    true
+}
+
+/// Called every tick: while a drag is held above (below) the terminal pane,
+/// scroll the view up (down) — further from the edge scrolls faster — and
+/// keep the selection's end on the edge row. Returns true if it scrolled.
+pub fn autoscroll_selection(app: &mut App) -> bool {
+    let Some(sel) = app.text_selection else {
+        return false;
+    };
+    if !sel.dragging || sel.autoscroll == 0 {
+        return false;
+    }
+    if sel.last_autoscroll.is_some_and(|t| t.elapsed() < AUTOSCROLL_EVERY) {
+        return false;
+    }
+    let inner = app.areas.terminal_pane_inner.get();
+    let (_, mouse_row) = sel.last_mouse;
+    let distance = if sel.autoscroll < 0 {
+        inner.y.saturating_sub(mouse_row)
+    } else {
+        mouse_row.saturating_sub(inner.y + inner.height.saturating_sub(1))
+    };
+    let step = (distance as usize).clamp(1, 5);
+    let Some(tmux_name) = app
+        .active_session_id
+        .and_then(|sid| app.sessions.get(&sid))
+        .and_then(|s| s.tmux_session_name.clone())
+    else {
+        return false; // no scrollback to move through
+    };
+    let info = crate::ui::terminal_pane::tmux_scroll_info(&tmux_name);
+    if info.alternate_on {
+        return false; // a full-screen app owns its own history
+    }
+    let before = app.terminal_scroll;
+    app.terminal_scroll = if sel.autoscroll < 0 {
+        before.saturating_add(step).min(info.history)
+    } else {
+        before.saturating_sub(step)
+    };
+    let (col, row) = sel.last_mouse;
+    let pos = screen_to_line_clamped(app, col, row);
+    if let Some(s) = app.text_selection.as_mut() {
+        s.last_autoscroll = Some(std::time::Instant::now());
+        if let Some(pos) = pos {
+            s.endpoint = pos;
+        }
+    }
+    app.terminal_scroll != before
+}
+
+/// After the view scrolled under a held drag (mouse wheel), point the
+/// selection's end at the text now under the mouse.
+pub fn reaim_selection(app: &mut App) {
+    let Some(sel) = app.text_selection else {
+        return;
+    };
+    let (col, row) = sel.last_mouse;
+    if let Some(pos) = screen_to_line_clamped(app, col, row) {
+        if let Some(s) = app.text_selection.as_mut() {
+            s.endpoint = pos;
+        }
+    }
+}
+
+/// The text a finished selection covers. Within the live screen it comes
+/// from the screen itself (exact for wide characters); a selection that
+/// reaches into scrollback is read from tmux, so it can span any number of
+/// screens.
+pub fn selected_text(app: &App, sel: &crate::app::TextSelection) -> Option<String> {
+    let ((sl, sc), (el, ec)) = sel.ordered();
+    let session = app.active_session_id.and_then(|sid| app.sessions.get(&sid))?;
+    let text = match session.tmux_session_name.as_deref() {
+        Some(tmux) if sl < 0 || app.terminal_scroll > 0 => {
+            let content = crate::ui::terminal_pane::capture_plain_lines(tmux, sl, el)?;
+            let rows = u16::try_from(el - sl).ok()?;
+            extract_text_from_plain(&content, (0, sc), (rows, ec))
+        }
+        _ => {
+            let (start, end) = (u16::try_from(sl).ok()?, u16::try_from(el).ok()?);
+            let guard = session.parser.try_read().ok()?;
+            extract_text_from_screen(guard.screen(), (start, sc), (end, ec))
+        }
+    };
+    (!text.is_empty()).then_some(text)
+}
+
 /// Extract text from a vt100 screen between two (row, col) positions (inclusive).
 /// Handles wide characters, trims trailing whitespace per line, joins with newline.
 pub fn extract_text_from_screen(
@@ -448,7 +574,7 @@ fn handle_sidebar_click(app: &mut App, col: u16, row: u16) -> bool {
                 let tp_inner_w = tp_inner.width as usize;
                 if tp_inner_w >= 2 && rel_col >= tp_inner_w - 2 {
                     if let Some(item) = app.terminal_panel_items.get(item_row).copied() {
-                        let actions = app::context_actions_for_item(&item, app.wt_available);
+                        let actions = app::context_actions(app, &item);
                         app.open_dialog(app::Dialog::ContextMenu {
                             item,
                             selected: None,
@@ -507,7 +633,7 @@ fn handle_sidebar_click(app: &mut App, col: u16, row: u16) -> bool {
         let inner_w = inner.width as usize;
         if inner_w >= 2 && rel_col >= inner_w - 2 {
             if let Some(item) = app.sidebar_items.get(item_row).copied() {
-                let actions = app::context_actions_for_item(&item, app.wt_available);
+                let actions = app::context_actions(app, &item);
                 app.open_dialog(app::Dialog::ContextMenu {
                     item,
                     selected: None,
@@ -780,7 +906,7 @@ pub fn handle_sidebar_right_click(app: &mut App, col: u16, row: u16) -> bool {
             if item_row < app.terminal_panel_items.len() {
                 app.terminal_panel_selected = item_row;
                 if let Some(item) = app.terminal_panel_items.get(item_row).copied() {
-                    let actions = app::context_actions_for_item(&item, app.wt_available);
+                    let actions = app::context_actions(app, &item);
                     app.open_dialog(app::Dialog::ContextMenu {
                         item,
                         selected: None,
@@ -805,7 +931,7 @@ pub fn handle_sidebar_right_click(app: &mut App, col: u16, row: u16) -> bool {
     if item_row < app.sidebar_items.len() {
         app.sidebar_selected = item_row;
         if let Some(item) = app.sidebar_items.get(item_row).copied() {
-            let actions = app::context_actions_for_item(&item, app.wt_available);
+            let actions = app::context_actions(app, &item);
             app.open_dialog(app::Dialog::ContextMenu {
                 item,
                 selected: None,
