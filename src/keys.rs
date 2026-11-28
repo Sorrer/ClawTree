@@ -1541,6 +1541,68 @@ fn handle_url_open(app: &mut App) {
 }
 
 /// Execute a context menu action by dispatching to the same handlers used by hotkeys.
+/// What "Link to Active Session" types: who the session is and how to reach
+/// it, so "work with <this> via clawtree on …" reads naturally. Sessions
+/// without the MCP tool can still use the `clawtree send` command.
+fn session_link_text(app: &App, sid: u64) -> Option<String> {
+    let s = app.sessions.get(&sid)?;
+    let name = s.tmux_session_name.clone()?;
+    let shown = s
+        .nickname
+        .clone()
+        .or_else(|| {
+            s.terminal_title()
+                .map(|t| session::strip_title_status_glyph(&t).trim().to_string())
+        })
+        .filter(|t| !t.is_empty() && *t != s.agent.name());
+    let folder = s
+        .worktree_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string());
+    let mut about = vec![s.agent.name().to_string()];
+    if let Some(t) = shown {
+        about.push(format!("\"{}\"", t));
+    }
+    if let Some(f) = folder {
+        about.push(f);
+    }
+    Some(format!(
+        "clawtree session {} ({}; reach it with the clawtree send_message tool or `clawtree send {} \"…\"`) ",
+        name,
+        about.join(", "),
+        name
+    ))
+}
+
+/// Type a reference to the right-clicked session into the active session's
+/// prompt (not submitted), then put the cursor there.
+fn link_to_active_session(app: &mut App, item: &SidebarItem) {
+    let Some((target, active)) = app.link_target(item) else {
+        app.set_status("Open another Claude or agy session first, then link this one into it");
+        return;
+    };
+    let Some(text) = session_link_text(app, target) else {
+        app.set_status("This session isn't in tmux, so other sessions can't reach it");
+        return;
+    };
+    let Some(session) = app.sessions.get(&active) else {
+        return;
+    };
+    match session.tmux_session_name.clone() {
+        Some(tmux) => {
+            let _ = session::tmux::tmux_cmd()
+                .args(["send-keys", "-t", &tmux, "-l", &text])
+                .output();
+        }
+        None => {
+            let _ = session.write_tx.send(bytes::Bytes::from(text.into_bytes()));
+        }
+    }
+    app.project_overview_active = false;
+    app.focus = FocusTarget::TerminalPane;
+    app.input_mode = InputMode::Terminal;
+}
+
 pub fn execute_context_action(
     app: &mut App,
     item: &SidebarItem,
@@ -1614,6 +1676,7 @@ pub fn execute_context_action(
                 });
             }
         }
+        ContextActionKind::LinkToActiveSession => link_to_active_session(app, item),
         ContextActionKind::CopyLastUrl => handle_url_copy(app),
         ContextActionKind::OpenLastUrl => handle_url_open(app),
         ContextActionKind::OpenWindowsTerminal => {

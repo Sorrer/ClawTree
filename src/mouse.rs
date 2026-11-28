@@ -448,7 +448,7 @@ fn handle_sidebar_click(app: &mut App, col: u16, row: u16) -> bool {
                 let tp_inner_w = tp_inner.width as usize;
                 if tp_inner_w >= 2 && rel_col >= tp_inner_w - 2 {
                     if let Some(item) = app.terminal_panel_items.get(item_row).copied() {
-                        let actions = app::context_actions_for_item(&item, app.wt_available);
+                        let actions = app::context_actions(app, &item);
                         app.open_dialog(app::Dialog::ContextMenu {
                             item,
                             selected: None,
@@ -507,7 +507,7 @@ fn handle_sidebar_click(app: &mut App, col: u16, row: u16) -> bool {
         let inner_w = inner.width as usize;
         if inner_w >= 2 && rel_col >= inner_w - 2 {
             if let Some(item) = app.sidebar_items.get(item_row).copied() {
-                let actions = app::context_actions_for_item(&item, app.wt_available);
+                let actions = app::context_actions(app, &item);
                 app.open_dialog(app::Dialog::ContextMenu {
                     item,
                     selected: None,
@@ -780,7 +780,7 @@ pub fn handle_sidebar_right_click(app: &mut App, col: u16, row: u16) -> bool {
             if item_row < app.terminal_panel_items.len() {
                 app.terminal_panel_selected = item_row;
                 if let Some(item) = app.terminal_panel_items.get(item_row).copied() {
-                    let actions = app::context_actions_for_item(&item, app.wt_available);
+                    let actions = app::context_actions(app, &item);
                     app.open_dialog(app::Dialog::ContextMenu {
                         item,
                         selected: None,
@@ -805,7 +805,7 @@ pub fn handle_sidebar_right_click(app: &mut App, col: u16, row: u16) -> bool {
     if item_row < app.sidebar_items.len() {
         app.sidebar_selected = item_row;
         if let Some(item) = app.sidebar_items.get(item_row).copied() {
-            let actions = app::context_actions_for_item(&item, app.wt_available);
+            let actions = app::context_actions(app, &item);
             app.open_dialog(app::Dialog::ContextMenu {
                 item,
                 selected: None,

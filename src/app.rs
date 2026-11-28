@@ -265,12 +265,32 @@ pub enum ContextActionKind {
     DeleteWorktree,
     ForceDeleteWorktree,
     RenameSession,
+    /// Type a reference to this session into the active session's prompt.
+    LinkToActiveSession,
     DeleteSession,
     CopyLastUrl,
     OpenLastUrl,
     OpenWindowsTerminal,
     OpenWindowsTerminalClaude,
     RemoveLocation,
+}
+
+/// The context menu for `item`: [`context_actions_for_item`], plus "Link to
+/// Active Session" on an agent session other than the one in the terminal
+/// pane (when that one is an agent too).
+pub fn context_actions(app: &App, item: &SidebarItem) -> Vec<ContextAction> {
+    let mut actions = context_actions_for_item(item, app.wt_available);
+    if app.link_target(item).is_some() {
+        actions.insert(
+            0,
+            ContextAction {
+                label: "Link to Active Session".into(),
+                hotkey: "l".into(),
+                kind: ContextActionKind::LinkToActiveSession,
+            },
+        );
+    }
+    actions
 }
 
 /// Build a list of context actions appropriate for the given sidebar item.
@@ -873,6 +893,33 @@ pub struct App {
 }
 
 impl App {
+    /// The session a sidebar or terminal-panel row stands for.
+    pub fn session_id_for_item(&self, item: &SidebarItem) -> Option<u64> {
+        match *item {
+            SidebarItem::Session(wi, si) => self.worktrees.get(wi)?.session_ids.get(si).copied(),
+            SidebarItem::LocationSession(li, si) => {
+                self.locations.get(li)?.session_ids.get(si).copied()
+            }
+            SidebarItem::ProjectSession(si) => self.project_session_ids.get(si).copied(),
+            SidebarItem::Terminal(ti) => self.terminal_ids.get(ti).copied(),
+            _ => None,
+        }
+    }
+
+    /// For "Link to Active Session": `(target, active)` session ids when
+    /// `item` is a live agent session and a different live agent session
+    /// is open in the terminal pane.
+    pub fn link_target(&self, item: &SidebarItem) -> Option<(u64, u64)> {
+        let target = self.session_id_for_item(item)?;
+        let active = self.active_session_id.filter(|&a| a != target)?;
+        let is_live_agent = |sid: u64| {
+            self.sessions.get(&sid).is_some_and(|s| {
+                !s.is_terminal && !s.exited.load(std::sync::atomic::Ordering::Relaxed)
+            })
+        };
+        (is_live_agent(target) && is_live_agent(active)).then_some((target, active))
+    }
+
     /// Every usage window for the Usage panel: Claude's, then agy's.
     pub fn usage_windows(&self) -> Vec<crate::session::UsageWindow> {
         self.global_usage
