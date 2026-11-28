@@ -962,12 +962,12 @@ async fn async_main(
                                 }
                                 // Start in-app text selection (works in both live and scrollback)
                                 if let Some(pos) =
-                                    mouse::screen_to_vt100(&app, mouse.column, mouse.row)
+                                    mouse::screen_to_line(&app, mouse.column, mouse.row)
                                 {
-                                    app.text_selection = Some(app::TextSelection {
-                                        anchor: pos,
-                                        endpoint: pos,
-                                    });
+                                    app.text_selection = Some(app::TextSelection::new(
+                                        pos,
+                                        (mouse.column, mouse.row),
+                                    ));
                                 }
                                 // Set focus without resetting scroll
                                 app.focus = app::FocusTarget::TerminalPane;
@@ -980,21 +980,13 @@ async fn async_main(
                         }
                         #[allow(clippy::collapsible_match)]
                         MouseEventKind::Drag(MouseButton::Left) => {
-                            // Update text selection endpoint while dragging.
-                            // Use clamped variant so dragging outside the pane
-                            // extends the selection to the edge instead of freezing.
-                            // Note: split borrows intentional — mutable borrow of
-                            // text_selection cannot overlap with &app passed to
-                            // screen_to_vt100_clamped.
-                            if app.text_selection.is_some() {
-                                if let Some(pos) =
-                                    mouse::screen_to_vt100_clamped(&app, mouse.column, mouse.row)
-                                {
-                                    if let Some(ref mut sel) = app.text_selection {
-                                        sel.endpoint = pos;
-                                    }
-                                    needs_redraw = true;
-                                }
+                            // Move the selection's end. Past the pane's top or
+                            // bottom edge the view auto-scrolls (on every Tick
+                            // while held there), so a selection can run on
+                            // into scrollback or back down to the live screen.
+                            if mouse::drag_selection(&mut app, mouse.column, mouse.row) {
+                                app.url_cache_dirty = true;
+                                needs_redraw = true;
                             }
                         }
                         MouseEventKind::Up(MouseButton::Left) => {
@@ -1002,49 +994,7 @@ async fn async_main(
                             if let Some(sel) = app.text_selection.take() {
                                 // Only copy if there's a meaningful selection (not just a click)
                                 if sel.anchor != sel.endpoint {
-                                    let (start, end) = sel.ordered();
-                                    let extracted = if app.terminal_scroll > 0 {
-                                        // Scrollback: extract from the same capture that was
-                                        // rendered (cached, so no tmux round-trip)
-                                        app.active_session_id.and_then(|sid| {
-                                            let session = app.sessions.get(&sid)?;
-                                            let tmux_name = session.tmux_session_name.as_ref()?;
-                                            let inner = app.areas.terminal_pane_inner.get();
-                                            let cached = app.scrollback_cache.borrow().clone();
-                                            let snap = match cached {
-                                                Some(snap) => snap,
-                                                None => ui::terminal_pane::scrollback_snapshot(
-                                                    &app,
-                                                    tmux_name,
-                                                    inner.height as usize,
-                                                )?,
-                                            };
-                                            let content =
-                                                ui::terminal_pane::scrollback_plain_text(&snap);
-                                            let text = mouse::extract_text_from_plain(
-                                                &content, start, end,
-                                            );
-                                            if text.is_empty() {
-                                                None
-                                            } else {
-                                                Some(text)
-                                            }
-                                        })
-                                    } else {
-                                        // Live view: extract from vt100 screen
-                                        app.active_session_id.and_then(|sid| {
-                                            let session = app.sessions.get(&sid)?;
-                                            let guard = session.parser.try_read().ok()?;
-                                            let screen = guard.screen();
-                                            let text =
-                                                mouse::extract_text_from_screen(screen, start, end);
-                                            if text.is_empty() {
-                                                None
-                                            } else {
-                                                Some(text)
-                                            }
-                                        })
-                                    };
+                                    let extracted = mouse::selected_text(&app, &sel);
                                     if let Some(text) = extracted {
                                         match mouse::copy_to_clipboard(&text) {
                                             Ok(()) => {
@@ -1098,11 +1048,20 @@ async fn async_main(
                             needs_redraw = true;
                         }
                         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                            app.text_selection = None;
+                            // Wheeling with the button held carries the selection
+                            // along; otherwise it ends it.
+                            let dragging =
+                                app.text_selection.is_some_and(|s| s.dragging);
+                            if !dragging {
+                                app.text_selection = None;
+                            }
                             let scroll_before = app.terminal_scroll;
                             mouse::handle_mouse(&mut app, mouse);
                             if app.terminal_scroll != scroll_before {
                                 app.url_cache_dirty = true;
+                                if dragging {
+                                    mouse::reaim_selection(&mut app);
+                                }
                             }
                             needs_redraw = true;
                         }
@@ -1633,6 +1592,11 @@ async fn async_main(
                     worktree_list_dirty = true;
                 }
                 AppEvent::Tick => {
+                    // A selection held past the terminal pane's edge keeps
+                    // scrolling (the Tick repaints below).
+                    if mouse::autoscroll_selection(&mut app) {
+                        app.url_cache_dirty = true;
+                    }
                     // An update prompt held back (another dialog open, or the
                     // user mid-typing) appears once it's safe.
                     app.maybe_show_update_dialog();

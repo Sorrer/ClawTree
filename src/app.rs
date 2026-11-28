@@ -66,16 +66,38 @@ impl LayoutAreas {
     }
 }
 
-/// In-app text selection state (anchor + current drag position in vt100 coords).
+/// In-app text selection state. Positions are `(line, col)` in tmux's line
+/// numbering for the pane: 0 is the top row of the live screen and negative
+/// lines are scrollback. So a selection stays on the same text while the
+/// view scrolls, and can span more than one screen.
 #[derive(Debug, Clone, Copy)]
 pub struct TextSelection {
-    pub anchor: (u16, u16),   // vt100 (row, col) where drag started
-    pub endpoint: (u16, u16), // vt100 (row, col) current drag position
+    pub anchor: (i64, u16),   // where the drag started
+    pub endpoint: (i64, u16), // current drag position
+    /// The left button is still down (wheel scrolling keeps the selection).
+    pub dragging: bool,
+    /// Last mouse position during the drag (screen col, row), to re-aim the
+    /// endpoint after the view scrolls under a still mouse.
+    pub last_mouse: (u16, u16),
+    /// -1 / +1 while the mouse is held above / below the pane (auto-scroll).
+    pub autoscroll: i8,
+    pub last_autoscroll: Option<std::time::Instant>,
 }
 
 impl TextSelection {
+    pub fn new(pos: (i64, u16), mouse: (u16, u16)) -> Self {
+        Self {
+            anchor: pos,
+            endpoint: pos,
+            dragging: true,
+            last_mouse: mouse,
+            autoscroll: 0,
+            last_autoscroll: None,
+        }
+    }
+
     /// Return (start, end) in reading order (top-left to bottom-right).
-    pub fn ordered(&self) -> ((u16, u16), (u16, u16)) {
+    pub fn ordered(&self) -> ((i64, u16), (i64, u16)) {
         let (ar, ac) = self.anchor;
         let (er, ec) = self.endpoint;
         if ar < er || (ar == er && ac <= ec) {
@@ -83,6 +105,28 @@ impl TextSelection {
         } else {
             ((er, ec), (ar, ac))
         }
+    }
+
+    /// The part of the selection inside a `rows`×`cols` view scrolled up by
+    /// `scroll` lines, as (start, end) view (row, col), or None if it's all
+    /// off screen. Lines that continue past an edge run to the edge.
+    pub fn in_view(&self, scroll: usize, rows: u16, cols: u16) -> Option<((u16, u16), (u16, u16))> {
+        if rows == 0 || cols == 0 {
+            return None;
+        }
+        let ((sl, sc), (el, ec)) = self.ordered();
+        let top = -(scroll as i64);
+        let bottom = top + rows as i64 - 1;
+        if el < top || sl > bottom {
+            return None;
+        }
+        let start = if sl < top { (0, 0) } else { ((sl - top) as u16, sc) };
+        let end = if el > bottom {
+            (rows - 1, cols - 1)
+        } else {
+            ((el - top) as u16, ec)
+        };
+        Some((start, end))
     }
 }
 
@@ -1868,5 +1912,25 @@ mod update_dialog_tests {
         app.skipped_update_version = Some("0.3.0".into());
         app.maybe_show_update_dialog();
         assert_eq!(showing_update(&app), None);
+    }
+}
+
+#[cfg(test)]
+mod text_selection_tests {
+    use super::TextSelection;
+
+    #[test]
+    fn selection_is_clipped_to_the_view() {
+        // From line -30 (scrollback) to line 5 on the live screen.
+        let mut sel = TextSelection::new((5, 3), (0, 0));
+        sel.endpoint = (-30, 7);
+        assert_eq!(sel.ordered(), ((-30, 7), (5, 3)));
+        // Live view (scroll 0), 20 rows: starts above the view, ends at row 5.
+        assert_eq!(sel.in_view(0, 20, 80), Some(((0, 0), (5, 3))));
+        // Scrolled up 40: view is lines -40..=-21, selection starts at row 10
+        // and runs off the bottom.
+        assert_eq!(sel.in_view(40, 20, 80), Some(((10, 7), (19, 79))));
+        // Scrolled up 100: entirely below the view.
+        assert_eq!(sel.in_view(100, 20, 80), None);
     }
 }

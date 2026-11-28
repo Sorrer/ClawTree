@@ -143,7 +143,7 @@ Queue up one-shot tasks for Claude to handle sequentially while you focus on oth
 
 ### Terminal & UI
 - Keyboard-driven with vim-style navigation (`j`/`k`, `?` for help)
-- Click-and-drag text selection with clipboard support
+- Click-and-drag text selection with clipboard support. Drag above or below the terminal pane and it scrolls, faster the further out you hold the mouse. The mouse wheel also scrolls while the button is held, so a selection can cover more than one screen. Releasing copies all of it
 - URL detection — click to open, `u` to copy
 - Scrollback browsing with scrollbar. Works with both Claude Code renderers: with the classic renderer the history comes from tmux scrollback; with the fullscreen (alternate-screen) renderer the wheel, PgUp/PgDn and mouse clicks are forwarded to Claude Code, which scrolls and selects in its own buffer. Set `CLAWTREE_CLASSIC_RENDERER=1` to force the classic renderer for new sessions
 - Auto update notifications
