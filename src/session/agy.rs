@@ -227,6 +227,68 @@ pub fn conversation_id_for_pid(home: &Path, pid: u32, current: Option<&str>) -> 
     open.into_iter().next().map(|(_, id)| id)
 }
 
+// ── Conversation titles ──────────────────────────────────────────────────
+//
+// agy names each conversation shortly after it starts ("Mega Titan Revamp
+// Audit") but only puts `conversation_title` in the title-hook payload for
+// resumed conversations. The name is also saved, one small text-format
+// protobuf per conversation, at `annotations/<id>.pbtxt`: `title:"…"`.
+
+/// The title agy gave conversation `id`, if it has named it yet.
+pub fn conversation_title(home: &Path, id: &str) -> Option<String> {
+    if id.is_empty() || id.contains('/') {
+        return None;
+    }
+    let text = std::fs::read_to_string(
+        data_dir(home)
+            .join("annotations")
+            .join(format!("{}.pbtxt", id)),
+    )
+    .ok()?;
+    pbtxt_title(&text)
+}
+
+/// The `title:"…"` field of a text-format protobuf, unescaped.
+fn pbtxt_title(text: &str) -> Option<String> {
+    let rest = text.lines().find_map(|l| {
+        let l = l.trim_start();
+        l.strip_prefix("title:")
+            .or_else(|| l.strip_prefix("title :"))
+            .map(str::trim_start)
+    })?;
+    let rest = rest.strip_prefix('"')?;
+    let mut bytes = Vec::new();
+    let mut it = rest.bytes().peekable();
+    while let Some(b) = it.next() {
+        match b {
+            b'"' => {
+                let title = String::from_utf8_lossy(&bytes).trim().to_string();
+                return (!title.is_empty()).then_some(title);
+            }
+            b'\\' => match it.next()? {
+                b'n' | b't' | b'r' => bytes.push(b' '),
+                d @ b'0'..=b'7' => {
+                    // Octal byte escape (\303\251): up to three digits.
+                    let mut v = (d - b'0') as u32;
+                    for _ in 0..2 {
+                        match it.peek() {
+                            Some(&n @ b'0'..=b'7') => {
+                                v = v * 8 + (n - b'0') as u32;
+                                it.next();
+                            }
+                            _ => break,
+                        }
+                    }
+                    bytes.push(v as u8);
+                }
+                other => bytes.push(other),
+            },
+            _ => bytes.push(b),
+        }
+    }
+    None
+}
+
 // ── Usage (quota) ────────────────────────────────────────────────────────
 //
 // agy hands its quota to the title command (clawtree's `__agy-title`) on every
@@ -581,5 +643,29 @@ mod tests {
             "                                                            auto · Gemini 4 Neon · high",
         ]);
         assert_eq!(screen_state(&s), ScreenState::Unknown);
+    }
+
+    #[test]
+    fn titles_from_annotation_files() {
+        assert_eq!(
+            pbtxt_title("title:\"Mega Titan Revamp Audit\"\n").as_deref(),
+            Some("Mega Titan Revamp Audit")
+        );
+        assert_eq!(
+            pbtxt_title("id: 3\n  title: \"Say \\\"hi\\\" to caf\\303\\251\"\n").as_deref(),
+            Some("Say \"hi\" to café")
+        );
+        assert_eq!(pbtxt_title("title:\"\""), None);
+        assert_eq!(pbtxt_title("other:\"x\""), None);
+        let home = tempfile::tempdir().unwrap();
+        let dir = data_dir(home.path()).join("annotations");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("c1.pbtxt"), "title:\"Thicket Rework And Polish\"\n").unwrap();
+        assert_eq!(
+            conversation_title(home.path(), "c1").as_deref(),
+            Some("Thicket Rework And Polish")
+        );
+        assert_eq!(conversation_title(home.path(), "missing"), None);
+        assert_eq!(conversation_title(home.path(), "../c1"), None);
     }
 }

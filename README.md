@@ -174,6 +174,8 @@ Agent sessions can talk to each other, across agents (Claude Code ↔ agy) and a
 
 Just ask in plain words, e.g. *"ask the agy session in feature-x to review my last commit and send you its findings"*.
 
+To point one agent at another, right-click the other session in the sidebar and choose **Link to Active Session**. A reference to it is typed into the prompt of the session you have open, for example `clawtree session clawtree-main-4 (claude, "Mega titan revamp", main; reach it with …)`. It isn't sent, so you can add *"…work with it via clawtree to finish the boss fight"* and press Enter.
+
 - **Wiring:**
   - Claude sessions clawtree starts get the server through `--mcp-config`, for that session only.
   - agy has no per-session option, so clawtree registers it once with `agy mcp add clawtree <clawtree> mcp`. Undo it with `agy mcp remove clawtree`.
